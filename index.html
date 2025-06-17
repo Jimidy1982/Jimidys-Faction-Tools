@@ -15,7 +15,7 @@
         <div class="input-section">
             <div class="api-key-section">
                 <label for="apiKey">API Key:</label>
-                <input type="text" id="apiKey" placeholder="Enter your Torn API key">
+                <input type="text" id="apiKey" placeholder="Insert your API key here">
                 <button id="saveApiKey">Save API Key</button>
             </div>
 
@@ -31,6 +31,13 @@
             </div>
 
             <button id="fetchData">Fetch Data</button>
+            
+            <div id="loadingBar" class="loading-bar" style="display: none;">
+                <div class="loading-text">
+                    <span class="loading-dots">Fetching data</span>
+                    <div class="loading-spinner"></div>
+                </div>
+            </div>
         </div>
 
         <div class="results-section">
@@ -42,10 +49,8 @@
 
             <div class="controls">
                 <button id="exportCSV">Export to CSV</button>
-                <select id="sortOrder">
-                    <option value="highToLow">Most Used First</option>
-                    <option value="lowToHigh">Least Used First</option>
-                </select>
+                <input type="hidden" id="sortColumn" value="xanax">
+                <input type="hidden" id="sortDirection" value="desc">
             </div>
 
             <div class="members-list">

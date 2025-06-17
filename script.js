@@ -31,10 +31,9 @@ document.getElementById('saveApiKey').addEventListener('click', () => {
 // Fetch data from Torn API v2 faction/news with pagination
 document.getElementById('fetchData').addEventListener('click', async () => {
     let apiKey = document.getElementById('apiKey').value;
-    // Use the example key if the box is empty
     if (!apiKey) {
-        apiKey = 'e9Tn2r2RAIoaVWWd';
-        document.getElementById('apiKey').value = apiKey;
+        alert('Please enter your API key');
+        return;
     }
     const startDate = document.getElementById('startDate').value;
     const endDate = document.getElementById('endDate').value;
@@ -59,14 +58,21 @@ document.getElementById('fetchData').addEventListener('click', async () => {
 
     // Convert to epoch seconds
     const startEpoch = Math.floor(start.getTime() / 1000);
-    const endEpoch = Math.floor(end.getTime() / 1000) + 86399; // include full end day
+    const endEpoch = Math.floor(end.getTime() / 1000) + 86399;
 
     try {
         let allNews = [];
         let url = `https://api.torn.com/v2/faction/news?striptags=false&limit=100&sort=DESC&cat=armoryAction&timestamp=${endEpoch}&key=${apiKey}`;
         let keepFetching = true;
 
+        // Show loading bar
+        const loadingBar = document.getElementById('loadingBar');
+        loadingBar.style.display = 'block';
+
         while (keepFetching && url) {
+            // Rate limiting - wait 1 second between requests
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
             const response = await fetch(url);
             const data = await response.json();
             if (data.error) {
@@ -86,33 +92,59 @@ document.getElementById('fetchData').addEventListener('click', async () => {
                 keepFetching = false;
             }
         }
-        console.log('All news entries in range:', allNews);
 
-        // Filter for Xanax usage
-        const xanaxLogs = allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('xanax'));
-        console.log('Filtered Xanax logs:', xanaxLogs);
+        // Hide loading bar
+        loadingBar.style.display = 'none';
 
-        // Aggregate by member
-        const memberXanax = {};
-        xanaxLogs.forEach(entry => {
-            // Extract member name from text string (e.g., "Meliz used one of the faction's Xanax items")
-            const match = entry.text.match(/^(.*?) used/i);
-            const name = match ? match[1].trim() : 'Unknown';
-            if (!memberXanax[name]) memberXanax[name] = 0;
-            memberXanax[name]++;
+        // Filter for all item usage
+        const itemLogs = {
+            xanax: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('xanax')),
+            bloodBag: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('blood bag')),
+            firstAidKit: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('first aid kit')),
+            smallFirstAidKit: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('small first aid kit')),
+            morphine: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('morphine')),
+            ipecacSyrup: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('ipecac syrup')),
+            beer: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('bottle of beer')),
+            lollipop: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('lollipop')),
+            energyCans: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('energy can'))
+        };
+
+        // Aggregate by member for all items
+        const memberItems = {};
+        Object.keys(itemLogs).forEach(item => {
+            itemLogs[item].forEach(entry => {
+                const match = entry.text.match(/^(.*?) used/i);
+                const name = match ? match[1].trim() : 'Unknown';
+                if (!memberItems[name]) memberItems[name] = {};
+                if (!memberItems[name][item]) memberItems[name][item] = 0;
+                memberItems[name][item]++;
+            });
         });
-        console.log('Aggregated member Xanax usage:', memberXanax);
 
         // Prepare members array for display
-        const members = Object.entries(memberXanax).map(([name, xanax]) => ({
+        const allNames = new Set(Object.keys(memberItems));
+        const members = Array.from(allNames).map(name => ({
             name,
-            xanax
+            xanax: memberItems[name].xanax || 0,
+            bloodbags: memberItems[name].bloodBag || 0,
+            firstAidKit: memberItems[name].firstAidKit || 0,
+            smallFirstAidKit: memberItems[name].smallFirstAidKit || 0,
+            morphine: memberItems[name].morphine || 0,
+            ipecacSyrup: memberItems[name].ipecacSyrup || 0,
+            beer: memberItems[name].beer || 0,
+            lollipop: memberItems[name].lollipop || 0,
+            energyCans: memberItems[name].energyCans || 0
         }));
 
-        // Sort members by Xanax consumption
-        const sortOrder = document.getElementById('sortOrder').value;
+        // Get sort column and direction
+        const sortColumn = document.getElementById('sortColumn').value;
+        const sortDirection = document.getElementById('sortDirection').value;
+        
+        // Sort members
         members.sort((a, b) => {
-            return sortOrder === 'highToLow' ? b.xanax - a.xanax : a.xanax - b.xanax;
+            const aValue = a[sortColumn] || 0;
+            const bValue = b[sortColumn] || 0;
+            return sortDirection === 'desc' ? bValue - aValue : aValue - bValue;
         });
 
         // Update UI
@@ -125,31 +157,82 @@ document.getElementById('fetchData').addEventListener('click', async () => {
             message = error.response.error;
         }
         alert('Error: ' + message);
+        // Hide loading bar on error
+        document.getElementById('loadingBar').style.display = 'none';
     }
 });
 
+// Function to update loading bar
+function updateLoadingBar(completed, total) {
+    const percentage = Math.round((completed / total) * 100);
+    const loadingProgress = document.querySelector('.loading-progress');
+    const progressText = document.querySelector('.progress-text');
+    loadingProgress.style.width = `${percentage}%`;
+    progressText.textContent = `${percentage}%`;
+}
+
 // Update UI with member data
 function updateUI(members) {
-    const totalXanax = members.reduce((sum, member) => sum + member.xanax, 0);
-    
-    // Update summary
-    document.querySelector('#totalXanax span').textContent = totalXanax;
-    document.querySelector('#totalMembers span').textContent = members.length;
+    const columns = [
+        { id: 'xanax', label: 'Xanax' },
+        { id: 'bloodbags', label: 'Blood Bags' },
+        { id: 'firstAidKit', label: 'First Aid Kit' },
+        { id: 'smallFirstAidKit', label: 'Small First Aid Kit' },
+        { id: 'morphine', label: 'Morphine' },
+        { id: 'ipecacSyrup', label: 'Ipecac Syrup' },
+        { id: 'beer', label: 'Beer' },
+        { id: 'lollipop', label: 'Lollipop' },
+        { id: 'energyCans', label: 'Energy Cans' }
+    ];
 
-    // Update members table
+    // Calculate totals
+    const totals = {};
+    columns.forEach(col => {
+        totals[col.id] = members.reduce((sum, member) => sum + (member[col.id] || 0), 0);
+    });
+
+    // Create column visibility controls
+    const columnControls = document.createElement('div');
+    columnControls.className = 'column-controls';
+    columnControls.innerHTML = `
+        <h3>Visible Columns:</h3>
+        <div class="column-toggles">
+            ${columns.map(col => `
+                <label>
+                    <input type="checkbox" class="column-toggle" data-column="${col.id}" checked>
+                    ${col.label}
+                </label>
+            `).join('')}
+        </div>
+    `;
+
+    // Create table with totals row
     const table = document.createElement('table');
     table.innerHTML = `
         <thead>
             <tr>
                 <th>Member</th>
-                <th>Xanax Consumed</th>
+                ${columns.map(col => `
+                    <th class="column-${col.id}" data-column="${col.id}">
+                        ${col.label}
+                        <span class="sort-indicator"></span>
+                    </th>
+                `).join('')}
+            </tr>
+            <tr class="totals-row">
+                <th>Faction Total</th>
+                ${columns.map(col => `
+                    <th class="column-${col.id}" data-column="${col.id}">${totals[col.id]}</th>
+                `).join('')}
             </tr>
         </thead>
         <tbody>
             ${members.map(member => `
                 <tr>
-                    <td>${member.name}</td>
-                    <td>${member.xanax}</td>
+                    <td><a href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(member.name)}" target="_blank">${member.name}</a></td>
+                    ${columns.map(col => `
+                        <td class="column-${col.id}" data-column="${col.id}">${member[col.id] || 0}</td>
+                    `).join('')}
                 </tr>
             `).join('')}
         </tbody>
@@ -157,7 +240,41 @@ function updateUI(members) {
 
     const tableContainer = document.getElementById('membersTable');
     tableContainer.innerHTML = '';
+    tableContainer.appendChild(columnControls);
     tableContainer.appendChild(table);
+
+    // Add click handlers for column sorting
+    table.querySelectorAll('th[data-column]').forEach(th => {
+        th.addEventListener('click', () => {
+            const column = th.dataset.column;
+            const currentDirection = document.getElementById('sortDirection').value;
+            const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
+            
+            document.getElementById('sortColumn').value = column;
+            document.getElementById('sortDirection').value = newDirection;
+            
+            // Update sort indicators
+            table.querySelectorAll('.sort-indicator').forEach(indicator => {
+                indicator.textContent = '';
+            });
+            th.querySelector('.sort-indicator').textContent = newDirection === 'asc' ? ' ↑' : ' ↓';
+            
+            // Trigger data refresh
+            document.getElementById('fetchData').click();
+        });
+    });
+
+    // Add column visibility toggles
+    tableContainer.querySelectorAll('.column-toggle').forEach(toggle => {
+        toggle.addEventListener('change', () => {
+            const column = toggle.dataset.column;
+            const isVisible = toggle.checked;
+            
+            table.querySelectorAll(`.column-${column}`).forEach(cell => {
+                cell.style.display = isVisible ? '' : 'none';
+            });
+        });
+    });
 }
 
 // Export to CSV
