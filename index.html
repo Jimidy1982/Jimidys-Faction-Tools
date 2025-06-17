@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torn Faction Xanax Tracker</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Faction Xanax Consumption Tracker</h1>
+        
+        <div class="input-section">
+            <div class="api-key-section">
+                <label for="apiKey">API Key:</label>
+                <input type="text" id="apiKey" placeholder="Enter your Torn API key">
+                <button id="saveApiKey">Save API Key</button>
+            </div>
+
+            <div class="date-range-section">
+                <div class="date-input">
+                    <label for="startDate">Start Date:</label>
+                    <input type="text" id="startDate" placeholder="Select start date">
+                </div>
+                <div class="date-input">
+                    <label for="endDate">End Date:</label>
+                    <input type="text" id="endDate" placeholder="Select end date">
+                </div>
+            </div>
+
+            <button id="fetchData">Fetch Data</button>
+        </div>
+
+        <div class="results-section">
+            <div class="summary-box">
+                <h2>Summary</h2>
+                <div id="totalXanax">Total Xanax Consumed: <span>0</span></div>
+                <div id="totalMembers">Members Tracked: <span>0</span></div>
+            </div>
+
+            <div class="controls">
+                <button id="exportCSV">Export to CSV</button>
+                <select id="sortOrder">
+                    <option value="highToLow">Most Used First</option>
+                    <option value="lowToHigh">Least Used First</option>
+                </select>
+            </div>
+
+            <div class="members-list">
+                <h2>Member Consumption</h2>
+                <div id="membersTable"></div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html> 
