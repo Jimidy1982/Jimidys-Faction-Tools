@@ -121,6 +121,8 @@ button:hover {
     cursor: pointer;
     user-select: none;
     text-align: center;
+    position: relative;
+    padding-right: 25px;
 }
 
 #membersTable th:hover {
@@ -128,7 +130,10 @@ button:hover {
 }
 
 .sort-indicator {
-    margin-left: 5px;
+    position: absolute;
+    right: 8px;
+    color: var(--accent-color);
+    font-weight: bold;
 }
 
 .column-controls {
@@ -180,6 +185,8 @@ button:hover {
 
 .totals-row th {
     background-color: var(--secondary-color);
+    text-align: left !important;
+    padding-right: 10px;
 }
 
 /* Loading bar styles */

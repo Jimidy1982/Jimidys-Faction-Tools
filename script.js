@@ -11,6 +11,9 @@ flatpickr("#endDate", {
     defaultDate: new Date()
 });
 
+// Store fetched members globally
+let fetchedMembers = [];
+
 // Fetch data from Torn API v2 faction/news with pagination
 document.getElementById('fetchData').addEventListener('click', async () => {
     let apiKey = document.getElementById('apiKey').value;
@@ -106,7 +109,7 @@ document.getElementById('fetchData').addEventListener('click', async () => {
 
         // Prepare members array for display
         const allNames = new Set(Object.keys(memberItems));
-        const members = Array.from(allNames).map(name => ({
+        fetchedMembers = Array.from(allNames).map(name => ({
             name,
             xanax: memberItems[name].xanax || 0,
             bloodbags: memberItems[name].bloodBag || 0,
@@ -124,14 +127,10 @@ document.getElementById('fetchData').addEventListener('click', async () => {
         const sortDirection = document.getElementById('sortDirection').value;
         
         // Sort members
-        members.sort((a, b) => {
-            const aValue = a[sortColumn] || 0;
-            const bValue = b[sortColumn] || 0;
-            return sortDirection === 'desc' ? bValue - aValue : aValue - bValue;
-        });
+        const sortedMembers = sortMembers(fetchedMembers, sortColumn, sortDirection);
 
         // Update UI
-        updateUI(members);
+        updateUI(sortedMembers);
 
     } catch (error) {
         console.error('Error during fetchData:', error);
@@ -144,6 +143,15 @@ document.getElementById('fetchData').addEventListener('click', async () => {
         document.getElementById('loadingBar').style.display = 'none';
     }
 });
+
+// Sorting function
+function sortMembers(members, sortColumn, sortDirection) {
+    return [...members].sort((a, b) => {
+        const aValue = a[sortColumn] || 0;
+        const bValue = b[sortColumn] || 0;
+        return sortDirection === 'desc' ? bValue - aValue : aValue - bValue;
+    });
+}
 
 // Function to update loading bar
 function updateLoadingBar(completed, total) {
@@ -191,6 +199,9 @@ function updateUI(members) {
 
     // Create table with totals row
     const table = document.createElement('table');
+    const currentSortColumn = document.getElementById('sortColumn').value;
+    const currentSortDirection = document.getElementById('sortDirection').value;
+    
     table.innerHTML = `
         <thead>
             <tr>
@@ -198,7 +209,7 @@ function updateUI(members) {
                 ${columns.map(col => `
                     <th class="column-${col.id}" data-column="${col.id}">
                         ${col.label}
-                        <span class="sort-indicator"></span>
+                        <span class="sort-indicator">${col.id === currentSortColumn ? (currentSortDirection === 'asc' ? '↑' : '↓') : ''}</span>
                     </th>
                 `).join('')}
             </tr>
@@ -240,10 +251,11 @@ function updateUI(members) {
             table.querySelectorAll('.sort-indicator').forEach(indicator => {
                 indicator.textContent = '';
             });
-            th.querySelector('.sort-indicator').textContent = newDirection === 'asc' ? ' ↑' : ' ↓';
+            th.querySelector('.sort-indicator').textContent = newDirection === 'asc' ? '↑' : '↓';
             
-            // Trigger data refresh
-            document.getElementById('fetchData').click();
+            // Sort and update UI without refetching
+            const sortedMembers = sortMembers(fetchedMembers, column, newDirection);
+            updateUI(sortedMembers);
         });
     });
 
