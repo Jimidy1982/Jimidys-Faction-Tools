@@ -11,23 +11,6 @@ flatpickr("#endDate", {
     defaultDate: new Date()
 });
 
-// Load saved API key from localStorage
-document.addEventListener('DOMContentLoaded', () => {
-    const savedApiKey = localStorage.getItem('tornApiKey');
-    if (savedApiKey) {
-        document.getElementById('apiKey').value = savedApiKey;
-    }
-});
-
-// Save API key to localStorage
-document.getElementById('saveApiKey').addEventListener('click', () => {
-    const apiKey = document.getElementById('apiKey').value;
-    if (apiKey) {
-        localStorage.setItem('tornApiKey', apiKey);
-        alert('API key saved successfully!');
-    }
-});
-
 // Fetch data from Torn API v2 faction/news with pagination
 document.getElementById('fetchData').addEventListener('click', async () => {
     let apiKey = document.getElementById('apiKey').value;
@@ -286,18 +269,25 @@ document.getElementById('exportCSV').addEventListener('click', () => {
     }
 
     const rows = Array.from(table.querySelectorAll('tr'));
-    const csvContent = rows.map(row => {
-        return Array.from(row.cells)
-            .map(cell => `"${cell.textContent}"`)
-            .join(',');
-    }).join('\n');
+    const headers = Array.from(rows[0].querySelectorAll('th')).map(th => th.textContent.trim().replace(' ↑', '').replace(' ↓', ''));
+    const csvContent = [
+        headers.join(','),
+        ...rows.slice(1).map(row => {
+            return Array.from(row.cells)
+                .map(cell => {
+                    const content = cell.textContent.trim();
+                    return `"${content}"`;
+                })
+                .join(',');
+        })
+    ].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     
     link.setAttribute('href', url);
-    link.setAttribute('download', 'xanax_consumption.csv');
+    link.setAttribute('download', 'faction_consumption.csv');
     link.style.visibility = 'hidden';
     
     document.body.appendChild(link);

@@ -149,16 +149,28 @@ button:hover {
     gap: 10px;
 }
 
+.column-toggles input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent-color);
+    cursor: pointer;
+}
+
+.column-toggles input[type="checkbox"]:checked {
+    background-color: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
 .column-toggles label {
     display: flex;
     align-items: center;
     gap: 5px;
     cursor: pointer;
+    color: var(--text-color);
 }
 
-.column-toggles input[type="checkbox"] {
-    width: auto;
-    margin: 0;
+.column-toggles label:hover {
+    color: var(--accent-color);
 }
 
 .totals-row {
