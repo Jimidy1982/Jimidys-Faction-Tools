@@ -100,10 +100,21 @@ document.getElementById('fetchData').addEventListener('click', async () => {
         Object.keys(itemLogs).forEach(item => {
             itemLogs[item].forEach(entry => {
                 const match = entry.text.match(/^(.*?) used/i);
-                const name = match ? match[1].trim() : 'Unknown';
-                if (!memberItems[name]) memberItems[name] = {};
-                if (!memberItems[name][item]) memberItems[name][item] = 0;
-                memberItems[name][item]++;
+                if (match) {
+                    let name = match[1].trim();
+                    // Members can have their ID appended like "Name [123456]"
+                    // We only want the name part.
+                    if (name.includes('[')) {
+                        name = name.substring(0, name.lastIndexOf('[')).trim();
+                    }
+                    if (!memberItems[name]) {
+                        memberItems[name] = {};
+                    }
+                    if (!memberItems[name][item]) {
+                        memberItems[name][item] = 0;
+                    }
+                    memberItems[name][item]++;
+                }
             });
         });
 
@@ -147,9 +158,17 @@ document.getElementById('fetchData').addEventListener('click', async () => {
 // Sorting function
 function sortMembers(members, sortColumn, sortDirection) {
     return [...members].sort((a, b) => {
-        const aValue = a[sortColumn] || 0;
-        const bValue = b[sortColumn] || 0;
-        return sortDirection === 'desc' ? bValue - aValue : aValue - bValue;
+        if (sortColumn === 'name') {
+            const aValue = a.name.toLowerCase();
+            const bValue = b.name.toLowerCase();
+            if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+            if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+            return 0;
+        } else {
+            const aValue = a[sortColumn] || 0;
+            const bValue = b[sortColumn] || 0;
+            return sortDirection === 'desc' ? bValue - aValue : aValue - bValue;
+        }
     });
 }
 
@@ -205,7 +224,10 @@ function updateUI(members) {
     table.innerHTML = `
         <thead>
             <tr>
-                <th>Member</th>
+                <th data-column="name">
+                    Member
+                    <span class="sort-indicator">${'name' === currentSortColumn ? (currentSortDirection === 'asc' ? '↑' : '↓') : ''}</span>
+                </th>
                 ${columns.map(col => `
                     <th class="column-${col.id}" data-column="${col.id}">
                         ${col.label}
