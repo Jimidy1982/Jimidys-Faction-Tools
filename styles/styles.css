@@ -19,6 +19,67 @@ body {
     line-height: 1.6;
 }
 
+header {
+    background-color: var(--secondary-color);
+    padding: 1rem 2rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+header h1 {
+    margin: 0;
+    color: var(--accent-color);
+    font-size: 1.8rem;
+    text-align: left;
+}
+
+.dashboard-layout {
+    display: flex;
+}
+
+.dashboard-layout nav {
+    width: 250px;
+    flex-shrink: 0;
+    background-color: var(--secondary-color);
+    padding: 20px;
+    height: calc(100vh - 82px);
+    position: sticky;
+    top: 0;
+    border-right: 1px solid var(--border-color);
+}
+
+.dashboard-layout main {
+    flex-grow: 1;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.dashboard-layout nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    width: 100%;
+}
+
+.dashboard-layout nav li {
+    width: 100%;
+}
+
+.dashboard-layout nav a {
+    color: var(--text-color);
+    text-decoration: none;
+    display: block;
+    padding: 12px 15px;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+    font-weight: bold;
+}
+
+.dashboard-layout nav a:hover {
+    background-color: var(--secondary-color);
+    color: var(--accent-color);
+}
+
 .container {
     max-width: 1200px;
     margin: 0 auto;
@@ -272,5 +333,100 @@ button:hover {
 }
 
 .flatpickr-day:hover {
-    background-color: var(--border-color) !important;
+    background: var(--border-color);
+    color: var(--text-color);
+}
+
+/* Header and Navigation Styles */
+nav {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+nav h1 {
+    margin: 0;
+    margin-bottom: 15px;
+}
+
+nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+nav a {
+    text-decoration: none;
+    color: var(--text-color);
+    font-weight: bold;
+    padding: 0.5rem 0;
+    position: relative;
+    transition: color 0.3s;
+}
+
+nav a::after {
+    content: '';
+    position: absolute;
+    width: 100%;
+    transform: scaleX(0);
+    height: 2px;
+    bottom: 0;
+    left: 0;
+    background-color: var(--accent-color);
+    transform-origin: bottom right;
+    transition: transform 0.25s ease-out;
+}
+
+nav a:hover {
+    color: var(--accent-color);
+}
+
+nav a:hover::after {
+    transform: scaleX(1);
+    transform-origin: bottom left;
+}
+
+.welcome-message {
+    text-align: center;
+    font-size: 1.1rem;
+    margin: -10px 0 40px 0;
+    color: var(--text-color);
+}
+
+.tool-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 25px;
+}
+
+.tool-card {
+    background-color: var(--secondary-color);
+    padding: 25px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    display: block;
+}
+
+.tool-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+    border-color: var(--accent-color);
+}
+
+.tool-card h2 {
+    color: var(--accent-color);
+    margin-top: 0;
+    margin-bottom: 15px;
+}
+
+.tool-card p {
+    font-size: 0.95rem;
+    line-height: 1.5;
+    opacity: 0.9;
 } 
