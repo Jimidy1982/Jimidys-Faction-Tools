@@ -80,6 +80,33 @@ header h1 {
     color: var(--accent-color);
 }
 
+.global-settings {
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #34495e;
+}
+
+.global-settings label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: bold;
+    color: #ecf0f1;
+}
+
+.global-settings input {
+    width: 100%;
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid #34495e;
+    background-color: #3b5168;
+    color: white;
+}
+
+.global-settings input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
 .container {
     max-width: 1200px;
     margin: 0 auto;
@@ -246,8 +273,8 @@ button:hover {
 
 .totals-row th {
     background-color: var(--secondary-color);
-    text-align: left !important;
-    padding-right: 10px;
+    text-align: right;
+    font-weight: bold;
 }
 
 /* Loading bar styles */
@@ -429,4 +456,28 @@ nav a:hover::after {
     font-size: 0.95rem;
     line-height: 1.5;
     opacity: 0.9;
+}
+
+.fetch-container {
+    display: flex;
+    align-items: center;
+    margin-top: 15px;
+}
+
+.loading-spinner-inline {
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    border-top-color: var(--accent-color);
+    animation: spin 1s ease-in-out infinite;
+    margin-left: 15px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+#membersTable a {
+    color: #FFD700; /* A brighter yellow for links */
 } 

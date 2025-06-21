@@ -65,12 +65,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (fetchBtn) {
             fetchBtn.addEventListener('click', handleBattleStatsFetch);
         }
-
-        const apiKeyInput = document.getElementById('apiKey');
-        if (apiKeyInput) {
-            apiKeyInput.value = localStorage.getItem('tornApiKey') || '';
-            apiKeyInput.addEventListener('change', (e) => localStorage.setItem('tornApiKey', e.target.value));
-        }
     }
 
     const calculateStat = (myTotalStats, fairFightScore) => {
@@ -102,18 +96,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const spinner = document.getElementById('loading-spinner');
         const resultsContainer = document.getElementById('battle-stats-results');
         const toolContainer = document.getElementById('battle-stats-tool-container');
-        const apiKeyInput = document.getElementById('apiKey');
         const factionIdInput = document.getElementById('factionId');
 
-        if (!apiKeyInput || !factionIdInput || !spinner || !resultsContainer || !toolContainer) {
+        if (!factionIdInput || !spinner || !resultsContainer || !toolContainer) {
             console.error("One or more required elements are missing from the page.");
             return;
         }
 
-        const apiKey = apiKeyInput.value.trim();
+        const apiKey = localStorage.getItem('tornApiKey');
         const factionID = factionIdInput.value.trim();
         if (!apiKey || !factionID) {
-            alert('Please enter your API key and a Faction ID.');
+            alert('Please enter your API key in the sidebar and a Faction ID.');
             return;
         }
 
@@ -151,9 +144,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const ffData = await fetchInChunks(ffScouterUrl, memberIDs, 200);
 
             const ffScores = {};
+            const lastUpdated = {};
             ffData.forEach(player => {
                 if (player.fair_fight) {
                     ffScores[player.player_id] = player.fair_fight;
+                    lastUpdated[player.player_id] = player.last_updated; // Store last updated timestamp
                 }
             });
 
@@ -173,23 +168,30 @@ document.addEventListener('DOMContentLoaded', () => {
                             <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
                             <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
                             <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
+                            <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">Last Updated <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>`;
             for (const memberID of memberIDs) {
                 const member = membersObject[memberID];
                 const fairFightScore = ffScores[memberID] || 'Unknown';
+                const lastUpdatedTimestamp = lastUpdated[memberID];
 
                 const rawEstimatedStat = (fairFightScore !== 'Unknown' && fairFightScore > 0)
                     ? calculateStat(myTotalStats, fairFightScore)
                     : 'N/A';
                 const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
                 
+                const lastUpdatedDate = lastUpdatedTimestamp 
+                    ? new Date(lastUpdatedTimestamp * 1000).toLocaleDateString() 
+                    : 'N/A';
+
                 tableHtml += `
                     <tr>
                         <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${memberID}]</a></td>
                         <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
                         <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
+                        <td data-column="lastupdated" data-value="${lastUpdatedTimestamp || 0}">${lastUpdatedDate}</td>
                     </tr>`;
             }
             tableHtml += `</tbody></table>`;
@@ -244,9 +246,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         } else {
                             let aNum = parseFloat(aValue);
                             let bNum = parseFloat(bValue);
-                            if (isNaN(aNum)) aNum = aValue;
-                            if (isNaN(bNum)) bNum = bValue;
-                            return currentSortDirection === 'desc' ? bNum - aNum : aNum - bNum;
+                            if (isNaN(aNum)) aNum = -1; // Treat non-numeric/N/A as lowest value
+                            if (isNaN(bNum)) bNum = -1;
+
+                            if (currentSortDirection === 'desc') {
+                                return bNum - aNum;
+                            } else {
+                                return aNum - bNum;
+                            }
                         }
                     });
                     
@@ -330,17 +337,12 @@ document.addEventListener('DOMContentLoaded', () => {
     function initConsumptionTracker() {
         flatpickr("#startDate", { dateFormat: "Y-m-d", maxDate: "today", defaultDate: new Date() });
         flatpickr("#endDate", { dateFormat: "Y-m-d", maxDate: "today", defaultDate: new Date() });
-        const apiKeyInput = document.getElementById('apiKey');
-        if (apiKeyInput) {
-            apiKeyInput.value = localStorage.getItem('tornApiKey') || '';
-            apiKeyInput.addEventListener('change', (e) => localStorage.setItem('tornApiKey', e.target.value));
-        }
     }
 
     const handleConsumptionFetch = async () => {
-        let apiKey = document.getElementById('apiKey').value;
+        let apiKey = localStorage.getItem('tornApiKey');
         if (!apiKey) {
-            alert('Please enter your API key');
+            alert('Please enter your API key in the sidebar first');
             return;
         }
         const startDate = document.getElementById('startDate').value;
@@ -354,8 +356,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const startEpoch = Math.floor(new Date(startDate).getTime() / 1000);
         const endEpoch = Math.floor(new Date(endDate).getTime() / 1000) + 86399;
 
-        const loadingBar = document.getElementById('loadingBar');
-        loadingBar.style.display = 'block';
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        loadingSpinner.style.display = 'inline-block';
+        document.getElementById('fetchData').disabled = true;
+
 
         try {
             let allNews = [];
@@ -363,7 +367,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let keepFetching = true;
 
             while (keepFetching && url) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await new Promise(resolve => setTimeout(resolve, 667)); // ~3 calls every 2 seconds
                 const response = await fetch(url);
                 const data = await response.json();
                 if (data.error) throw new Error(data.error.error || data.error);
@@ -429,7 +433,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             alert('Error: ' + error.message);
         } finally {
-            loadingBar.style.display = 'none';
+            loadingSpinner.style.display = 'none';
+            document.getElementById('fetchData').disabled = false;
         }
     };
 
@@ -475,6 +480,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const currentSortColumn = document.getElementById('sortColumn').value;
         const currentSortDirection = document.getElementById('sortDirection').value;
         
+        const consumptionTitle = document.getElementById('consumptionTitle');
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+        consumptionTitle.textContent = `Member Consumption (${startDate} to ${endDate})`;
+
         table.innerHTML = `
             <thead>
                 <tr>
@@ -497,6 +507,9 @@ document.addEventListener('DOMContentLoaded', () => {
         tableContainer.appendChild(columnControls);
         tableContainer.appendChild(table);
         toggleColumnVisibility();
+        
+        // Show the results section
+        document.querySelector('.results-section').style.display = 'block';
     }
 
     function toggleColumnVisibility() {
