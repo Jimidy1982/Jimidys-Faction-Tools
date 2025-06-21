@@ -41,7 +41,7 @@ header h1 {
     width: 250px;
     flex-shrink: 0;
     background-color: var(--secondary-color);
-    padding: 20px;
+    padding: 20px 0;
     height: calc(100vh - 82px);
     position: sticky;
     top: 0;
@@ -56,55 +56,29 @@ header h1 {
 
 .dashboard-layout nav ul {
     list-style: none;
-    padding: 0;
+    padding: 0 20px;
     margin: 0;
     width: 100%;
 }
 
 .dashboard-layout nav li {
     width: 100%;
+    padding: 0;
 }
 
 .dashboard-layout nav a {
     color: var(--text-color);
     text-decoration: none;
     display: block;
-    padding: 12px 15px;
+    padding: 12px 20px;
     border-radius: 4px;
     transition: background-color 0.2s;
     font-weight: bold;
 }
 
 .dashboard-layout nav a:hover {
-    background-color: var(--secondary-color);
+    background-color: rgba(255, 255, 255, 0.1);
     color: var(--accent-color);
-}
-
-.global-settings {
-    margin-bottom: 20px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid #34495e;
-}
-
-.global-settings label {
-    display: block;
-    margin-bottom: 8px;
-    font-weight: bold;
-    color: #ecf0f1;
-}
-
-.global-settings input {
-    width: 100%;
-    padding: 8px;
-    border-radius: 4px;
-    border: 1px solid #34495e;
-    background-color: #3b5168;
-    color: white;
-}
-
-.global-settings input:focus {
-    outline: none;
-    border-color: var(--accent-color);
 }
 
 .container {
@@ -480,4 +454,31 @@ nav a:hover::after {
 
 #membersTable a {
     color: #FFD700; /* A brighter yellow for links */
-} 
+}
+
+.api-key-item {
+    padding: 12px 20px;
+    margin-bottom: 10px;
+    color: var(--accent-color);
+}
+
+.api-key-item label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: bold;
+    color: #ecf0f1;
+}
+
+.api-key-item input {
+    width: 100%;
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid #34495e;
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.api-key-item input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
