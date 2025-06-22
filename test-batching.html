@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Batching Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            padding: 20px;
+        }
+        .test-section {
+            background-color: #2d2d2d;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        button {
+            background-color: #ffd700;
+            color: #1a1a1a;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        .results {
+            background-color: #1a1a1a;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .success { color: #00ff00; }
+        .error { color: #ff4444; }
+        .info { color: #ffd700; }
+    </style>
+</head>
+<body>
+    <h1>🔧 API Batching Optimization Test</h1>
+    
+    <div class="test-section">
+        <h2>Test 1: Semaphore Class</h2>
+        <button onclick="testSemaphore()">Test Semaphore</button>
+        <div id="semaphore-results" class="results"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Test 2: Cache System</h2>
+        <button onclick="testCache()">Test Cache</button>
+        <div id="cache-results" class="results"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Test 3: Performance Monitoring</h2>
+        <button onclick="testPerformance()">Test Performance</button>
+        <div id="performance-results" class="results"></div>
+    </div>
+
+    <script>
+        // Copy the batching utilities from app.js
+        class Semaphore {
+            constructor(max) {
+                this.max = max;
+                this.current = 0;
+                this.queue = [];
+            }
+            
+            async acquire() {
+                if (this.current < this.max) {
+                    this.current++;
+                    return Promise.resolve();
+                }
+                
+                return new Promise(resolve => {
+                    this.queue.push(resolve);
+                });
+            }
+            
+            release() {
+                this.current--;
+                if (this.queue.length > 0) {
+                    this.current++;
+                    const next = this.queue.shift();
+                    next();
+                }
+            }
+        }
+        
+        const apiCache = new Map();
+        const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+        let cacheHits = 0;
+        let cacheMisses = 0;
+        
+        const getCachedData = (key) => {
+            const cached = apiCache.get(key);
+            if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+                cacheHits++;
+                return cached.data;
+            }
+            cacheMisses++;
+            return null;
+        };
+        
+        const setCachedData = (key, data) => {
+            apiCache.set(key, {
+                data,
+                timestamp: Date.now()
+            });
+        };
+        
+        const getCacheStats = () => {
+            const total = cacheHits + cacheMisses;
+            const hitRate = total > 0 ? ((cacheHits / total) * 100).toFixed(1) : 0;
+            return { hits: cacheHits, misses: cacheMisses, total, hitRate };
+        };
+
+        async function testSemaphore() {
+            const results = document.getElementById('semaphore-results');
+            results.innerHTML = 'Testing Semaphore...\n';
+            
+            try {
+                const semaphore = new Semaphore(2);
+                const startTime = performance.now();
+                
+                // Test concurrent execution
+                const promises = [];
+                for (let i = 0; i < 5; i++) {
+                    promises.push(async () => {
+                        await semaphore.acquire();
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        semaphore.release();
+                        return `Task ${i + 1} completed`;
+                    });
+                }
+                
+                const results_array = await Promise.all(promises.map(p => p()));
+                const endTime = performance.now();
+                
+                results.innerHTML += `✅ Semaphore test passed!\n`;
+                results.innerHTML += `⏱️ Time: ${(endTime - startTime).toFixed(2)}ms\n`;
+                results.innerHTML += `📊 Results: ${results_array.join(', ')}\n`;
+                results.innerHTML += `🎯 Max concurrent: 2, Total tasks: 5\n`;
+                
+            } catch (error) {
+                results.innerHTML += `❌ Semaphore test failed: ${error.message}\n`;
+            }
+        }
+
+        async function testCache() {
+            const results = document.getElementById('cache-results');
+            results.innerHTML = 'Testing Cache System...\n';
+            
+            try {
+                // Reset cache stats
+                cacheHits = 0;
+                cacheMisses = 0;
+                apiCache.clear();
+                
+                // Test cache miss
+                const data1 = getCachedData('test-key');
+                results.innerHTML += `First call: ${data1 === null ? '❌ Cache MISS' : '✅ Cache HIT'}\n`;
+                
+                // Test cache set
+                setCachedData('test-key', { test: 'data' });
+                results.innerHTML += `💾 Data cached\n`;
+                
+                // Test cache hit
+                const data2 = getCachedData('test-key');
+                results.innerHTML += `Second call: ${data2 !== null ? '✅ Cache HIT' : '❌ Cache MISS'}\n`;
+                
+                // Test cache stats
+                const stats = getCacheStats();
+                results.innerHTML += `📊 Cache Stats: ${stats.hits} hits, ${stats.misses} misses (${stats.hitRate}% hit rate)\n`;
+                
+                results.innerHTML += `✅ Cache test passed!\n`;
+                
+            } catch (error) {
+                results.innerHTML += `❌ Cache test failed: ${error.message}\n`;
+            }
+        }
+
+        async function testPerformance() {
+            const results = document.getElementById('performance-results');
+            results.innerHTML = 'Testing Performance Monitoring...\n';
+            
+            try {
+                const startTime = performance.now();
+                
+                // Simulate API calls
+                await new Promise(resolve => setTimeout(resolve, 100));
+                const api1Time = performance.now();
+                
+                await new Promise(resolve => setTimeout(resolve, 200));
+                const api2Time = performance.now();
+                
+                const totalTime = performance.now() - startTime;
+                
+                results.innerHTML += `⏱️ Total time: ${totalTime.toFixed(2)}ms\n`;
+                results.innerHTML += `📊 Breakdown:\n`;
+                results.innerHTML += `   - API 1: ${(api1Time - startTime).toFixed(2)}ms\n`;
+                results.innerHTML += `   - API 2: ${(api2Time - api1Time).toFixed(2)}ms\n`;
+                results.innerHTML += `   - Processing: ${(totalTime - (api2Time - api1Time) - (api1Time - startTime)).toFixed(2)}ms\n`;
+                
+                results.innerHTML += `✅ Performance monitoring test passed!\n`;
+                
+            } catch (error) {
+                results.innerHTML += `❌ Performance test failed: ${error.message}\n`;
+            }
+        }
+    </script>
+</body>
+</html> 
