@@ -283,7 +283,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     params: 'selections=personalstats'
                 },
                 {
-                    name: 'factionData',
+                    name: 'factionInfo',
+                    url: `https://api.torn.com/v2/faction/${factionID}`,
+                    params: ''
+                },
+                {
+                    name: 'factionMembers',
                     url: `https://api.torn.com/v2/faction/${factionID}/members`,
                     params: 'striptags=true'
                 }
@@ -295,18 +300,23 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log(`Torn API calls completed in ${(tornEndTime - tornStartTime).toFixed(2)}ms`);
             
             const myTotalStats = tornData.userStats.personalstats.totalstats;
-            const factionData = tornData.factionData;
-            
-            // The v2 API returns members in a different structure
-            const membersArray = factionData.members || [];
+            console.log('Faction info object:', tornData.factionInfo);
+            let factionName = tornData.factionInfo?.basic?.name;
+            if (!factionName && tornData.factionInfo?.name) {
+                factionName = tornData.factionInfo.name;
+            }
+            if (!factionName && tornData.factionInfo?.faction_name) {
+                factionName = tornData.factionInfo.faction_name;
+            }
+            if (!factionName) {
+                factionName = `[Name not available] (ID: ${factionID})`;
+            }
+            const membersArray = tornData.factionMembers?.members || [];
             const memberIDs = membersArray.map(member => member.id.toString());
             const membersObject = {};
             membersArray.forEach(member => {
                 membersObject[member.id] = { name: member.name };
             });
-            
-            // For faction name, we'll need to fetch it separately or use a placeholder
-            const factionName = `Faction ${factionID}`;
             
             console.log(`Successfully fetched ${memberIDs.length} members.`);
 
@@ -646,15 +656,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const membersArray = members.members || [];
             console.log(`Found ${membersArray.length} members in array`);
             
+            // Track current members for UI styling
+            const currentMembers = new Set();
+            
             membersArray.forEach(member => {
                 memberStats[member.id] = {
                     name: member.name,
                     chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
-                    wars: { total: 0, points: 0 }
+                    wars: { total: 0, points: 0 },
+                    warParticipation: 0 // Track how many wars they participated in
                 };
+                currentMembers.add(member.id.toString());
             });
 
             console.log(`Initialized stats for ${Object.keys(memberStats).length} members.`);
+            console.log(`Current members set:`, Array.from(currentMembers));
 
             // Step 1: Fetch ranked war list first to determine start date if needed
             console.log('Fetching ranked war list...');
@@ -767,7 +783,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 const warReportData = await fetchTornApiInChunks(apiKey, warReportRequests);
-                processRankedWarReports(warReportData, memberStats, factionID);
+                processRankedWarReports(warReportData, memberStats, factionID, currentMembers);
             }
 
             console.log('Calling updateWarReportUI...');
@@ -851,12 +867,38 @@ document.addEventListener('DOMContentLoaded', () => {
         table.innerHTML = `
             <thead>
                 <tr>
-                    <th data-column="name">Member <span class="sort-indicator">${'name' === currentSortColumn ? (currentSortDirection === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    ${columns.map(col => `<th class="column-${col.id}" data-column="${col.id}">${col.label} <span class="sort-indicator">${col.id === currentSortColumn ? (currentSortDirection === 'asc' ? '↑' : '↓') : ''}</span></th>`).join('')}
+                    <th rowspan="3">Member</th>
+                    <th colspan="5" class="chain-header">
+                        Chain Activity
+                        <div class="date-range-label">${chainDateRangeLabel}</div>
+                    </th>
+                    <th colspan="2" class="war-header" style="border-left: 2px solid var(--accent-color);">
+                        War Activity
+                        <div class="date-range-label">${warDateRangeLabel}</div>
+                    </th>
                 </tr>
-                <tr class="totals-row">
-                    <th>Faction Total</th>
-                    ${columns.map(col => `<th class="column-${col.id}" data-column="${col.id}">${totals[col.id]}</th>`).join('')}
+                <tr>
+                    <th data-column="chains.total" data-table-id="summary">Total Hits <span class="sort-indicator">
+                        ${summarySort.column === 'chains.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                    </span></th>
+                    <th data-column="chains.assists" data-table-id="summary">Assists <span class="sort-indicator">
+                        ${summarySort.column === 'chains.assists' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                    </span></th>
+                    <th data-column="chains.retaliations" data-table-id="summary">Retals <span class="sort-indicator">
+                        ${summarySort.column === 'chains.retaliations' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                    </span></th>
+                    <th data-column="chains.overseas" data-table-id="summary">Overseas <span class="sort-indicator">
+                        ${summarySort.column === 'chains.overseas' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                    </span></th>
+                    <th data-column="chains.war" data-table-id="summary">War Hits <span class="sort-indicator">
+                        ${summarySort.column === 'chains.war' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                    </span></th>
+                    <th data-column="wars.total" data-table-id="summary" style="border-left: 2px solid var(--accent-color);">Total Hits <span class="sort-indicator">
+                        ${summarySort.column === 'wars.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                    </span></th>
+                    <th data-column="wars.points" data-table-id="summary">Points Scored <span class="sort-indicator">
+                        ${summarySort.column === 'wars.points' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                    </span></th>
                 </tr>
             </thead>
             <tbody>
@@ -945,20 +987,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function fetchTornApiInChunks(apiKey, requests, chunkSize = 10, delay = 6000) {
         const allData = {};
-        const totalChunks = Math.ceil(requests.length / chunkSize);
-        console.log(`Preparing to fetch ${requests.length} reports in ${totalChunks} chunks.`);
+        const firstBurstCount = 50;
+        const throttleDelay = 667; // ms between chunks after burst
+        const burstChunkSize = chunkSize; // use same chunk size for burst
+        
+        // Split requests
+        const burstRequests = requests.slice(0, firstBurstCount);
+        const throttledRequests = requests.slice(firstBurstCount);
 
-        for (let i = 0; i < requests.length; i += chunkSize) {
-            const chunk = requests.slice(i, i + chunkSize);
-            const currentChunkNum = (i / chunkSize) + 1;
-            console.log(`Fetching chunk ${currentChunkNum} of ${totalChunks} (${chunk.length} requests)...`);
-            
-            const chunkData = await batchTornApiCalls(apiKey, chunk, chunkSize);
-            Object.assign(allData, chunkData);
+        // --- Burst phase ---
+        if (burstRequests.length > 0) {
+            const burstChunks = Math.ceil(burstRequests.length / burstChunkSize);
+            console.log(`Burst phase: Fetching first ${burstRequests.length} requests in ${burstChunks} chunks as fast as possible...`);
+            for (let i = 0; i < burstRequests.length; i += burstChunkSize) {
+                const chunk = burstRequests.slice(i, i + burstChunkSize);
+                const chunkData = await batchTornApiCalls(apiKey, chunk, burstChunkSize);
+                Object.assign(allData, chunkData);
+            }
+        }
 
-            if (i + chunkSize < requests.length) {
-                console.log(`Waiting for ${delay / 1000}s before next chunk to respect rate limits...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+        // --- Wait 30 seconds if there are more requests ---
+        if (throttledRequests.length > 0) {
+            console.log('Waiting 30 seconds after burst to respect API rate limits...');
+            await new Promise(resolve => setTimeout(resolve, 30000));
+        }
+
+        // --- Throttled phase ---
+        if (throttledRequests.length > 0) {
+            const throttleChunks = Math.ceil(throttledRequests.length / chunkSize);
+            console.log(`Throttled phase: Fetching remaining ${throttledRequests.length} requests in ${throttleChunks} chunks with ${throttleDelay}ms delay between chunks...`);
+            for (let i = 0; i < throttledRequests.length; i += chunkSize) {
+                const chunk = throttledRequests.slice(i, i + chunkSize);
+                const chunkData = await batchTornApiCalls(apiKey, chunk, chunkSize);
+                Object.assign(allData, chunkData);
+                if (i + chunkSize < throttledRequests.length) {
+                    await new Promise(resolve => setTimeout(resolve, throttleDelay));
+                }
             }
         }
         console.log('All chunks fetched.');
@@ -993,7 +1057,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function processRankedWarReports(warReportData, memberStats, ownFactionId) {
+    function processRankedWarReports(warReportData, memberStats, ownFactionId, currentMembers) {
         console.log('Processing ranked war reports for faction:', ownFactionId);
         window.individualWarsData = [];
 
@@ -1030,17 +1094,19 @@ document.addEventListener('DOMContentLoaded', () => {
                                         memberStats[memberId] = {
                                             name: memberData.name,
                                             chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
-                                            wars: { total: 0, points: 0 }
+                                            wars: { total: 0, points: 0 },
+                                            warParticipation: 0
                                         };
                                     } else {
                                         // If member exists (e.g., from a chain report), ensure their name is updated from the war report.
                                         memberStats[memberId].name = memberData.name;
                                     }
-                                    
+                                    // Always increment warParticipation for any member who appears in a war
+                                    if (typeof memberStats[memberId].warParticipation !== 'number') memberStats[memberId].warParticipation = 0;
+                                    memberStats[memberId].warParticipation += 1;
                                     // Aggregate stats for the "Total Summary" tab
                                     memberStats[memberId].wars.total += attacks;
                                     memberStats[memberId].wars.points += points;
-                                    
                                     // Populate stats for the individual war tab
                                     warData.memberStats[memberId] = {
                                         name: memberData.name,
@@ -1057,6 +1123,32 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         console.log('Final individual wars data:', window.individualWarsData);
+    }
+
+    // Helper to format date as YYYY-MM-DD
+    function formatDate(ts) {
+        if (!ts) return '';
+        const d = new Date(ts * 1000);
+        return d.toLocaleDateString();
+    }
+
+    // Helper to format date as MM/DD/YYYY HH:mm
+    function formatDateTime(ts, isEnd = false) {
+        if (!ts) return '';
+        const d = new Date(ts * 1000);
+        const date = d.toLocaleDateString();
+        const time = isEnd ? '23:59' : '00:00';
+        return `${date} ${time}`;
+    }
+
+    // Helper to format date as HH:mm:ss - DD/MM/YY (in UTC, but no label)
+    function formatDateTime(ts, isEnd = false) {
+        if (!ts) return '';
+        const d = new Date(ts * 1000);
+        const pad = n => n.toString().padStart(2, '0');
+        const time = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+        const date = `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear().toString().slice(-2)}`;
+        return `${time} - ${date}`;
     }
 
     async function handleWarReportFetch() {
@@ -1141,15 +1233,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const membersArray = members.members || [];
             console.log(`Found ${membersArray.length} members in array`);
             
+            // Track current members for UI styling
+            const currentMembers = new Set();
+            
             membersArray.forEach(member => {
                 memberStats[member.id] = {
                     name: member.name,
                     chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
-                    wars: { total: 0, points: 0 }
+                    wars: { total: 0, points: 0 },
+                    warParticipation: 0 // Track how many wars they participated in
                 };
+                currentMembers.add(member.id.toString());
             });
 
             console.log(`Initialized stats for ${Object.keys(memberStats).length} members.`);
+            console.log(`Current members set:`, Array.from(currentMembers));
 
             // Step 1: Fetch ranked war list first to determine start date if needed
             console.log('Fetching ranked war list...');
@@ -1262,11 +1360,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 const warReportData = await fetchTornApiInChunks(apiKey, warReportRequests);
-                processRankedWarReports(warReportData, memberStats, factionID);
+                processRankedWarReports(warReportData, memberStats, factionID, currentMembers);
             }
 
             console.log('Calling updateWarReportUI...');
-            updateWarReportUI(memberStats, startTime);
+            // After final date range is determined and before calling updateWarReportUI:
+            // Use the actual earliest war start timestamp for the range
+            let actualStartTimestamp = fromTimestamp;
+            if (!startDate && warsToAnalyze.length > 0) {
+                actualStartTimestamp = warsToAnalyze.reduce((earliest, current) =>
+                    (current.start < earliest.start) ? current : earliest
+                ).start;
+            }
+            const chainDateRangeLabel = `(${formatDateTime(actualStartTimestamp)} to ${formatDateTime(toTimestamp, true)})`;
+            const warDateRangeLabel = `(${formatDateTime(actualStartTimestamp)} to ${formatDateTime(toTimestamp, true)})`;
+            updateWarReportUI(memberStats, startTime, 'total-summary', chainDateRangeLabel, warDateRangeLabel, currentMembers, warsToAnalyze.length);
 
         } catch (error) {
             console.error('Failed to fetch war reports:', error);
@@ -1277,7 +1385,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function updateWarReportUI(memberStats, startTime, activeTabId = 'total-summary') {
+    function updateWarReportUI(memberStats, startTime, activeTabId = 'total-summary', chainDateRangeLabel = '', warDateRangeLabel = '', currentMembers = new Set(), totalWars = 0) {
         console.log('Starting updateWarReportUI...');
         
         const resultsSection = document.querySelector('.results-section');
@@ -1343,27 +1451,54 @@ document.addEventListener('DOMContentLoaded', () => {
                             <table id="membersTable">
                                 <thead>
                                     <tr>
-                                        <th colspan="2" style="text-align: center; border-left: 2px solid var(--accent-color);">War Activity</th>
+                                        <th rowspan="3">Member</th>
+                                        <th colspan="5" class="chain-header">
+                                            Chain Activity
+                                            <div class="date-range-label">${chainDateRangeLabel}</div>
+                                        </th>
+                                        <th colspan="2" class="war-header" style="border-left: 2px solid var(--accent-color);">
+                                            War Activity
+                                            <div class="date-range-label">${warDateRangeLabel}</div>
+                                        </th>
                                     </tr>
                                     <tr>
-                                        <th data-column="name" data-table-id="summary">Member <span class="sort-indicator">${summarySort.column === 'name' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                                        <th data-column="chains.total" data-table-id="summary">Total Hits <span class="sort-indicator">${summarySort.column === 'chains.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                                        <th data-column="chains.assists" data-table-id="summary">Assists <span class="sort-indicator">${summarySort.column === 'chains.assists' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                                        <th data-column="chains.retaliations" data-table-id="summary">Retals <span class="sort-indicator">${summarySort.column === 'chains.retaliations' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                                        <th data-column="chains.overseas" data-table-id="summary">Overseas <span class="sort-indicator">${summarySort.column === 'chains.overseas' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                                        <th data-column="chains.war" data-table-id="summary">War Hits <span class="sort-indicator">${summarySort.column === 'chains.war' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                                        <th data-column="wars.total" data-table-id="summary" style="border-left: 2px solid var(--accent-color);">Total Hits <span class="sort-indicator">${summarySort.column === 'wars.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                                        <th data-column="wars.points" data-table-id="summary">Points Scored <span class="sort-indicator">${summarySort.column === 'wars.points' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="chains.total" data-table-id="summary">Total Hits <span class="sort-indicator">
+                                            ${summarySort.column === 'chains.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                                        </span></th>
+                                        <th data-column="chains.assists" data-table-id="summary">Assists <span class="sort-indicator">
+                                            ${summarySort.column === 'chains.assists' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                                        </span></th>
+                                        <th data-column="chains.retaliations" data-table-id="summary">Retals <span class="sort-indicator">
+                                            ${summarySort.column === 'chains.retaliations' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                                        </span></th>
+                                        <th data-column="chains.overseas" data-table-id="summary">Overseas <span class="sort-indicator">
+                                            ${summarySort.column === 'chains.overseas' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                                        </span></th>
+                                        <th data-column="chains.war" data-table-id="summary">War Hits <span class="sort-indicator">
+                                            ${summarySort.column === 'chains.war' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                                        </span></th>
+                                        <th data-column="wars.total" data-table-id="summary" style="border-left: 2px solid var(--accent-color);">Total Hits <span class="sort-indicator">
+                                            ${summarySort.column === 'wars.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                                        </span></th>
+                                        <th data-column="wars.points" data-table-id="summary">Points Scored <span class="sort-indicator">
+                                            ${summarySort.column === 'wars.points' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                                        </span></th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${membersArray.map(m => `
+                                    ${membersArray.map(m => {
+                                        const isCurrentMember = currentMembers.has(m.id.toString());
+                                        const participation = typeof m.warParticipation === 'number' && !isNaN(m.warParticipation) ? m.warParticipation : 0;
+                                        const warsTotal = (typeof totalWars === 'number' && totalWars > 0) ? totalWars : 1;
+                                        const participationRatio = `(${participation}/${warsTotal})`;
+                                        const memberClass = isCurrentMember ? '' : 'former-member';
+                                        return `
                                         <tr>
-                                            <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank">${m.name}</a></td>
+                                            <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" class="${memberClass}">${m.name} ${participationRatio}</a></td>
                                             <td>${m.chains.total}</td><td>${m.chains.assists}</td><td>${m.chains.retaliations}</td><td>${m.chains.overseas}</td><td>${m.chains.war}</td>
                                             <td style="border-left: 2px solid var(--accent-color);">${m.wars.total}</td><td>${Math.round(m.wars.points)}</td>
                                         </tr>
-                                    `).join('')}
+                                    `}).join('')}
                                 </tbody>
                                 <tfoot>
                                     <tr class="totals-row">
@@ -1407,14 +1542,18 @@ document.addEventListener('DOMContentLoaded', () => {
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${sortedMembers.map(([id, m]) => `
-                                            <tr>
-                                                <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank">${m.name}</a></td>
-                                                <td>${m.level || 'N/A'}</td>
-                                                <td>${Math.round(m.points || 0)}</td>
-                                                <td>${m.attacks || 0}</td>
-                                            </tr>
-                                        `).join('')}
+                                        ${sortedMembers.map(([id, m]) => {
+                                            const isCurrentMember = currentMembers.has(id.toString());
+                                            const memberClass = isCurrentMember ? '' : 'former-member';
+                                            return `
+                                                <tr>
+                                                    <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" class="${memberClass}">${m.name}</a></td>
+                                                    <td>${m.level || 'N/A'}</td>
+                                                    <td>${Math.round(m.points || 0)}</td>
+                                                    <td>${m.attacks || 0}</td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
                                     </tbody>
                                 </table>
                             </div>
@@ -1428,27 +1567,54 @@ document.addEventListener('DOMContentLoaded', () => {
                 <table id="membersTable">
                     <thead>
                         <tr>
-                            <th colspan="2" style="text-align: center; border-left: 2px solid var(--accent-color);">War Activity</th>
+                            <th rowspan="3">Member</th>
+                            <th colspan="5" class="chain-header">
+                                Chain Activity
+                                <div class="date-range-label">${chainDateRangeLabel}</div>
+                            </th>
+                            <th colspan="2" class="war-header" style="border-left: 2px solid var(--accent-color);">
+                                War Activity
+                                <div class="date-range-label">${warDateRangeLabel}</div>
+                            </th>
                         </tr>
                         <tr>
-                            <th data-column="name" data-table-id="summary">Member <span class="sort-indicator">${summarySort.column === 'name' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                            <th data-column="chains.total" data-table-id="summary">Total Hits <span class="sort-indicator">${summarySort.column === 'chains.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                            <th data-column="chains.assists" data-table-id="summary">Assists <span class="sort-indicator">${summarySort.column === 'chains.assists' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                            <th data-column="chains.retaliations" data-table-id="summary">Retals <span class="sort-indicator">${summarySort.column === 'chains.retaliations' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                            <th data-column="chains.overseas" data-table-id="summary">Overseas <span class="sort-indicator">${summarySort.column === 'chains.overseas' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                            <th data-column="chains.war" data-table-id="summary">War Hits <span class="sort-indicator">${summarySort.column === 'chains.war' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                            <th data-column="wars.total" data-table-id="summary" style="border-left: 2px solid var(--accent-color);">Total Hits <span class="sort-indicator">${summarySort.column === 'wars.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                            <th data-column="wars.points" data-table-id="summary">Points Scored <span class="sort-indicator">${summarySort.column === 'wars.points' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="chains.total" data-table-id="summary">Total Hits <span class="sort-indicator">
+                                ${summarySort.column === 'chains.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                            </span></th>
+                            <th data-column="chains.assists" data-table-id="summary">Assists <span class="sort-indicator">
+                                ${summarySort.column === 'chains.assists' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                            </span></th>
+                            <th data-column="chains.retaliations" data-table-id="summary">Retals <span class="sort-indicator">
+                                ${summarySort.column === 'chains.retaliations' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                            </span></th>
+                            <th data-column="chains.overseas" data-table-id="summary">Overseas <span class="sort-indicator">
+                                ${summarySort.column === 'chains.overseas' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                            </span></th>
+                            <th data-column="chains.war" data-table-id="summary">War Hits <span class="sort-indicator">
+                                ${summarySort.column === 'chains.war' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                            </span></th>
+                            <th data-column="wars.total" data-table-id="summary" style="border-left: 2px solid var(--accent-color);">Total Hits <span class="sort-indicator">
+                                ${summarySort.column === 'wars.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                            </span></th>
+                            <th data-column="wars.points" data-table-id="summary">Points Scored <span class="sort-indicator">
+                                ${summarySort.column === 'wars.points' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}
+                            </span></th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${membersArray.map(m => `
+                        ${membersArray.map(m => {
+                            const isCurrentMember = currentMembers.has(m.id.toString());
+                            const participation = typeof m.warParticipation === 'number' && !isNaN(m.warParticipation) ? m.warParticipation : 0;
+                            const warsTotal = (typeof totalWars === 'number' && totalWars > 0) ? totalWars : 1;
+                            const participationRatio = `(${participation}/${warsTotal})`;
+                            const memberClass = isCurrentMember ? '' : 'former-member';
+                            return `
                             <tr>
-                                <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank">${m.name}</a></td>
+                                <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" class="${memberClass}">${m.name} ${participationRatio}</a></td>
                                 <td>${m.chains.total}</td><td>${m.chains.assists}</td><td>${m.chains.retaliations}</td><td>${m.chains.overseas}</td><td>${m.chains.war}</td>
                                 <td style="border-left: 2px solid var(--accent-color);">${m.wars.total}</td><td>${Math.round(m.wars.points)}</td>
                             </tr>
-                        `).join('')}
+                        `}).join('')}
                     </tbody>
                     <tfoot>
                         <tr class="totals-row">
@@ -1505,7 +1671,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // Determine the active tab directly from the sorted table's ID
                 const activeTabId = tableId === 'summary' ? 'total-summary' : tableId;
-                updateWarReportUI(memberStats, startTime, activeTabId);
+                updateWarReportUI(memberStats, startTime, activeTabId, chainDateRangeLabel, warDateRangeLabel, currentMembers, totalWars);
             });
         });
         
