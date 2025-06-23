@@ -110,7 +110,7 @@ label {
     color: var(--accent-color);
 }
 
-input[type="text"], select {
+input[type="text"], input[type="number"], select {
     width: 100%;
     padding: 8px;
     margin-bottom: 10px;
@@ -481,4 +481,125 @@ nav a:hover::after {
 .api-key-item input:focus {
     outline: none;
     border-color: var(--accent-color);
+}
+
+/* Tab styles */
+.war-tabs {
+    background-color: var(--secondary-color);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-top: 20px;
+}
+
+.tab-buttons {
+    display: flex;
+    background-color: var(--primary-color);
+    border-bottom: 1px solid var(--border-color);
+    overflow-x: auto;
+}
+
+.tab-button {
+    background-color: transparent;
+    color: var(--text-color);
+    border: none;
+    padding: 12px 20px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    white-space: nowrap;
+    border-bottom: 3px solid transparent;
+}
+
+.tab-button:hover {
+    background-color: rgba(255, 215, 0, 0.1);
+    color: var(--accent-color);
+}
+
+.tab-button.active {
+    background-color: var(--secondary-color);
+    color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
+}
+
+.tab-content {
+    padding: 20px;
+}
+
+.tab-pane {
+    display: none;
+}
+
+.tab-pane.active {
+    display: block;
+}
+
+.war-info {
+    background-color: var(--primary-color);
+    padding: 15px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    border-left: 4px solid var(--accent-color);
+}
+
+.war-info h4 {
+    color: var(--accent-color);
+    margin: 0 0 10px 0;
+}
+
+.war-info p {
+    margin: 5px 0;
+    color: var(--text-color);
+}
+
+.war-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.war-table th, .war-table td {
+    padding: 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.war-table th {
+    background-color: var(--primary-color);
+    color: var(--accent-color);
+    font-weight: bold;
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 25px;
+}
+
+.war-table tr:hover {
+    background-color: rgba(255, 215, 0, 0.05);
+}
+
+.war-table a {
+    color: var(--accent-color);
+    text-decoration: none;
+}
+
+.war-table a:hover {
+    text-decoration: underline;
+}
+
+/* Responsive tab design */
+@media (max-width: 768px) {
+    .tab-buttons {
+        flex-direction: column;
+    }
+    
+    .tab-button {
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+        border-right: none;
+    }
+    
+    .tab-button.active {
+        border-bottom-color: var(--accent-color);
+        border-right-color: transparent;
+    }
 }

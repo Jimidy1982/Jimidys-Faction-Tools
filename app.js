@@ -112,14 +112,19 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Make parallel requests for this batch
             const batchPromises = batch.map(async (request) => {
-                const cacheKey = `${request.url}_${request.params}`;
+                const cacheKey = `${request.url}?${request.params}`; // Use '?' for clarity
                 const cached = getCachedData(cacheKey);
                 if (cached) {
                     console.log(`Using cached data for: ${request.name}`);
                     return { name: request.name, data: cached };
                 }
                 
-                const fullUrl = `${request.url}?${request.params}&key=${apiKey}`;
+                let fullUrl = request.url;
+                if (request.params) {
+                    fullUrl += `?${request.params}`;
+                }
+                fullUrl += `${request.params ? '&' : '?'}key=${apiKey}`;
+
                 const response = await fetch(fullUrl);
                 const data = await response.json();
                 
@@ -173,6 +178,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 initConsumptionTracker();
             } else if (page.includes('faction-battle-stats')) {
                 initBattleStats();
+            } else if (page.includes('war-chain-reporter')) {
+                initWarChainReporter();
             }
         } catch (error) {
             console.error('Failed to load page:', error);
@@ -199,18 +206,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 handleConsumptionFetch();
             } else if (target.id === 'fetchFactionStats') {
                 handleBattleStatsFetch();
-            } else if (target.closest('th[data-column]')) {
-                // Handle table sorting for consumption tracker
-                const header = target.closest('th[data-column]');
-                const column = header.dataset.column;
-                const currentDirection = document.getElementById('sortDirection').value;
-                const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
-                
-                document.getElementById('sortColumn').value = column;
-                document.getElementById('sortDirection').value = newDirection;
-                
-                const sortedMembers = sortConsumptionMembers(fetchedMembers, column, newDirection);
-                updateConsumptionUI(sortedMembers);
+            } else if (target.id === 'fetchWarReports') {
+                handleWarReportFetch();
             } else if (target.id === 'exportCSV') {
                 exportToCSV();
             } else if (target.classList.contains('column-toggle')) {
@@ -287,8 +284,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 },
                 {
                     name: 'factionData',
-                    url: `https://api.torn.com/faction/${factionID}`,
-                    params: 'selections=basic'
+                    url: `https://api.torn.com/v2/faction/${factionID}/members`,
+                    params: 'striptags=true'
                 }
             ];
 
@@ -300,9 +297,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const myTotalStats = tornData.userStats.personalstats.totalstats;
             const factionData = tornData.factionData;
             
-            const memberIDs = Object.keys(factionData.members);
-            const membersObject = factionData.members;
-            const factionName = factionData.name;
+            // The v2 API returns members in a different structure
+            const membersArray = factionData.members || [];
+            const memberIDs = membersArray.map(member => member.id.toString());
+            const membersObject = {};
+            membersArray.forEach(member => {
+                membersObject[member.id] = { name: member.name };
+            });
+            
+            // For faction name, we'll need to fetch it separately or use a placeholder
+            const factionName = `Faction ${factionID}`;
             
             console.log(`Successfully fetched ${memberIDs.length} members.`);
 
@@ -520,6 +524,30 @@ document.addEventListener('DOMContentLoaded', () => {
     let fetchedMembers = []; // Store fetched members data globally for sorting
 
     function initConsumptionTracker() {
+        // Add specific listener for this tool's table sorting
+        const tableContainer = document.getElementById('membersTable');
+        if(tableContainer) {
+            tableContainer.addEventListener('click', (event) => {
+                const header = event.target.closest('th[data-column]');
+                if (!header) return;
+
+                const column = header.dataset.column;
+                const sortColumnInput = document.getElementById('sortColumn');
+                const sortDirectionInput = document.getElementById('sortDirection');
+                
+                if (sortColumnInput && sortDirectionInput) {
+                    const currentDirection = sortDirectionInput.value;
+                    const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
+                    
+                    sortColumnInput.value = column;
+                    sortDirectionInput.value = newDirection;
+                    
+                    const sortedMembers = sortConsumptionMembers(fetchedMembers, column, newDirection);
+                    updateConsumptionUI(sortedMembers);
+                }
+            });
+        }
+
         const fetchBtn = document.getElementById('fetchData');
         if (fetchBtn) {
             fetchBtn.addEventListener('click', handleConsumptionFetch);
@@ -528,11 +556,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const endDateInput = document.getElementById('endDate');
 
         if (startDateInput && endDateInput) {
-            flatpickr(startDateInput, {
+            const startDatePicker = flatpickr(startDateInput, {
                 dateFormat: "Y-m-d",
             });
             flatpickr(endDateInput, {
                 dateFormat: "Y-m-d",
+                defaultDate: "today",
             });
         }
         
@@ -554,109 +583,202 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('Please enter your API key in the sidebar first');
             return;
         }
-        const startDate = document.getElementById('startDate').value;
-        const endDate = document.getElementById('endDate').value;
+        const startDateInput = document.getElementById('startDate');
+        const endDateInput = document.getElementById('endDate');
 
-        if (!startDate || !endDate) {
+        if (!startDateInput || !endDateInput) {
             alert('Please fill in all fields');
             return;
         }
 
-        const startEpoch = Math.floor(new Date(startDate).getTime() / 1000);
-        const endEpoch = Math.floor(new Date(endDate).getTime() / 1000) + 86399;
+        // Handle date range - use earliest war as start date if not provided
+        let startDate = startDateInput.value;
+        let endDate = endDateInput.value;
+        
+        // If no end date provided, default to today
+        if (!endDate) {
+            endDate = new Date().toISOString().split('T')[0];
+            console.log(`No end date provided, using default: ${endDate}`);
+        }
 
-        const loadingSpinner = document.getElementById('loadingSpinner');
-        loadingSpinner.style.display = 'inline-block';
-        document.getElementById('fetchData').disabled = true;
+        // Convert end date to timestamp
+        const toTimestamp = Math.floor(new Date(endDate + 'T23:59:59Z').getTime() / 1000);
+        
+        // If no start date provided, we'll set it after fetching ranked wars
+        let fromTimestamp = null;
+        if (startDate) {
+            fromTimestamp = Math.floor(new Date(startDate + 'T00:00:00Z').getTime() / 1000);
+            console.log(`Using provided start date: ${startDate} (${fromTimestamp})`);
+        } else {
+            console.log('No start date provided, will set to earliest war after fetching ranked wars');
+        }
+        
+        console.log(`End date: ${endDate} (${toTimestamp})`);
+        console.log(`Final date range: ${fromTimestamp} to ${toTimestamp}`);
+        console.log(`Final date range (human readable): ${new Date(fromTimestamp * 1000).toLocaleDateString()} to ${new Date(toTimestamp * 1000).toLocaleDateString()}`);
 
         try {
-            const cacheKey = `consumption_${apiKey.slice(0, 6)}_${startEpoch}_${endEpoch}`;
-            const cachedData = getCachedData(cacheKey);
+            loadingSpinner.style.display = 'inline-block';
+            fetchBtn.disabled = true;
+            resultsSection.innerHTML = '<div class="loading-bar"><div class="loading-text">Fetching data...<div class="loading-dots"></div></div></div>';
 
-            if (cachedData) {
-                console.log('Using cached consumption data.');
-                fetchedMembers = cachedData;
-                wasCached = true;
-            } else {
-                let allNews = [];
-                let url = `https://api.torn.com/v2/faction/news?striptags=false&limit=100&sort=DESC&cat=armoryAction&timestamp=${endEpoch}&key=${apiKey}`;
-                let keepFetching = true;
+            // Initialize member stats
+            const memberStats = {};
+            console.log('Fetching current member list...');
+            
+            const memberRequest = {
+                name: 'members',
+                url: `https://api.torn.com/v2/faction/${factionID}/members`,
+                params: 'striptags=true'
+            };
 
-                while (keepFetching && url) {
-                    await new Promise(resolve => setTimeout(resolve, 667)); // ~3 calls every 2 seconds
-                    const response = await fetch(url);
-                    const data = await response.json();
-                    if (data.error) throw new Error(data.error.error || data.error);
-                    const news = data.news || [];
-                    if (news.length === 0) break;
+            const memberData = await batchTornApiCalls(apiKey, [memberRequest]);
+            const members = memberData.members || {};
+            
+            console.log('Raw member data:', memberData);
+            console.log('Members object keys:', Object.keys(members));
+            if (Object.keys(members).length > 0) {
+                console.log('First member data:', Object.values(members)[0]);
+            }
 
-                    const filtered = news.filter(entry => entry.timestamp >= startEpoch && entry.timestamp <= endEpoch);
-                    allNews = allNews.concat(filtered);
-
-                    const oldest = news[news.length - 1];
-                    if (oldest && oldest.timestamp > startEpoch && data._metadata && data._metadata.links && data._metadata.links.prev) {
-                        url = data._metadata.links.prev + `&key=${apiKey}`;
-                    } else {
-                        keepFetching = false;
-                    }
-                }
-
-                const itemLogs = {
-                    xanax: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('xanax')),
-                    bloodBag: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('blood bag')),
-                    firstAidKit: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('first aid kit')),
-                    smallFirstAidKit: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('small first aid kit')),
-                    morphine: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('morphine')),
-                    ipecacSyrup: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('ipecac syrup')),
-                    beer: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('bottle of beer')),
-                    lollipop: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('lollipop')),
-                    energyCans: allNews.filter(entry => entry.text && entry.text.toLowerCase().includes('energy can'))
+            // Initialize stats for all current members
+            // The members data is nested under a 'members' key as an array
+            const membersArray = members.members || [];
+            console.log(`Found ${membersArray.length} members in array`);
+            
+            membersArray.forEach(member => {
+                memberStats[member.id] = {
+                    name: member.name,
+                    chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
+                    wars: { total: 0, points: 0 }
                 };
+            });
 
-                const memberItems = {};
-                Object.keys(itemLogs).forEach(item => {
-                    itemLogs[item].forEach(entry => {
-                        const match = entry.text.match(/^(.*?) used/i);
-                        if (match) {
-                            let name = match[1].trim();
-                            if (name.includes('[')) name = name.substring(0, name.lastIndexOf('[')).trim();
-                            if (!memberItems[name]) memberItems[name] = {};
-                            if (!memberItems[name][item]) memberItems[name][item] = 0;
-                            memberItems[name][item]++;
-                        }
-                    });
+            console.log(`Initialized stats for ${Object.keys(memberStats).length} members.`);
+
+            // Step 1: Fetch ranked war list first to determine start date if needed
+            console.log('Fetching ranked war list...');
+            const warListRequest = {
+                name: 'rankedwars',
+                url: `https://api.torn.com/v2/faction/${factionID}/rankedwars`,
+                params: ''
+            };
+
+            const warListData = await batchTornApiCalls(apiKey, [warListRequest]);
+            const warsResponse = warListData.rankedwars || {};
+            
+            // The API returns wars in a "rankedwars" array, not as individual keys
+            const allWarsArray = warsResponse.rankedwars || [];
+            console.log(`Found ${allWarsArray.length} total ranked wars in the array.`);
+
+            // Slice the array to only include the number of wars requested
+            const warsToAnalyze = allWarsArray.slice(0, warCount);
+            console.log(`Analyzing the ${warsToAnalyze.length} most recent wars.`);
+
+            // If no start date was provided, set it to the earliest war *from the analyzed slice*
+            if (!fromTimestamp && warsToAnalyze.length > 0) {
+                const earliestWar = warsToAnalyze.reduce((earliest, current) => 
+                    (current.start < earliest.start) ? current : earliest
+                );
+                console.log('Earliest war found:', earliestWar);
+                fromTimestamp = earliestWar.start;
+                const earliestDate = new Date(earliestWar.start * 1000).toISOString().split('T')[0];
+                console.log(`No start date provided, using earliest war: ${earliestDate} (${fromTimestamp})`);
+                
+                // Update the start date input field
+                if (startDateInput && startDateInput._flatpickr) {
+                    startDateInput._flatpickr.setDate(new Date(earliestWar.start * 1000), false);
+                    console.log(`Updated start date input field to: ${new Date(earliestWar.start * 1000).toLocaleDateString()}`);
+                } else {
+                    console.log('Could not update start date input field - flatpickr not found');
+                }
+            } else if (!fromTimestamp) {
+                // No wars found and no start date provided, use a reasonable default
+                fromTimestamp = Math.floor((Date.now() - (30 * 24 * 60 * 60 * 1000)) / 1000); // 30 days ago
+                console.log(`No start date provided and no wars found, using 30 days ago: ${fromTimestamp}`);
+            }
+
+            console.log(`Final date range: ${fromTimestamp} to ${toTimestamp}`);
+            console.log(`Final date range (human readable): ${new Date(fromTimestamp * 1000).toLocaleDateString()} to ${new Date(toTimestamp * 1000).toLocaleDateString()}`);
+
+            // Step 2: Fetch chains within date range
+            console.log('Fetching recent chains...');
+            const chainListRequest = {
+                name: 'chains',
+                url: `https://api.torn.com/v2/faction/${factionID}/chains`,
+                params: `limit=100&sort=DESC&to=${toTimestamp}&from=${fromTimestamp}&timestamp=${Math.floor(Date.now() / 1000)}`
+            };
+            
+            console.log(`Chain API call URL: ${chainListRequest.url}?${chainListRequest.params}`);
+            console.log(`Chain API call from timestamp: ${fromTimestamp} (${new Date(fromTimestamp * 1000).toLocaleDateString()})`);
+            console.log(`Chain API call to timestamp: ${toTimestamp} (${new Date(toTimestamp * 1000).toLocaleDateString()})`);
+
+            const chainListData = await batchTornApiCalls(apiKey, [chainListRequest]);
+            const chainsResponse = chainListData.chains || {};
+            
+            // The API returns chains in a "chains" array, not as individual keys
+            const chainsArray = chainsResponse.chains || [];
+            console.log(`Found ${chainsArray.length} chains in the array.`);
+
+            // Step 3: Fetch chain reports
+            if (chainsArray.length > 0) {
+                console.log(`Preparing to fetch reports for ${chainsArray.length} chains...`);
+                
+                // Debug: Log the structure of the first chain to understand the data format
+                if (chainsArray.length > 0) {
+                    console.log('First chain data structure:', chainsArray[0]);
+                }
+                
+                const chainReportRequests = chainsArray.map((chainData, index) => {
+                    // Each chain object should contain the faction ID that started the chain
+                    const factionIdForChain = chainData.faction || chainData.faction_id || chainData.id;
+                    console.log(`Chain ${index} -> Faction ID: ${factionIdForChain}`);
+                    
+                    return {
+                        name: `chain_${index}`,
+                        url: `https://api.torn.com/v2/faction/${factionIdForChain}/chainreport`,
+                        params: ''
+                    };
                 });
 
-                const allNames = new Set(Object.keys(memberItems));
-                fetchedMembers = Array.from(allNames).map(name => ({
-                    name,
-                    xanax: memberItems[name].xanax || 0,
-                    bloodbags: memberItems[name].bloodBag || 0,
-                    firstAidKit: memberItems[name].firstAidKit || 0,
-                    smallFirstAidKit: memberItems[name].smallFirstAidKit || 0,
-                    morphine: memberItems[name].morphine || 0,
-                    ipecacSyrup: memberItems[name].ipecacSyrup || 0,
-                    beer: memberItems[name].beer || 0,
-                    lollipop: memberItems[name].lollipop || 0,
-                    energyCans: memberItems[name].energyCans || 0
-                }));
-                
-                setCachedData(cacheKey, fetchedMembers);
+                const chainReportData = await fetchTornApiInChunks(apiKey, chainReportRequests);
+                processChainReports(chainReportData, memberStats);
             }
-            
-            const totalTime = performance.now() - startTime;
-            const cacheStats = getCacheStats();
 
-            const sortColumn = document.getElementById('sortColumn').value;
-            const sortDirection = document.getElementById('sortDirection').value;
-            const sortedMembers = sortConsumptionMembers(fetchedMembers, sortColumn, sortDirection);
-            updateConsumptionUI(sortedMembers, totalTime, cacheStats, wasCached);
+            // Step 4: Fetch ranked war reports
+            if (warsToAnalyze.length > 0) {
+                console.log(`Preparing to fetch reports for the latest ${warsToAnalyze.length} wars...`);
+                
+                // Debug: Log the structure of the first war to understand the data format
+                if (warsToAnalyze.length > 0) {
+                    console.log('First war data structure:', warsToAnalyze[0]);
+                }
+                
+                const warReportRequests = warsToAnalyze.map((warData, index) => {
+                    // Each war object should contain the war ID
+                    const warId = warData.id || warData.war_id;
+                    console.log(`War ${index} -> War ID: ${warId}`);
+                    
+                    return {
+                        name: `war_${index}`,
+                        url: `https://api.torn.com/v2/faction/${warId}/rankedwarreport`,
+                        params: ''
+                    };
+                });
+
+                const warReportData = await fetchTornApiInChunks(apiKey, warReportRequests);
+                processRankedWarReports(warReportData, memberStats, factionID);
+            }
+
+            console.log('Calling updateWarReportUI...');
+            updateWarReportUI(memberStats, startTime);
 
         } catch (error) {
-            alert('Error: ' + error.message);
+            console.error('Failed to fetch war reports:', error);
+            resultsSection.innerHTML = `<div class="error">Error: ${error.message}</div>`;
         } finally {
             loadingSpinner.style.display = 'none';
-            document.getElementById('fetchData').disabled = false;
+            fetchBtn.disabled = false;
         }
     };
 
@@ -788,4 +910,605 @@ document.addEventListener('DOMContentLoaded', () => {
         link.click();
         document.body.removeChild(link);
     }
-}); 
+
+    // --- WAR & CHAIN REPORTER ---
+    let warReportSortState = {
+        summary: { column: 'wars.total', direction: 'desc' }
+    };
+
+    function getNestedValue(obj, path) {
+        if (!path) return obj;
+        return path.split('.').reduce((acc, part) => acc && acc[part], obj);
+    }
+
+    function initWarChainReporter() {
+        const fetchBtn = document.getElementById('fetchWarReports');
+        if (fetchBtn) {
+            fetchBtn.addEventListener('click', handleWarReportFetch);
+        }
+
+        // Initialize date pickers for war chain reporter
+        const startDateInput = document.getElementById('startDate');
+        const endDateInput = document.getElementById('endDate');
+
+        if (startDateInput && endDateInput) {
+            // Initialize flatpickr instances
+            const startDatePicker = flatpickr(startDateInput, {
+                dateFormat: "Y-m-d",
+            });
+            const endDatePicker = flatpickr(endDateInput, {
+                dateFormat: "Y-m-d",
+                defaultDate: "today",
+            });
+        }
+    }
+
+    async function fetchTornApiInChunks(apiKey, requests, chunkSize = 10, delay = 6000) {
+        const allData = {};
+        const totalChunks = Math.ceil(requests.length / chunkSize);
+        console.log(`Preparing to fetch ${requests.length} reports in ${totalChunks} chunks.`);
+
+        for (let i = 0; i < requests.length; i += chunkSize) {
+            const chunk = requests.slice(i, i + chunkSize);
+            const currentChunkNum = (i / chunkSize) + 1;
+            console.log(`Fetching chunk ${currentChunkNum} of ${totalChunks} (${chunk.length} requests)...`);
+            
+            const chunkData = await batchTornApiCalls(apiKey, chunk, chunkSize);
+            Object.assign(allData, chunkData);
+
+            if (i + chunkSize < requests.length) {
+                console.log(`Waiting for ${delay / 1000}s before next chunk to respect rate limits...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+        console.log('All chunks fetched.');
+        return allData;
+    }
+
+    function processChainReports(chainReportData, memberStats) {
+        console.log('Processing chain reports...');
+        for (const [reportKey, report] of Object.entries(chainReportData)) {
+            if (report.chainreport && report.chainreport.attackers) {
+                report.chainreport.attackers.forEach(attacker => {
+                    const memberId = attacker.id.toString();
+
+                    // Ensure member exists. If not, create them with a placeholder name.
+                    if (!memberStats[memberId]) {
+                        memberStats[memberId] = {
+                            name: `User [${memberId}]`, // Placeholder, as name is not in this report
+                            chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
+                            wars: { total: 0, points: 0 }
+                        };
+                    }
+                    
+                    // Aggregate chain stats
+                    const member = memberStats[memberId];
+                    member.chains.total += attacker.attacks.total || 0;
+                    member.chains.assists += attacker.attacks.assists || 0;
+                    member.chains.retaliations += attacker.attacks.retaliations || 0;
+                    member.chains.overseas += attacker.attacks.overseas || 0;
+                    member.chains.war += attacker.attacks.war || 0;
+                });
+            }
+        }
+    }
+
+    function processRankedWarReports(warReportData, memberStats, ownFactionId) {
+        console.log('Processing ranked war reports for faction:', ownFactionId);
+        window.individualWarsData = [];
+
+        for (const [reportKey, report] of Object.entries(warReportData)) {
+            if (report.rankedwarreport) {
+                const warData = {
+                    id: report.rankedwarreport.id,
+                    timestamp: report.rankedwarreport.start,
+                    factions: {},
+                    memberStats: {},
+                    enemyFaction: { id: null, name: 'Unknown' }
+                };
+
+                if (report.rankedwarreport.factions) {
+                    for (const factionData of Object.values(report.rankedwarreport.factions)) {
+                        if (factionData.id.toString() !== ownFactionId) {
+                            warData.enemyFaction = { id: factionData.id, name: factionData.name };
+                        }
+                        
+                        warData.factions[factionData.id] = { name: factionData.name, score: factionData.score };
+
+                        if (Array.isArray(factionData.members)) {
+                            for (const memberData of factionData.members) {
+                                const memberId = memberData.id.toString();
+                                if (!memberId) continue;
+
+                                const attacks = memberData.attacks || 0;
+                                const points = memberData.points || memberData.score || 0;
+
+                                // This section is only for our faction's members
+                                if (factionData.id.toString() === ownFactionId) {
+                                    // Ensure member exists in the main stats object. If not, create them.
+                                    if (!memberStats[memberId]) {
+                                        memberStats[memberId] = {
+                                            name: memberData.name,
+                                            chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
+                                            wars: { total: 0, points: 0 }
+                                        };
+                                    } else {
+                                        // If member exists (e.g., from a chain report), ensure their name is updated from the war report.
+                                        memberStats[memberId].name = memberData.name;
+                                    }
+                                    
+                                    // Aggregate stats for the "Total Summary" tab
+                                    memberStats[memberId].wars.total += attacks;
+                                    memberStats[memberId].wars.points += points;
+                                    
+                                    // Populate stats for the individual war tab
+                                    warData.memberStats[memberId] = {
+                                        name: memberData.name,
+                                        level: memberData.level,
+                                        attacks: attacks,
+                                        points: points
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+                window.individualWarsData.push(warData);
+            }
+        }
+        console.log('Final individual wars data:', window.individualWarsData);
+    }
+
+    async function handleWarReportFetch() {
+        console.log("--- Starting War & Chain Report Fetch ---");
+        const startTime = performance.now();
+
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const resultsSection = document.querySelector('.results-section');
+        const fetchBtn = document.getElementById('fetchWarReports');
+        const factionIdInput = document.getElementById('factionId');
+        const warCountInput = document.getElementById('warCount');
+        const startDateInput = document.getElementById('startDate');
+        const endDateInput = document.getElementById('endDate');
+
+        // Check if all required elements exist
+        if (!factionIdInput || !warCountInput || !startDateInput || !endDateInput) {
+            alert('Error: Some form elements are missing. Please refresh the page and try again.');
+            return;
+        }
+
+        const apiKey = localStorage.getItem('tornApiKey');
+        const factionID = factionIdInput.value.trim();
+        const warCount = parseInt(warCountInput.value) || 5;
+
+        if (!apiKey || !factionID) {
+            alert('Please enter your API key in the sidebar and a Faction ID.');
+            return;
+        }
+
+        // Handle date range - use earliest war as start date if not provided
+        let startDate = startDateInput.value;
+        let endDate = endDateInput.value;
+        
+        // If no end date provided, default to today
+        if (!endDate) {
+            endDate = new Date().toISOString().split('T')[0];
+            console.log(`No end date provided, using default: ${endDate}`);
+        }
+
+        // Convert end date to timestamp
+        const toTimestamp = Math.floor(new Date(endDate + 'T23:59:59Z').getTime() / 1000);
+        
+        // If no start date provided, we'll set it after fetching ranked wars
+        let fromTimestamp = null;
+        if (startDate) {
+            fromTimestamp = Math.floor(new Date(startDate + 'T00:00:00Z').getTime() / 1000);
+            console.log(`Using provided start date: ${startDate} (${fromTimestamp})`);
+        } else {
+            console.log('No start date provided, will set to earliest war after fetching ranked wars');
+        }
+        
+        console.log(`End date: ${endDate} (${toTimestamp})`);
+        console.log(`Final date range: ${fromTimestamp} to ${toTimestamp}`);
+        console.log(`Final date range (human readable): ${new Date(fromTimestamp * 1000).toLocaleDateString()} to ${new Date(toTimestamp * 1000).toLocaleDateString()}`);
+
+        try {
+            loadingSpinner.style.display = 'inline-block';
+            fetchBtn.disabled = true;
+            resultsSection.innerHTML = '<div class="loading-bar"><div class="loading-text">Fetching data...<div class="loading-dots"></div></div></div>';
+
+            // Initialize member stats
+            const memberStats = {};
+            console.log('Fetching current member list...');
+            
+            const memberRequest = {
+                name: 'members',
+                url: `https://api.torn.com/v2/faction/${factionID}/members`,
+                params: 'striptags=true'
+            };
+
+            const memberData = await batchTornApiCalls(apiKey, [memberRequest]);
+            const members = memberData.members || {};
+            
+            console.log('Raw member data:', memberData);
+            console.log('Members object keys:', Object.keys(members));
+            if (Object.keys(members).length > 0) {
+                console.log('First member data:', Object.values(members)[0]);
+            }
+
+            // Initialize stats for all current members
+            // The members data is nested under a 'members' key as an array
+            const membersArray = members.members || [];
+            console.log(`Found ${membersArray.length} members in array`);
+            
+            membersArray.forEach(member => {
+                memberStats[member.id] = {
+                    name: member.name,
+                    chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
+                    wars: { total: 0, points: 0 }
+                };
+            });
+
+            console.log(`Initialized stats for ${Object.keys(memberStats).length} members.`);
+
+            // Step 1: Fetch ranked war list first to determine start date if needed
+            console.log('Fetching ranked war list...');
+            const warListRequest = {
+                name: 'rankedwars',
+                url: `https://api.torn.com/v2/faction/${factionID}/rankedwars`,
+                params: ''
+            };
+
+            const warListData = await batchTornApiCalls(apiKey, [warListRequest]);
+            const warsResponse = warListData.rankedwars || {};
+            
+            // The API returns wars in a "rankedwars" array, not as individual keys
+            const allWarsArray = warsResponse.rankedwars || [];
+            console.log(`Found ${allWarsArray.length} total ranked wars in the array.`);
+
+            // Slice the array to only include the number of wars requested
+            const warsToAnalyze = allWarsArray.slice(0, warCount);
+            console.log(`Analyzing the ${warsToAnalyze.length} most recent wars.`);
+
+            // If no start date was provided, set it to the earliest war *from the analyzed slice*
+            if (!fromTimestamp && warsToAnalyze.length > 0) {
+                const earliestWar = warsToAnalyze.reduce((earliest, current) => 
+                    (current.start < earliest.start) ? current : earliest
+                );
+                console.log('Earliest war found:', earliestWar);
+                fromTimestamp = earliestWar.start;
+                const earliestDate = new Date(earliestWar.start * 1000).toISOString().split('T')[0];
+                console.log(`No start date provided, using earliest war: ${earliestDate} (${fromTimestamp})`);
+                
+                // Update the start date input field
+                if (startDateInput && startDateInput._flatpickr) {
+                    startDateInput._flatpickr.setDate(new Date(earliestWar.start * 1000), false);
+                    console.log(`Updated start date input field to: ${new Date(earliestWar.start * 1000).toLocaleDateString()}`);
+                } else {
+                    console.log('Could not update start date input field - flatpickr not found');
+                }
+            } else if (!fromTimestamp) {
+                // No wars found and no start date provided, use a reasonable default
+                fromTimestamp = Math.floor((Date.now() - (30 * 24 * 60 * 60 * 1000)) / 1000); // 30 days ago
+                console.log(`No start date provided and no wars found, using 30 days ago: ${fromTimestamp}`);
+            }
+
+            console.log(`Final date range: ${fromTimestamp} to ${toTimestamp}`);
+            console.log(`Final date range (human readable): ${new Date(fromTimestamp * 1000).toLocaleDateString()} to ${new Date(toTimestamp * 1000).toLocaleDateString()}`);
+
+            // Step 2: Fetch chains within date range
+            console.log('Fetching recent chains...');
+            const chainListRequest = {
+                name: 'chains',
+                url: `https://api.torn.com/v2/faction/${factionID}/chains`,
+                params: `limit=100&sort=DESC&to=${toTimestamp}&from=${fromTimestamp}&timestamp=${Math.floor(Date.now() / 1000)}`
+            };
+            
+            console.log(`Chain API call URL: ${chainListRequest.url}?${chainListRequest.params}`);
+            console.log(`Chain API call from timestamp: ${fromTimestamp} (${new Date(fromTimestamp * 1000).toLocaleDateString()})`);
+            console.log(`Chain API call to timestamp: ${toTimestamp} (${new Date(toTimestamp * 1000).toLocaleDateString()})`);
+
+            const chainListData = await batchTornApiCalls(apiKey, [chainListRequest]);
+            const chainsResponse = chainListData.chains || {};
+            
+            // The API returns chains in a "chains" array, not as individual keys
+            const chainsArray = chainsResponse.chains || [];
+            console.log(`Found ${chainsArray.length} chains in the array.`);
+
+            // Step 3: Fetch chain reports
+            if (chainsArray.length > 0) {
+                console.log(`Preparing to fetch reports for ${chainsArray.length} chains...`);
+                
+                // Debug: Log the structure of the first chain to understand the data format
+                if (chainsArray.length > 0) {
+                    console.log('First chain data structure:', chainsArray[0]);
+                }
+                
+                const chainReportRequests = chainsArray.map((chainData, index) => {
+                    // Each chain object should contain the faction ID that started the chain
+                    const factionIdForChain = chainData.faction || chainData.faction_id || chainData.id;
+                    console.log(`Chain ${index} -> Faction ID: ${factionIdForChain}`);
+                    
+                    return {
+                        name: `chain_${index}`,
+                        url: `https://api.torn.com/v2/faction/${factionIdForChain}/chainreport`,
+                        params: ''
+                    };
+                });
+
+                const chainReportData = await fetchTornApiInChunks(apiKey, chainReportRequests);
+                processChainReports(chainReportData, memberStats);
+            }
+
+            // Step 4: Fetch ranked war reports
+            if (warsToAnalyze.length > 0) {
+                console.log(`Preparing to fetch reports for the latest ${warsToAnalyze.length} wars...`);
+                
+                // Debug: Log the structure of the first war to understand the data format
+                if (warsToAnalyze.length > 0) {
+                    console.log('First war data structure:', warsToAnalyze[0]);
+                }
+                
+                const warReportRequests = warsToAnalyze.map((warData, index) => {
+                    // Each war object should contain the war ID
+                    const warId = warData.id || warData.war_id;
+                    console.log(`War ${index} -> War ID: ${warId}`);
+                    
+                    return {
+                        name: `war_${index}`,
+                        url: `https://api.torn.com/v2/faction/${warId}/rankedwarreport`,
+                        params: ''
+                    };
+                });
+
+                const warReportData = await fetchTornApiInChunks(apiKey, warReportRequests);
+                processRankedWarReports(warReportData, memberStats, factionID);
+            }
+
+            console.log('Calling updateWarReportUI...');
+            updateWarReportUI(memberStats, startTime);
+
+        } catch (error) {
+            console.error('Failed to fetch war reports:', error);
+            resultsSection.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+        } finally {
+            loadingSpinner.style.display = 'none';
+            fetchBtn.disabled = false;
+        }
+    }
+
+    function updateWarReportUI(memberStats, startTime, activeTabId = 'total-summary') {
+        console.log('Starting updateWarReportUI...');
+        
+        const resultsSection = document.querySelector('.results-section');
+        const totalTime = performance.now() - startTime;
+        const individualWars = window.individualWarsData || [];
+
+        // Convert memberStats object to array for sorting
+        const membersArray = Object.entries(memberStats).map(([id, stats]) => ({
+            id,
+            name: stats.name,
+            ...stats
+        }));
+
+        // Sort the summary data
+        const summarySort = warReportSortState.summary;
+        membersArray.sort((a, b) => {
+            const aValue = getNestedValue(a, summarySort.column);
+            const bValue = getNestedValue(b, summarySort.column);
+            if (typeof aValue === 'string') {
+                return summarySort.direction === 'asc' ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
+            }
+            return summarySort.direction === 'asc' ? (aValue || 0) - (bValue || 0) : (bValue || 0) - (aValue || 0);
+        });
+
+        console.log('Members array:', membersArray);
+        console.log('Members array length:', membersArray.length);
+
+        // Calculate totals
+        const totals = {
+            chains: { total: 0, assists: 0, retaliations: 0, overseas: 0, war: 0 },
+            wars: { total: 0, points: 0 }
+        };
+        
+        membersArray.forEach(member => {
+            totals.chains.total += member.chains.total;
+            totals.chains.assists += member.chains.assists;
+            totals.chains.retaliations += member.chains.retaliations;
+            totals.chains.overseas += member.chains.overseas;
+            totals.chains.war += member.chains.war;
+            totals.wars.total += member.wars.total;
+            totals.wars.points += member.wars.points;
+        });
+
+        let html = `
+            <div class="summary-box">
+                <h3>War & Chain Report Summary</h3>
+                <p>Generated in ${(totalTime / 1000).toFixed(2)} seconds</p>
+                <p>Members analyzed: ${membersArray.length}</p>
+                <p>Wars analyzed: ${individualWars.length}</p>
+            </div>
+        `;
+
+        // Only show tabs if there are individual wars
+        if (individualWars.length > 0) {
+            html += `
+                <div class="war-tabs">
+                    <div class="tab-buttons">
+                        <button class="tab-button" data-tab="total-summary">Total Summary</button>
+                        ${individualWars.map(war => `<button class="tab-button" data-tab="war-${war.id}">War vs. ${war.enemyFaction.name}</button>`).join('')}
+                    </div>
+                    <div class="tab-content">
+                        <div class="tab-pane" id="total-summary">
+                            <table id="membersTable">
+                                <thead>
+                                    <tr>
+                                        <th colspan="2" style="text-align: center; border-left: 2px solid var(--accent-color);">War Activity</th>
+                                    </tr>
+                                    <tr>
+                                        <th data-column="name" data-table-id="summary">Member <span class="sort-indicator">${summarySort.column === 'name' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="chains.total" data-table-id="summary">Total Hits <span class="sort-indicator">${summarySort.column === 'chains.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="chains.assists" data-table-id="summary">Assists <span class="sort-indicator">${summarySort.column === 'chains.assists' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="chains.retaliations" data-table-id="summary">Retals <span class="sort-indicator">${summarySort.column === 'chains.retaliations' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="chains.overseas" data-table-id="summary">Overseas <span class="sort-indicator">${summarySort.column === 'chains.overseas' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="chains.war" data-table-id="summary">War Hits <span class="sort-indicator">${summarySort.column === 'chains.war' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="wars.total" data-table-id="summary" style="border-left: 2px solid var(--accent-color);">Total Hits <span class="sort-indicator">${summarySort.column === 'wars.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="wars.points" data-table-id="summary">Points Scored <span class="sort-indicator">${summarySort.column === 'wars.points' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${membersArray.map(m => `
+                                        <tr>
+                                            <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank">${m.name}</a></td>
+                                            <td>${m.chains.total}</td><td>${m.chains.assists}</td><td>${m.chains.retaliations}</td><td>${m.chains.overseas}</td><td>${m.chains.war}</td>
+                                            <td style="border-left: 2px solid var(--accent-color);">${m.wars.total}</td><td>${Math.round(m.wars.points)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                                <tfoot>
+                                    <tr class="totals-row">
+                                        <td><strong>TOTALS</strong></td>
+                                        <td><strong>${totals.chains.total}</strong></td><td><strong>${totals.chains.assists}</strong></td><td><strong>${totals.chains.retaliations}</strong></td><td><strong>${totals.chains.overseas}</strong></td><td><strong>${totals.chains.war}</strong></td>
+                                        <td style="border-left: 2px solid var(--accent-color);"><strong>${totals.wars.total}</strong></td><td><strong>${Math.round(totals.wars.points)}</strong></td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                        ${individualWars.map(war => {
+                            const tableId = `war-${war.id}`;
+                            // Initialize sort state for this war tab if it doesn't exist
+                            if (!warReportSortState[tableId]) {
+                                warReportSortState[tableId] = { column: 'points', direction: 'desc' };
+                            }
+                            const warSort = warReportSortState[tableId];
+                            const sortedMembers = Object.entries(war.memberStats || {}).sort(([,a],[,b]) => {
+                                const aValue = getNestedValue(a, warSort.column);
+                                const bValue = getNestedValue(b, warSort.column);
+                                if (typeof aValue === 'string') {
+                                    return warSort.direction === 'asc' ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
+                                }
+                                return warSort.direction === 'asc' ? (aValue || 0) - (bValue || 0) : (bValue || 0) - (aValue || 0);
+                            });
+
+                            return `
+                            <div class="tab-pane" id="${tableId}">
+                                <div class="war-info">
+                                    <h4>War vs. ${war.enemyFaction.name}</h4>
+                                    <p>Date: ${new Date(war.timestamp * 1000).toLocaleString()}</p>
+                                    ${Object.values(war.factions || {}).map(f => `<p>${f.name}: ${f.score} points</p>`).join('')}
+                                </div>
+                                <table class="war-table">
+                                    <thead>
+                                        <tr>
+                                            <th data-column="name" data-table-id="${tableId}">Member <span class="sort-indicator">${warSort.column === 'name' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                            <th data-column="level" data-table-id="${tableId}">Level <span class="sort-indicator">${warSort.column === 'level' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                            <th data-column="points" data-table-id="${tableId}">Points Scored <span class="sort-indicator">${warSort.column === 'points' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                            <th data-column="attacks" data-table-id="${tableId}">Attacks <span class="sort-indicator">${warSort.column === 'attacks' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${sortedMembers.map(([id, m]) => `
+                                            <tr>
+                                                <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank">${m.name}</a></td>
+                                                <td>${m.level || 'N/A'}</td>
+                                                <td>${Math.round(m.points || 0)}</td>
+                                                <td>${m.attacks || 0}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `}).join('')}
+                    </div>
+                </div>
+            `;
+        } else {
+            // Fallback to single table if no individual wars
+            html += `
+                <table id="membersTable">
+                    <thead>
+                        <tr>
+                            <th colspan="2" style="text-align: center; border-left: 2px solid var(--accent-color);">War Activity</th>
+                        </tr>
+                        <tr>
+                            <th data-column="name" data-table-id="summary">Member <span class="sort-indicator">${summarySort.column === 'name' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="chains.total" data-table-id="summary">Total Hits <span class="sort-indicator">${summarySort.column === 'chains.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="chains.assists" data-table-id="summary">Assists <span class="sort-indicator">${summarySort.column === 'chains.assists' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="chains.retaliations" data-table-id="summary">Retals <span class="sort-indicator">${summarySort.column === 'chains.retaliations' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="chains.overseas" data-table-id="summary">Overseas <span class="sort-indicator">${summarySort.column === 'chains.overseas' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="chains.war" data-table-id="summary">War Hits <span class="sort-indicator">${summarySort.column === 'chains.war' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="wars.total" data-table-id="summary" style="border-left: 2px solid var(--accent-color);">Total Hits <span class="sort-indicator">${summarySort.column === 'wars.total' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="wars.points" data-table-id="summary">Points Scored <span class="sort-indicator">${summarySort.column === 'wars.points' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${membersArray.map(m => `
+                            <tr>
+                                <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank">${m.name}</a></td>
+                                <td>${m.chains.total}</td><td>${m.chains.assists}</td><td>${m.chains.retaliations}</td><td>${m.chains.overseas}</td><td>${m.chains.war}</td>
+                                <td style="border-left: 2px solid var(--accent-color);">${m.wars.total}</td><td>${Math.round(m.wars.points)}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                    <tfoot>
+                        <tr class="totals-row">
+                            <td><strong>TOTALS</strong></td>
+                            <td><strong>${totals.chains.total}</strong></td><td><strong>${totals.chains.assists}</strong></td><td><strong>${totals.chains.retaliations}</strong></td><td><strong>${totals.chains.overseas}</strong></td><td><strong>${totals.chains.war}</strong></td>
+                            <td style="border-left: 2px solid var(--accent-color);"><strong>${totals.wars.total}</strong></td><td><strong>${Math.round(totals.wars.points)}</strong></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            `;
+        }
+
+        console.log('Generated HTML length:', html.length);
+        console.log('Results section element:', resultsSection);
+        console.log('Setting innerHTML...');
+        resultsSection.innerHTML = html;
+        resultsSection.style.display = 'block';
+        
+        // Restore active tab after re-render
+        document.querySelector(`.tab-button[data-tab="${activeTabId}"]`)?.classList.add('active');
+        document.querySelector(`.tab-pane#${activeTabId}`)?.classList.add('active');
+
+        // Add tab functionality
+        document.querySelectorAll('.tab-button').forEach(button => {
+            button.addEventListener('click', () => {
+                const currentActive = document.querySelector('.tab-button.active');
+                if (currentActive) currentActive.classList.remove('active');
+                document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+                
+                button.classList.add('active');
+                const targetTab = document.getElementById(button.dataset.tab);
+                if (targetTab) targetTab.classList.add('active');
+            });
+        });
+
+        // Add universal click listener for sorting
+        resultsSection.querySelectorAll('th[data-column]').forEach(header => {
+            header.addEventListener('click', () => {
+                const tableId = header.dataset.tableId;
+                const newSortColumn = header.dataset.column;
+                
+                if (!warReportSortState[tableId]) {
+                    warReportSortState[tableId] = { column: 'points', direction: 'desc' };
+                }
+
+                const currentSort = warReportSortState[tableId];
+
+                if (currentSort.column === newSortColumn) {
+                    currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSort.column = newSortColumn;
+                    currentSort.direction = 'desc';
+                }
+                
+                // Determine the active tab directly from the sorted table's ID
+                const activeTabId = tableId === 'summary' ? 'total-summary' : tableId;
+                updateWarReportUI(memberStats, startTime, activeTabId);
+            });
+        });
+        
+        console.log('updateWarReportUI completed');
+    }
+});

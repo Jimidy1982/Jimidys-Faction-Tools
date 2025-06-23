@@ -1,0 +1,34 @@
+<div class="container">
+    <h1>Faction Consumption Tracker</h1>
+    
+    <div class="input-section">
+        <div class="date-range-section">
+            <div class="date-input">
+                <label for="startDate">Start Date:</label>
+                <input type="text" id="startDate" placeholder="Select start date">
+            </div>
+            <div class="date-input">
+                <label for="endDate">End Date:</label>
+                <input type="text" id="endDate" placeholder="Select end date">
+            </div>
+        </div>
+
+        <div class="fetch-container">
+             <button id="fetchData">Fetch Data</button>
+             <div id="loadingSpinner" class="loading-spinner-inline" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="results-section" style="display: none;">
+        <div class="controls">
+            <button id="exportCSV">Export to CSV</button>
+            <input type="hidden" id="sortColumn" value="xanax">
+            <input type="hidden" id="sortDirection" value="desc">
+        </div>
+
+        <div class="members-list">
+            <h2 id="consumptionTitle">Member Consumption</h2>
+            <div id="membersTable"></div>
+        </div>
+    </div>
+</div> 

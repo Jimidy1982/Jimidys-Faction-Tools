@@ -1,0 +1,41 @@
+<div class="container">
+    <h1>War & Chain Reporter</h1>
+    <div class="input-section">
+        <p>This tool fetches and aggregates player contributions from a faction's most recent ranked wars and chains. Enter a Faction ID to begin.</p>
+        <div class="api-key-section">
+            <p>This tool fetches and aggregates ranked war and chain reports for your faction.</p>
+        </div>
+        <div class="controls" style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+            <div>
+                <label for="factionId">Faction ID</label>
+                <input type="text" id="factionId" placeholder="Enter Faction ID">
+            </div>
+            <div>
+                <label for="warCount">Wars to Include</label>
+                <input type="number" id="warCount" value="5" min="1" max="50">
+            </div>
+        </div>
+        <div class="date-range-section">
+            <div>
+                <label for="startDate">Start Date</label>
+                <input type="date" id="startDate">
+            </div>
+            <div>
+                <label for="endDate">End Date</label>
+                <input type="date" id="endDate">
+            </div>
+        </div>
+        <button id="fetchWarReports">Fetch War & Chain Reports</button>
+        <div class="loading-spinner-inline" id="loadingSpinner" style="display: none;"></div>
+    </div>
+
+    <div class="results-section" style="display: none;">
+        <div class="controls">
+            <button id="exportCSV">Export to CSV</button>
+        </div>
+        <div class="members-list">
+            <h2 id="reportTitle">War & Chain Performance</h2>
+            <div id="reportsTable"></div>
+        </div>
+    </div>
+</div> 
