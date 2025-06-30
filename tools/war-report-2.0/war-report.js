@@ -1,3 +1,4 @@
+console.log('[WAR REPORT 2.0] war-report.js LOADED');
 // War Report 2.0 - Full Version
 console.log('[WAR REPORT 2.0] Script loaded');
 
@@ -18,6 +19,7 @@ let warReportData = {
 let tabsInitialized = false;
 
 function initWarReport2() {
+    console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
     console.log('[WAR REPORT 2.0] Initialized');
     
     const fetchWarsBtn = document.getElementById('fetchWarsButton');
@@ -147,6 +149,7 @@ async function handleWarReportFetch() {
     const factionId = factionIdInput.value.trim();
 
     if (!apiKey || !warId || !factionId) {
+        console.warn('[DEBUG] Required fields check failed:', { apiKey, warId, factionId });
         alert('Please enter all required fields: API Key, select a War, and Faction ID.');
         return;
     }
@@ -1259,4 +1262,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const input = document.getElementById(id);
         if (input) addThousandSeparatorInput(input);
     });
-}); 
+});
+
+window.initWarReport2 = initWarReport2; 

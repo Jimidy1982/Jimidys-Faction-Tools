@@ -172,6 +172,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch(page);
             if (!response.ok) throw new Error(`Page not found: ${page}`);
             appContent.innerHTML = await response.text();
+            console.log('[APP] Loaded page:', page);
 
             // After loading, initialize any scripts needed for that page
             if (page.includes('consumption-tracker')) {
@@ -180,6 +181,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 initBattleStats();
             } else if (page.includes('war-chain-reporter')) {
                 initWarChainReporter();
+            } else if (page.includes('war-report-2.0')) {
+                // Remove any previous script for this tool
+                const oldScript = document.getElementById('war-report-2.0-script');
+                if (oldScript) oldScript.remove();
+                // Dynamically load the script
+                const script = document.createElement('script');
+                script.src = 'tools/war-report-2.0/war-report.js';
+                script.id = 'war-report-2.0-script';
+                script.onload = () => {
+                    console.log('[APP] war-report-2.0/war-report.js loaded, calling initWarReport2');
+                    if (typeof initWarReport2 === 'function') {
+                        initWarReport2();
+                    } else if (window.initWarReport2) {
+                        window.initWarReport2();
+                    } else {
+                        console.error('[APP] initWarReport2 is still not available after script load!');
+                    }
+                };
+                document.body.appendChild(script);
             }
         } catch (error) {
             console.error('Failed to load page:', error);
@@ -596,10 +616,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const startDateInput = document.getElementById('startDate');
         const endDateInput = document.getElementById('endDate');
 
-        if (!startDateInput || !endDateInput) {
-            alert('Please fill in all fields');
-            return;
-        }
+        // if (!startDateInput || !endDateInput) {
+        //     alert('Please fill in all fields');
+        //     return;
+        // }
 
         // Handle date range - use earliest war as start date if not provided
         let startDate = startDateInput.value;
