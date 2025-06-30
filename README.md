@@ -1,212 +1,166 @@
-# Torn Faction Xanax Consumption Tracker
+# Jimidy's Faction Tools
 
-A web-based tool to track Xanax consumption within your Torn faction.
+A comprehensive web-based suite of tools for Torn faction management and analysis, built with modern JavaScript and optimized for performance.
 
-## Features
+## 🎯 Current Tools
 
-- Track Xanax consumption for all faction members
-- Sort members by consumption (highest to lowest or lowest to highest)
-- Export data to CSV
-- Save API key locally for convenience
-- Date range selection with calendar picker
-- Dark theme matching Torn's style
+### ✅ **War Payout Calculator (2.0)**
+Advanced war payout calculation tool with hit-based calculations and enhanced features.
 
-## How to Use
+**Features:**
+- **Hit-based payout calculations** with customizable pay-per-hit rates
+- **Advanced payout options** with multipliers and bonuses
+- **Systematic "Open All Links"** - Opens all payment links in background tabs
+- **Popup blocker warnings** for better user experience
+- **CSV export** with complete payout data
+- **Real-time calculations** that update as you modify settings
+- **Thousand separators** for better number readability
+- **Accurate enemy faction detection** in all summaries
 
+### ✅ **War Chain Reporter**
+Comprehensive war and chain analysis tool for detailed faction performance tracking.
+
+**Features:**
+- **War report analysis** with detailed statistics
+- **Chain report processing** for attack chain data
+- **Member performance tracking** across multiple wars
+- **Data export capabilities** for further analysis
+- **Real-time API integration** with Torn's war data
+
+### ✅ **Faction Battle Stats**
+Statistical analysis tool for faction member performance and battle statistics.
+
+**Features:**
+- **Member stat estimation** based on Fair Fight scores
+- **Performance analytics** and trend analysis
+- **Data visualization** and reporting
+- **Export functionality** for external analysis
+
+### ⚠️ **Consumption Tracker** *(Currently Disabled)*
+*This tool has been temporarily disabled due to Torn API changes. It will be restored when the API issues are resolved.*
+
+## 🚀 Key Features
+
+### **Modern UI/UX**
+- **Dark theme** matching Torn's aesthetic
+- **Responsive design** that works on all devices
+- **Intuitive navigation** with clear tool organization
+- **Real-time feedback** and loading indicators
+
+### **Performance Optimizations**
+- **Efficient API calls** with intelligent batching
+- **Smart caching** to reduce redundant requests
+- **Parallel processing** for faster data retrieval
+- **Rate limit handling** to respect Torn's API guidelines
+
+### **Data Management**
+- **Local API key storage** for convenience
+- **CSV export** for all major tools
+- **Real-time calculations** and updates
+- **Comprehensive error handling**
+
+## 🛠️ How to Use
+
+### **Getting Started**
 1. Open `index.html` in your web browser
-2. Enter your Torn API key (you can get this from your Torn account settings)
-3. Click "Save API Key" to store it locally (optional)
-4. Select a date range using the date pickers
-5. Click "Fetch Data" to retrieve the consumption data
-6. Use the sort dropdown to change the order of members
-7. Click "Export to CSV" to download the data
+2. Enter your Torn API key in the sidebar
+3. Select a tool from the navigation menu
+4. Configure your parameters and click "Fetch Data"
 
-## API Key Security
-
+### **API Key Security**
 - Your API key is stored locally in your browser's localStorage
 - It is never sent to any server other than Torn's API
 - You can clear the saved API key by clearing your browser's localStorage
 
-## Requirements
+### **War Payout Calculator**
+1. Enter your faction ID and war ID
+2. Set your pay-per-hit rate
+3. Configure any advanced payout options
+4. Click "Fetch War Data" to load the war information
+5. Review the payout table and use "Open All Links" to send payments
+6. Export to CSV for record keeping
 
-- Modern web browser with JavaScript enabled
-- Valid Torn API key with appropriate permissions
-- Internet connection to access Torn's API
+### **War Chain Reporter**
+1. Enter your faction ID and war ID
+2. Click "Fetch War Data" to load war and chain information
+3. Review detailed statistics and performance metrics
+4. Export data for further analysis
 
-## Note
+### **Faction Battle Stats**
+1. Enter your faction ID
+2. Configure date ranges and parameters
+3. Click "Fetch Data" to analyze member statistics
+4. Review performance metrics and trends
 
-This tool uses Torn's public API. Please respect Torn's API usage guidelines and rate limits.
+## 📋 Requirements
 
-# Jimidy's Faction Tools
+- **Modern web browser** with JavaScript enabled
+- **Valid Torn API key** with appropriate permissions
+- **Internet connection** to access Torn's API
+- **Local web server** (recommended for development)
 
-A multi-tool web application for the game Torn, providing faction management and analysis tools.
+## 🔧 Technical Details
 
-## Features
+### **Architecture**
+- **Vanilla JavaScript** for maximum compatibility
+- **Modular design** with separate tool components
+- **Responsive CSS** with modern styling
+- **Local storage** for user preferences
 
-- **Consumption Tracker**: Track item consumption for your faction over a specific date range
-- **Faction Battle Stats**: Estimate member stats based on Fair Fight scores
-- **API Batching Optimizations**: Efficient API calls with parallel processing and caching
+### **API Integration**
+- **Torn API v1** integration for all data sources
+- **Rate limiting** to respect API guidelines
+- **Error handling** for robust operation
+- **Caching strategies** for optimal performance
 
-## API Batching Optimizations
+### **Browser Compatibility**
+- **Chrome/Edge** (recommended)
+- **Firefox** (fully supported)
+- **Safari** (fully supported)
+- **Mobile browsers** (responsive design)
 
-### How Request Batching Works
+## 🐛 Known Issues
 
-The application uses several advanced batching strategies to optimize API calls:
+- **Consumption Tracker**: Temporarily disabled due to Torn API changes
+- **Popup blockers**: May interfere with "Open All Links" functionality (warning provided)
 
-#### 1. **Parallel Request Batching**
-Instead of making sequential API calls, the app can make multiple requests simultaneously:
+## 📝 Development
 
-```javascript
-// Old sequential approach (slow)
-for (let i = 0; i < memberIDs.length; i += 200) {
-    const chunk = memberIDs.slice(i, i + 200);
-    await fetchChunk(chunk); // Wait for each chunk
-}
+### **Local Development**
+1. Clone or download the repository
+2. Start a local web server (Python: `python -m http.server 8000`)
+3. Open `http://localhost:8000` in your browser
+4. Make changes and refresh to see updates
 
-// New parallel approach (fast)
-const chunks = splitIntoChunks(memberIDs, 200);
-const promises = chunks.map(chunk => fetchChunk(chunk));
-const results = await Promise.all(promises); // All chunks fetch simultaneously
+### **File Structure**
+```
+├── index.html              # Main application entry point
+├── app.js                  # Core application logic
+├── styles/
+│   └── styles.css         # Main stylesheet
+├── pages/                 # Tool-specific HTML pages
+│   ├── home.html
+│   ├── war-report-2.0.html
+│   ├── war-chain-reporter.html
+│   └── faction-battle-stats.html
+└── tools/                 # Tool-specific JavaScript
+    └── war-report-2.0/
+        └── war-report.js  # War Payout Calculator logic
 ```
 
-#### 2. **Semaphore Rate Limiting**
-Controls concurrent requests to respect API rate limits:
+## 🤝 Contributing
 
-```javascript
-class Semaphore {
-    constructor(max) {
-        this.max = max; // Maximum concurrent requests
-        this.current = 0;
-        this.queue = [];
-    }
-    
-    async acquire() {
-        if (this.current < this.max) {
-            this.current++;
-            return Promise.resolve();
-        }
-        // Wait for a slot to open
-        return new Promise(resolve => this.queue.push(resolve));
-    }
-    
-    release() {
-        this.current--;
-        if (this.queue.length > 0) {
-            this.current++;
-            const next = this.queue.shift();
-            next();
-        }
-    }
-}
-```
+This is a personal project, but suggestions and feedback are welcome. The tools are designed to be modular and extensible for future enhancements.
 
-#### 3. **Smart Caching with TTL**
-Reduces redundant API calls by caching responses:
+## 📄 License
 
-```javascript
-const apiCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+This project is for personal use and Torn faction management. Please respect Torn's terms of service and API usage guidelines.
 
-const getCachedData = (key) => {
-    const cached = apiCache.get(key);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-        return cached.data; // Return cached data if still valid
-    }
-    return null; // Cache expired or missing
-};
-```
+## 🔗 Links
 
-#### 4. **Batch Torn API Calls**
-Groups multiple Torn API requests together:
+- **Live Site**: [https://jimidy1982.github.io/Jimidys-Faction-Tools/](https://jimidy1982.github.io/Jimidys-Faction-Tools/)
+- **GitHub Repository**: [https://github.com/Jimidy1982/Jimidys-Faction-Tools](https://github.com/Jimidy1982/Jimidys-Faction-Tools)
 
-```javascript
-const batchTornApiCalls = async (apiKey, requests) => {
-    const batchSize = 5; // Process 5 requests at once
-    const delayMs = 667; // Rate limit: ~3 calls every 2 seconds
-    
-    for (let i = 0; i < requests.length; i += batchSize) {
-        const batch = requests.slice(i, i + batchSize);
-        
-        // Make parallel requests for this batch
-        const batchPromises = batch.map(async (request) => {
-            const fullUrl = `${request.url}?${request.params}&key=${apiKey}`;
-            const response = await fetch(fullUrl);
-            return { name: request.name, data: await response.json() };
-        });
-        
-        const batchResults = await Promise.all(batchPromises);
-        // Process results...
-        
-        // Rate limiting delay between batches
-        if (i + batchSize < requests.length) {
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-    }
-};
-```
+---
 
-### Performance Benefits
-
-| Optimization | Before | After | Improvement |
-|--------------|--------|-------|-------------|
-| Sequential FF Scouter calls | 10 seconds | 3 seconds | 70% faster |
-| Torn API calls | 2 seconds | 0.5 seconds | 75% faster |
-| Cache hits | 0% | 60% | 60% fewer API calls |
-| Memory usage | High | Optimized | Better resource usage |
-
-### Configuration Options
-
-You can adjust batching parameters based on your needs:
-
-```javascript
-// FF Scouter API batching
-const ffData = await fetchInParallelChunks(
-    ffScouterUrl, 
-    memberIDs, 
-    200,        // Chunk size
-    3,          // Max concurrent requests
-    1000        // Delay between chunks (ms)
-);
-
-// Torn API batching
-const tornData = await batchTornApiCalls(apiKey, requests);
-// Uses default: 5 requests per batch, 667ms delay
-```
-
-### Error Handling
-
-The batching system includes robust error handling:
-
-- **Rate limit detection**: Automatically slows down if APIs return rate limit errors
-- **Partial failures**: Continues processing even if some requests fail
-- **Retry logic**: Automatically retries failed requests with exponential backoff
-- **Graceful degradation**: Falls back to sequential processing if parallel fails
-
-### Monitoring and Debugging
-
-Enable detailed logging to monitor batching performance:
-
-```javascript
-console.log(`Using cached data for: ${request.name}`);
-console.log(`Fetching FF Scouter data using parallel batching...`);
-console.log(`Batch ${i + 1}/${Math.ceil(requests.length / batchSize)} completed`);
-```
-
-## Usage
-
-1. Enter your Torn API key in the sidebar
-2. Select a tool from the navigation
-3. Configure your parameters
-4. Click "Fetch Data" to start the optimized API calls
-
-## API Requirements
-
-- **Torn API Key**: Required for all Torn API calls
-- **FF Scouter API Key**: Required for battle stats tool
-- **Rate Limits**: 
-  - Torn API: ~3 calls per 2 seconds
-  - FF Scouter: ~1 call per second
-
-## Contributing
-
-Feel free to submit issues and enhancement requests! 
+*Built for Torn faction leaders and managers who need powerful, efficient tools for faction administration and analysis.* 
