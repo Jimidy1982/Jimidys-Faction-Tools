@@ -100,7 +100,7 @@ h1 {
     margin-bottom: 20px;
 }
 
-.api-key-section, .date-range-section {
+.api-key-section, .date-range-section, .payout-settings-section, .cache-sales-section {
     margin-bottom: 20px;
 }
 
@@ -260,17 +260,14 @@ button:hover {
 }
 
 .loading-text {
-    color: var(--text-color);
-    font-size: 1.2em;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
+    display: block;
+    color: #fff;
+    font-size: 1em;
+    margin-left: 2px;
 }
 
-.loading-dots::after {
-    content: '...';
-    animation: loadingDots 1.5s infinite;
+.loading-dots {
+    display: inline-block;
 }
 
 .loading-spinner {
@@ -282,12 +279,6 @@ button:hover {
     animation: spin 1s linear infinite;
 }
 
-@keyframes loadingDots {
-    0% { content: '.'; }
-    33% { content: '..'; }
-    66% { content: '...'; }
-}
-
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
@@ -295,11 +286,45 @@ button:hover {
 
 /* Link styles */
 #membersTable a {
+    color: #FFD700; /* A brighter yellow for links */
+}
+
+#membersTable a:hover {
+    color: var(--accent-color);
+}
+
+/* Payout table styles - identical to main report table */
+#payoutTable {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+#payoutTable th, #payoutTable td {
+    padding: 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#payoutTable th {
+    background-color: var(--secondary-color);
+    color: var(--accent-color);
+    cursor: pointer;
+    user-select: none;
+    text-align: center;
+    position: relative;
+    padding-right: 25px;
+}
+
+#payoutTable th:hover {
+    background-color: var(--border-color);
+}
+
+#payoutTable a {
     color: var(--text-color);
     text-decoration: underline;
 }
 
-#membersTable a:hover {
+#payoutTable a:hover {
     color: var(--accent-color);
 }
 
@@ -398,37 +423,42 @@ nav a:hover::after {
 
 .tool-cards-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 25px;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 32px;
+    margin-top: 32px;
 }
 
 .tool-card {
-    background-color: var(--secondary-color);
-    padding: 25px;
-    border-radius: 8px;
+    background: var(--secondary-color);
+    border-radius: 12px;
+    padding: 28px 24px 24px 24px;
+    min-height: 180px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    transition: box-shadow 0.2s, transform 0.2s;
     text-decoration: none;
-    color: var(--text-color);
-    border: 1px solid var(--border-color);
-    transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-    display: block;
 }
 
 .tool-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
-    border-color: var(--accent-color);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.16);
+    transform: translateY(-2px) scale(1.02);
+    text-decoration: none;
 }
 
 .tool-card h2 {
     color: var(--accent-color);
-    margin-top: 0;
-    margin-bottom: 15px;
+    font-size: 1.35rem;
+    margin-bottom: 12px;
+    font-weight: bold;
 }
 
 .tool-card p {
-    font-size: 0.95rem;
-    line-height: 1.5;
-    opacity: 0.9;
+    color: #eee;
+    font-size: 1rem;
+    margin-bottom: 0;
+    flex: 1 1 auto;
 }
 
 .fetch-container {
@@ -449,10 +479,6 @@ nav a:hover::after {
 
 @keyframes spin {
     to { transform: rotate(360deg); }
-}
-
-#membersTable a {
-    color: #FFD700; /* A brighter yellow for links */
 }
 
 .api-key-item {
@@ -621,4 +647,85 @@ nav a:hover::after {
 .former-member:hover {
     color: #aaa !important;
     opacity: 0.9;
+}
+
+.payout-settings-section h3, .cache-sales-section h3 {
+    color: var(--accent-color);
+    margin-bottom: 15px;
+    font-size: 1.1em;
+}
+
+.cache-inputs {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.cache-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 10px;
+    align-items: center;
+}
+
+.cache-row label {
+    margin-bottom: 0;
+    font-size: 0.9em;
+}
+
+.cache-row input {
+    margin-bottom: 0;
+}
+
+@media (max-width: 768px) {
+    .cache-row {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+    
+    .cache-row label {
+        font-size: 0.8em;
+    }
+}
+
+#warSelectorContainer {
+    margin-bottom: 120px;
+}
+
+.payout-inputs input[type='checkbox'] {
+    accent-color: #ffd700;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+@keyframes payLinkFlash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.pay-link-flash {
+  animation: payLinkFlash 1s infinite;
+}
+
+@media (max-width: 700px) {
+  .tool-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Disabled tool card styles */
+.tool-card.disabled {
+  opacity: 0.55;
+  filter: grayscale(0.5);
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.ched-warning {
+  color: #ff5252;
+  font-size: 0.95em;
+  font-weight: bold;
+  margin-top: 12px;
+  letter-spacing: 0.5px;
 }
