@@ -402,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
                 
                 const lastUpdatedDate = lastUpdatedTimestamp 
-                    ? new Date(lastUpdatedTimestamp * 1000).toLocaleDateString() 
+                    ? formatRelativeTime(lastUpdatedTimestamp * 1000) 
                     : 'N/A';
 
                 tableHtml += `
@@ -1169,6 +1169,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const time = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
         const date = `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear().toString().slice(-2)}`;
         return `${time} - ${date}`;
+    }
+
+    // Helper to format timestamp as relative time (days only)
+    function formatRelativeTime(timestamp) {
+        if (!timestamp) return 'N/A';
+        
+        const now = Date.now();
+        const diff = now - timestamp;
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+        if (days === 0) {
+            return 'Today';
+        } else if (days === 1) {
+            return '1 day ago';
+        } else {
+            return `${days} days ago`;
+        }
     }
 
     async function handleWarReportFetch() {
