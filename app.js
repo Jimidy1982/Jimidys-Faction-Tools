@@ -335,7 +335,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const memberIDs = membersArray.map(member => member.id.toString());
             const membersObject = {};
             membersArray.forEach(member => {
-                membersObject[member.id] = { name: member.name };
+                membersObject[member.id] = { 
+                    name: member.name,
+                    level: member.level || 'Unknown'
+                };
             });
             
             console.log(`Successfully fetched ${memberIDs.length} members.`);
@@ -385,6 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <thead>
                         <tr>
                             <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
                             <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
                             <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
                             <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">Last Updated <span class="sort-indicator"></span></th>
@@ -408,6 +412,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tableHtml += `
                     <tr>
                         <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${memberID}]</a></td>
+                        <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
                         <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
                         <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
                         <td data-column="lastupdated" data-value="${lastUpdatedTimestamp || 0}">${lastUpdatedDate}</td>
