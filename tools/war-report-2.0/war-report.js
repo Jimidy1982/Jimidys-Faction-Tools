@@ -149,7 +149,6 @@ async function handleWarReportFetch() {
     const factionId = factionIdInput.value.trim();
 
     if (!apiKey || !warId || !factionId) {
-        console.warn('[DEBUG] Required fields check failed:', { apiKey, warId, factionId });
         alert('Please enter all required fields: API Key, select a War, and Faction ID.');
         return;
     }
@@ -238,7 +237,6 @@ async function handleWarReportFetch() {
         const factionIdStr = String(factionId);
 
         allAttacks.forEach((attack) => {
-            console.log('[DEBUG] Attack modifiers:', attack.modifiers, 'Full attack:', attack);
             // Only include attacks where the attacker is in the user's faction
             if (!attack.attacker || !attack.attacker.faction || String(attack.attacker.faction.id) !== factionIdStr) {
                 return;
@@ -270,8 +268,6 @@ async function handleWarReportFetch() {
             // Check for ranked war hits using is_ranked_war
             if (attack.is_ranked_war === true && !attack.is_interrupted) {
                 playerStats[attackerId].warHits++;
-                // Debug log for respect_gain
-                console.log(`[DEBUG] War hit by ${attack.attacker.name} (${attackerId}): respect_gain=${attack.respect_gain}, attack=`, attack);
                 playerStats[attackerId].warScore += attack.respect_gain || 0;
             }
             
@@ -296,6 +292,19 @@ async function handleWarReportFetch() {
                     playerStats[attackerId].successfulAttacks++;
                 }
             }
+
+            // Count assists (result === 'Assist' and modifiers.war)
+            if (
+                attack.modifiers &&
+                attack.modifiers.war &&
+                !attack.is_interrupted &&
+                attack.result &&
+                attack.result.toLowerCase() === "assist"
+            ) {
+                playerStats[attackerId].warAssists++;
+            }
+
+
         });
 
         // Calculate averages
@@ -588,36 +597,29 @@ function calculatePlayerPayout(player, payPerHit) {
 // --- Add input formatting for thousand separators ---
 function addThousandSeparatorInput(input) {
     if (!input) {
-        console.log('[DEBUG] addThousandSeparatorInput: input is null/undefined');
         return;
     }
-    console.log('[DEBUG] addThousandSeparatorInput: Attaching to', input.id, 'Initial value:', input.value);
     input.addEventListener('input', function(e) {
         let raw = input.value.replace(/[^\d]/g, '');
         if (raw === '') raw = '0';
         input.value = Number(raw).toLocaleString();
         input.dataset.raw = raw;
-        console.log('[DEBUG] input event on', input.id, 'Value now:', input.value);
     });
     input.addEventListener('blur', function(e) {
         let raw = input.value.replace(/[^\d]/g, '');
         if (raw === '') raw = '0';
         input.value = Number(raw).toLocaleString();
         input.dataset.raw = raw;
-        console.log('[DEBUG] blur event on', input.id, 'Value now:', input.value);
     });
     // Initialize
     let raw = input.value.replace(/[^\d]/g, '');
     if (raw === '') raw = '0';
     input.value = Number(raw).toLocaleString();
     input.dataset.raw = raw;
-    console.log('[DEBUG] Initialized', input.id, 'to', input.value);
 }
 
 // --- Patch initializeTabs to add input formatting ---
 function initializeTabs() {
-    console.log('[DEBUG] initializeTabs() called');
-    
     if (tabsInitialized) {
         console.log('[WAR REPORT 2.0] Tab event listener already attached.');
         return;
@@ -626,11 +628,7 @@ function initializeTabs() {
     const tabButtons = document.querySelectorAll('[data-tab]');
     const tabPanes = document.querySelectorAll('.tab-pane');
     
-    console.log('[DEBUG] Found tab buttons:', tabButtons.length);
-    console.log('[DEBUG] Found tab panes:', tabPanes.length);
-    
     if (tabButtons.length === 0 || tabPanes.length === 0) {
-        console.log('[DEBUG] No tabs found, returning early');
         return;
     }
     
@@ -680,19 +678,6 @@ function initializeTabs() {
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
     
-    console.log('[DEBUG] Looking for payout input elements:');
-    console.log('[DEBUG] cacheSales element found:', !!cacheSalesInput);
-    console.log('[DEBUG] payPerHit element found:', !!payPerHitInput);
-    
-    // Debug: check if payout tab exists and has content
-    const payoutTab = document.getElementById('payout-tab');
-    console.log('[DEBUG] payout-tab element found:', !!payoutTab);
-    if (payoutTab) {
-        console.log('[DEBUG] payout-tab innerHTML length:', payoutTab.innerHTML.length);
-        console.log('[DEBUG] payout-tab contains "combined":', payoutTab.innerHTML.includes('combined'));
-        console.log('[DEBUG] payout-tab contains "min":', payoutTab.innerHTML.includes('min'));
-    }
-    
     if (cacheSalesInput && payPerHitInput) {
         console.log('[WAR REPORT 2.0] Adding payout input listeners');
         addThousandSeparatorInput(cacheSalesInput);
@@ -714,15 +699,11 @@ function initializeTabs() {
         ];
         otherCostsInputs.forEach(input => {
             if (input) {
-                console.log('[DEBUG] Found Other Costs input:', input.id, 'Value:', input.value);
                 addThousandSeparatorInput(input);
                 input.addEventListener('input', updatePayoutTable);
                 input.addEventListener('blur', () => {
                     addThousandSeparatorInput(input); // re-apply formatting on blur
                 });
-                console.log('[DEBUG] Attached input/blur listeners to', input.id);
-            } else {
-                console.log('[DEBUG] Missing Other Costs input');
             }
         });
         cacheSalesInput.addEventListener('input', updatePayoutTable);
@@ -732,42 +713,14 @@ function initializeTabs() {
         const enableCombinedMinCheckbox = document.getElementById('enableCombinedMin');
         const combinedMinInput = document.getElementById('combinedMin');
         
-        console.log('[DEBUG] Looking for combined min elements:');
-        console.log('[DEBUG] enableCombinedMin element found:', !!enableCombinedMinCheckbox);
-        console.log('[DEBUG] combinedMin element found:', !!combinedMinInput);
-        
-        // Debug: search for any elements that might be the combined min inputs
-        const allInputs = document.querySelectorAll('input');
-        console.log('[DEBUG] All input elements found:', allInputs.length);
-        allInputs.forEach((input, index) => {
-            if (input.id && (input.id.includes('min') || input.id.includes('combined') || input.id.includes('Min'))) {
-                console.log(`[DEBUG] Potential combined min input ${index}:`, input.id, input.type, input.value);
-            }
-        });
-        
-        const allCheckboxes = document.querySelectorAll('input[type="checkbox"]');
-        console.log('[DEBUG] All checkbox elements found:', allCheckboxes.length);
-        allCheckboxes.forEach((checkbox, index) => {
-            if (checkbox.id && (checkbox.id.includes('min') || checkbox.id.includes('combined') || checkbox.id.includes('Min'))) {
-                console.log(`[DEBUG] Potential combined min checkbox ${index}:`, checkbox.id, checkbox.checked);
-            }
-        });
-        
         if (enableCombinedMinCheckbox) {
             enableCombinedMinCheckbox.addEventListener('change', updatePayoutTable);
-            console.log('[DEBUG] Attached change listener to enableCombinedMin checkbox');
-        } else {
-            console.log('[DEBUG] WARNING: enableCombinedMin checkbox not found!');
         }
         
         if (combinedMinInput) {
             combinedMinInput.addEventListener('input', (e) => {
-                console.log('[DEBUG] Combined Min changed to:', e.target.value);
                 updatePayoutTable();
             });
-            console.log('[DEBUG] Attached input listener to combinedMin input');
-        } else {
-            console.log('[DEBUG] WARNING: combinedMin input not found!');
         }
         
         // Add event listeners for Advanced Payout Options checkboxes and multipliers
@@ -778,44 +731,22 @@ function initializeTabs() {
             { checkboxId: 'payOtherAttacks', multiplierId: 'otherAttacksMultiplier' }
         ];
         
-        console.log('[DEBUG] === ADVANCED PAYOUT OPTIONS DEBUG ===');
-        console.log('[DEBUG] updatePayoutTable function exists:', typeof updatePayoutTable);
-        
         advancedPayoutOptions.forEach(option => {
             const checkbox = document.getElementById(option.checkboxId);
             const multiplier = document.getElementById(option.multiplierId);
             
-            console.log(`[DEBUG] Looking for ${option.checkboxId}:`, !!checkbox);
-            if (checkbox) {
-                console.log(`[DEBUG] ${option.checkboxId} found - type: ${checkbox.type}, checked: ${checkbox.checked}, value: ${checkbox.value}`);
-            }
-            console.log(`[DEBUG] Looking for ${option.multiplierId}:`, !!multiplier);
-            if (multiplier) {
-                console.log(`[DEBUG] ${option.multiplierId} found - type: ${multiplier.type}, value: ${multiplier.value}`);
-            }
-            
             if (checkbox) {
                 checkbox.addEventListener('change', (e) => {
-                    console.log(`[DEBUG] ${option.checkboxId} checkbox changed! New value: ${e.target.checked}`);
                     updatePayoutTable();
                 });
-                console.log(`[DEBUG] ✅ Attached change listener to ${option.checkboxId} checkbox`);
-            } else {
-                console.log(`[DEBUG] ❌ WARNING: ${option.checkboxId} checkbox not found!`);
             }
             
             if (multiplier) {
                 multiplier.addEventListener('input', (e) => {
-                    console.log(`[DEBUG] ${option.multiplierId} multiplier changed! New value: ${e.target.value}`);
                     updatePayoutTable();
                 });
-                console.log(`[DEBUG] ✅ Attached input listener to ${option.multiplierId} input`);
-            } else {
-                console.log(`[DEBUG] ❌ WARNING: ${option.multiplierId} input not found!`);
             }
         });
-        
-        console.log('[DEBUG] === END ADVANCED PAYOUT OPTIONS DEBUG ===');
     }
 }
 
@@ -864,12 +795,7 @@ function renderPayoutTable() {
         }
         totalCosts += value;
     });
-    // Debug log for other costs
-    console.log('[DEBUG] Other Costs values:', otherCosts.map(cost => {
-        const input = document.getElementById(cost.id);
-        return { id: cost.id, value: input ? input.value : 'N/A' };
-    }));
-    console.log('[DEBUG] Total Costs calculated:', totalCosts);
+
 
     // Advanced payout options
     const payAssists = document.getElementById('payAssists')?.checked;
@@ -883,17 +809,7 @@ function renderPayoutTable() {
     const enableCombinedMin = document.getElementById('enableCombinedMin')?.checked;
     const combinedMin = parseInt(document.getElementById('combinedMin')?.value || '0');
 
-    console.log('[DEBUG] === PAYOUT CALCULATION DEBUG ===');
-    console.log('[DEBUG] Advanced Payout Options values:');
-    console.log('[DEBUG] payAssists:', payAssists, 'assistMultiplier:', assistMultiplier);
-    console.log('[DEBUG] payRetals:', payRetals, 'retalMultiplier:', retalMultiplier);
-    console.log('[DEBUG] payOverseas:', payOverseas, 'overseasMultiplier:', overseasMultiplier);
-    console.log('[DEBUG] payOtherAttacks:', payOtherAttacks, 'otherAttacksMultiplier:', otherAttacksMultiplier);
-    console.log('[DEBUG] enableCombinedMin:', enableCombinedMin, 'combinedMin:', combinedMin);
-    console.log('[DEBUG] payPerHit:', payPerHit);
-    console.log('[DEBUG] === END PAYOUT CALCULATION DEBUG ===');
 
-    console.log('[DEBUG] Starting payout calculation for all players');
     const playersWithPayouts = Object.values(playerStats).map(player => {
         let warHitPayout = (player.warHits || 0) * payPerHit;
         let retalPayout = payRetals ? (player.warRetals || 0) * payPerHit * retalMultiplier : 0;
@@ -901,18 +817,14 @@ function renderPayoutTable() {
         let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerHit * overseasMultiplier : 0;
         let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier) : 0;
 
-        // Debug: print combined min logic for every player
         const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
-        console.log(`[DEBUG] Player: ${player.name}, War Hits: ${player.warHits || 0}, Assists: ${player.warAssists || 0}, Combined: ${combinedCount}, Min Enabled: ${enableCombinedMin}, Min Value: ${combinedMin}`);
         if (enableCombinedMin && combinedCount < combinedMin) {
             warHitPayout = 0;
             assistPayout = 0;
             retalPayout = 0;
             overseasPayout = 0;
             otherAttacksPayout = 0;
-            console.log(`[DEBUG] Zeroed payout for ${player.name} (Combined: ${combinedCount} < Min: ${combinedMin})`);
         }
-        console.log(`[DEBUG] Returning payout for ${player.name}: $${warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout}`);
         return {
             ...player,
             warHitPayout,
@@ -923,7 +835,6 @@ function renderPayoutTable() {
             totalPayout: warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout
         };
     });
-    console.log('[DEBUG] Finished payout calculation. playersWithPayouts:', playersWithPayouts.length);
 
     // Sort by payout sort state
     const { column: sortColumn, direction: sortDirection } = warReportData.payoutSortState;
@@ -1014,7 +925,6 @@ function renderPayoutTable() {
         </table>
         </div>
     `;
-    console.log('[DEBUG] Payout summary HTML:', tableHtml);
     payoutTableDiv.innerHTML = tableHtml;
     
     // Add click event listeners for sorting
@@ -1138,12 +1048,8 @@ function renderPayoutTable() {
         const combinedMinInput = document.getElementById('combinedMin');
         if (combinedMinInput) {
             combinedMinInput.addEventListener('input', (e) => {
-                console.log('[DEBUG] [renderPayoutTable] Combined Min changed to:', e.target.value);
                 renderPayoutTable();
             });
-            console.log('[DEBUG] [renderPayoutTable] Attached input listener to combinedMin input');
-        } else {
-            console.log('[DEBUG] [renderPayoutTable] combinedMin input not found!');
         }
     }, 0);
 }
