@@ -238,6 +238,7 @@ async function handleWarReportFetch() {
         const factionIdStr = String(factionId);
 
         allAttacks.forEach((attack) => {
+            console.log('[DEBUG] Attack modifiers:', attack.modifiers, 'Full attack:', attack);
             // Only include attacks where the attacker is in the user's faction
             if (!attack.attacker || !attack.attacker.faction || String(attack.attacker.faction.id) !== factionIdStr) {
                 return;
@@ -266,43 +267,22 @@ async function handleWarReportFetch() {
             // Count total attacks
             playerStats[attackerId].totalAttacks++;
             
-            // Check modifiers for different types of hits
-            if (attack.modifiers) {
-                // War hits (modifiers.war === 2)
-                if (attack.modifiers.war === 2) {
-                    playerStats[attackerId].warHits++;
-                    
-                    // Calculate respect for war hits
-                    if (attack.attacker && attack.defender && attack.attacker.level && attack.defender.level) {
-                        const attackerLevel = attack.attacker.level;
-                        const defenderLevel = attack.defender.level;
-                        const levelDiff = defenderLevel - attackerLevel;
-                        
-                        let baseRespect = 0;
-                        if (levelDiff >= 0) {
-                            baseRespect = Math.max(1, Math.floor(levelDiff * 0.5) + 1);
-                        } else {
-                            baseRespect = Math.max(1, Math.floor(levelDiff * 0.25) + 1);
-                        }
-                        const warRespect = baseRespect * 2;
-                        playerStats[attackerId].warScore += warRespect;
-                    }
-                }
-                
-                // Overseas hits
-                if (attack.modifiers.overseas && attack.modifiers.overseas > 1) {
-                    playerStats[attackerId].overseasHits++;
-                }
-                
-                // Retaliations
-                if (attack.modifiers.retaliation && attack.modifiers.retaliation === 1.5) {
-                    playerStats[attackerId].warRetals++;
-                }
+            // Check for ranked war hits using is_ranked_war
+            if (attack.is_ranked_war === true && !attack.is_interrupted) {
+                playerStats[attackerId].warHits++;
+                // Debug log for respect_gain
+                console.log(`[DEBUG] War hit by ${attack.attacker.name} (${attackerId}): respect_gain=${attack.respect_gain}, attack=`, attack);
+                playerStats[attackerId].warScore += attack.respect_gain || 0;
             }
             
-            // Assists
-            if (attack.result && attack.result.toLowerCase().includes('assist')) {
-                playerStats[attackerId].warAssists++;
+            // Overseas hits
+            if (attack.modifiers.overseas && attack.modifiers.overseas > 1) {
+                playerStats[attackerId].overseasHits++;
+            }
+            
+            // Retaliations
+            if (attack.modifiers.retaliation && attack.modifiers.retaliation === 1.5) {
+                playerStats[attackerId].warRetals++;
             }
             
             // Fair fight and defeated level calculations
@@ -469,7 +449,7 @@ function renderWarReportTable() {
                         <tr>
                             <td><a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
                             <td>${player.level}</td>
-                            <td>${player.warScore || 0}</td>
+                            <td>${Math.round(player.warScore || 0)}</td>
                             <td>${player.warHits}</td>
                             <td>${player.warAssists || 0}</td>
                             <td>${player.warRetals || 0}</td>
@@ -485,7 +465,7 @@ function renderWarReportTable() {
                 <tr class="totals-row">
                     <td><strong>TOTALS</strong></td>
                     <td></td>
-                    <td><strong>${sorted.reduce((sum, p) => sum + (p.warScore || 0), 0)}</strong></td>
+                    <td><strong>${Math.round(sorted.reduce((sum, p) => sum + (p.warScore || 0), 0))}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.warHits || 0), 0)}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td>
