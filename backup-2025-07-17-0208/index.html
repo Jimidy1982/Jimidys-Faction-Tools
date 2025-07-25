@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jimidy's Faction Tools</title>
+    <link rel="stylesheet" href="styles/styles.css">
+    <link rel="icon" href="data:,">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+</head>
+<body>
+    <header>
+      <h1>Jimidy's Faction Tools</h1>
+    </header>
+    <div class="dashboard-layout">
+        <nav>
+            <ul>
+                <li class="api-key-item">
+                    <label for="globalApiKey">API Key:</label>
+                    <input type="text" id="globalApiKey" placeholder="Enter your Torn API key">
+                </li>
+                <li><a href="#" class="nav-link">Home</a></li>
+                <li><a class="nav-link" href="#" style="color: #888; cursor: default;" title="Broken by Ched">Consumption Tracker</a></li>
+                <li><a href="#faction-battle-stats" class="nav-link">Faction Battle Stats</a></li>
+                <li><a href="#war-chain-reporter" class="nav-link">War Chain Reporter</a></li>
+                <li><a href="#war-report-2.0" class="nav-link">War Payout Calculator</a></li>
+            </ul>
+        </nav>
+        <main id="app-content"></main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html> 

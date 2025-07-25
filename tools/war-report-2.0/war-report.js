@@ -7,13 +7,51 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Helper to calculate base respect from attack data
+function calculateBaseRespect(attack, removeModifiers = false) {
+    const totalRespect = attack.respect_gain || 0;
+    const groupBonus = attack.modifiers?.group || 0;
+    const chainBonus = attack.modifiers?.chain || 0;
+    
+    // Check if this is a chain attack (respect_gain is 10, 20, 40, 80, 160, etc.)
+    // Chain attacks follow the pattern: 10 * 2^n where n >= 0
+    const chainValues = [10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120];
+    if (chainValues.includes(totalRespect)) {
+        return 10; // Chain attacks are worth exactly 10 base respect points
+    }
+    
+    // For non-chain attacks, calculate base respect
+    let baseRespect = totalRespect;
+    
+    if (removeModifiers) {
+        // Remove chain modifier (values between 1.1 and 3.0)
+        if (chainBonus >= 1.1 && chainBonus <= 3.0) {
+            baseRespect = baseRespect / chainBonus;
+        }
+        
+        // Remove group modifier (values between 1.25 and 1.5)
+        if (groupBonus >= 1.25 && groupBonus <= 1.5) {
+            baseRespect = baseRespect / groupBonus;
+        }
+    } else {
+        // Original logic: only remove group bonus
+        if (groupBonus > 0) {
+            baseRespect = baseRespect / groupBonus;
+        }
+    }
+    
+    // Return whole integer for base respect
+    return Math.round(baseRespect);
+}
+
 // Global state for this module
 let warReportData = {
     playerStats: {},
     warInfo: {},
     allAttacks: [],
     sortState: { column: 'warScore', direction: 'desc' },
-    payoutSortState: { column: 'totalPayout', direction: 'desc' }
+    payoutSortState: { column: 'totalPayout', direction: 'desc' },
+    respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
 };
 
 let tabsInitialized = false;
@@ -185,11 +223,43 @@ async function handleWarReportFetch() {
         const warStartTime = targetWar.start;
         const warEndTime = targetWar.end || Math.floor(Date.now() / 1000);
 
+        // Debug: Log the exact timestamps we're using
+        console.log(`🔍 [TIMESTAMP DEBUG] War start: ${warStartTime} (${new Date(warStartTime * 1000).toISOString()})`);
+        console.log(`🔍 [TIMESTAMP DEBUG] War end: ${warEndTime} (${new Date(warEndTime * 1000).toISOString()})`);
+        
+        // Ensure war end time is after war start time
+        if (warEndTime <= warStartTime) {
+            console.log(`🔍 [TIMESTAMP DEBUG] War end time (${warEndTime}) is before or equal to start time (${warStartTime}), using current time`);
+            const currentTime = Math.floor(Date.now() / 1000);
+            console.log(`🔍 [TIMESTAMP DEBUG] Using current time: ${currentTime} (${new Date(currentTime * 1000).toISOString()})`);
+        }
+        
+        // Debug: Log all wars to see if we have the right one
+        console.log(`🔍 [WAR DEBUG] All wars found:`, rankedWarsArray.map(w => ({
+            id: w.id,
+            start: w.start,
+            start_readable: new Date(w.start * 1000).toISOString(),
+            end: w.end,
+            end_readable: w.end ? new Date(w.end * 1000).toISOString() : 'ongoing',
+            opponent: w.opponent
+        })));
+
         // Step 2: Fetch faction attacks during the war period
         console.log('[WAR REPORT 2.0] Fetching faction attacks during war period...');
         let allAttacks = [];
+        
+        // Ensure we have a valid end time that's after the start time
         let batchTo = warEndTime;
-        let batchFrom = warStartTime;
+        if (warEndTime <= warStartTime) {
+            batchTo = Math.floor(Date.now() / 1000);
+        }
+        
+        // Add 1-hour buffer to start time to catch attacks initiated just before war start
+        let batchFrom = warStartTime - 3600;
+        console.log(`🔍 [TIMESTAMP DEBUG] Fetching attacks from: ${batchFrom} (${new Date(batchFrom * 1000).toISOString()}) to: ${batchTo} (${new Date(batchTo * 1000).toISOString()})`);
+        
+        // Debug: Log the raw API response structure
+        console.log(`🔍 [API DEBUG] Faction ID being used: ${factionId}`);
         let batchCount = 0;
         let keepFetching = true;
         const maxBatches = 1000; // Arbitrary high limit for safety
@@ -216,6 +286,12 @@ async function handleWarReportFetch() {
             allAttacks = allAttacks.concat(attacks);
             console.log(`[WAR REPORT 2.0] Fetched ${attacks.length} attacks in batch ${batchCount + 1}`);
             
+            // Debug: Log the first attack structure
+            if (batchCount === 0 && attacks.length > 0) {
+                console.log('🔍 [API DEBUG] First attack from faction attacks API:', attacks[0]);
+                console.log('🔍 [API DEBUG] Attack keys:', Object.keys(attacks[0]));
+            }
+            
             if (attacks.length < 100) {
                 keepFetching = false; // No more attacks to fetch
             } else {
@@ -236,9 +312,22 @@ async function handleWarReportFetch() {
         const playerStats = {};
         const factionIdStr = String(factionId);
 
+        console.log(`[WAR REPORT 2.0] Processing ${allAttacks.length} attacks for faction ${factionIdStr}`);
+        console.log(`[DEBUG TEST] Debug logging is working`);
+        
         allAttacks.forEach((attack) => {
             // Only include attacks where the attacker is in the user's faction
             if (!attack.attacker || !attack.attacker.faction || String(attack.attacker.faction.id) !== factionIdStr) {
+                // Debug: Log attacks that are being filtered out
+                if (attack.attacker && ['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(attack.attacker.name)) {
+                    console.log(`🔍 [FILTERED OUT] ${attack.attacker.name} attack filtered:`, {
+                        attacker_faction: attack.attacker.faction?.id,
+                        expected_faction: factionIdStr,
+                        id: attack.id,
+                        started: attack.started,
+                        started_readable: attack.started ? new Date(attack.started * 1000).toISOString() : 'undefined'
+                    });
+                }
                 return;
             }
 
@@ -265,10 +354,54 @@ async function handleWarReportFetch() {
             // Count total attacks
             playerStats[attackerId].totalAttacks++;
             
-            // Check for ranked war hits using is_ranked_war
-            if (attack.is_ranked_war === true && !attack.is_interrupted) {
+            // Debug: Log attacks that might be missing for specific players
+            const playerName = attack.attacker.name;
+            if (['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(playerName)) {
+                console.log(`🔍 [ATTACK DEBUG] ${playerName} attack:`, {
+                    id: attack.id,
+                    started: attack.started,
+                    started_readable: attack.started ? new Date(attack.started * 1000).toISOString() : 'undefined',
+                    is_ranked_war: attack.is_ranked_war,
+                    is_interrupted: attack.is_interrupted,
+                    result: attack.result,
+                    respect_gain: attack.respect_gain,
+                    modifiers_war: attack.modifiers?.war,
+                    started: attack.started,
+                    id: attack.id
+                });
+            }
+            
+            // Check for war hits using the original criteria
+            const isWarHit = (
+                !attack.is_interrupted && 
+                (
+                    attack.is_ranked_war === true || 
+                    (attack.modifiers && attack.modifiers.war && attack.modifiers.war === 2)
+                )
+            );
+            
+            if (isWarHit) {
                 playerStats[attackerId].warHits++;
                 playerStats[attackerId].warScore += attack.respect_gain || 0;
+                if (['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(playerName)) {
+                    console.log(`✅ [WAR HIT COUNTED] ${playerName} attack counted as war hit:`, {
+                        id: attack.id,
+                        is_ranked_war: attack.is_ranked_war,
+                        modifiers_war: attack.modifiers?.war,
+                        respect_gain: attack.respect_gain
+                    });
+                }
+            } else if (['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(playerName)) {
+                // Log why this attack wasn't counted as a war hit
+                console.log(`❌ [WAR HIT MISSED] ${playerName} attack NOT counted as war hit:`, {
+                    id: attack.id,
+                    is_ranked_war: attack.is_ranked_war,
+                    is_interrupted: attack.is_interrupted,
+                    modifiers_war: attack.modifiers?.war,
+                    respect_gain: attack.respect_gain,
+                    score: attack.score,
+                    reason: attack.is_interrupted ? 'interrupted' : 'not_war_attack'
+                });
             }
             
             // Overseas hits
@@ -307,10 +440,98 @@ async function handleWarReportFetch() {
 
         });
 
+        // Debug: Overall attack counting
+        const totalWarHits = Object.values(playerStats).reduce((sum, player) => sum + player.warHits, 0);
+        const totalAttacks = allAttacks.length;
+        const warHitsWithModifiers = allAttacks.filter(attack => 
+            attack.modifiers && attack.modifiers.war && attack.modifiers.war > 0
+        ).length;
+        const rankedWarHits = allAttacks.filter(attack => attack.is_ranked_war === true).length;
+        
+        console.log(`🔍 [OVERALL STATS] Total attacks: ${totalAttacks}, War hits counted: ${totalWarHits}, Attacks with war modifiers: ${warHitsWithModifiers}, Ranked war hits: ${rankedWarHits}`);
+
         // Calculate averages
         Object.values(playerStats).forEach(player => {
             player.avgFairFight = player.totalAttacks > 0 ? player.totalFairFight / player.totalAttacks : 0;
             player.avgDefLevel = player.successfulAttacks > 0 ? player.totalDefeatedLevel / player.successfulAttacks : 0;
+        });
+
+        // Debug: Log final counts for specific players
+        ['Jimidy', 'Plebian', 'kokokok', 'Joe21'].forEach(name => {
+            const player = Object.values(playerStats).find(p => p.name === name);
+            if (player) {
+                console.log(`🔍 [FINAL COUNTS] ${name}:`, {
+                    totalAttacks: player.totalAttacks,
+                    warHits: player.warHits,
+                    warAssists: player.warAssists,
+                    warRetals: player.warRetals
+                });
+                
+                // Count attacks manually for verification
+                const playerAttacks = allAttacks.filter(attack => {
+                    const attackerName = attack.attacker?.name || attack.attacker_name;
+                    return attackerName === name;
+                });
+                
+                const warHitsManual = playerAttacks.filter(attack => {
+                    const isWarHit = !attack.is_interrupted && 
+                        (
+                            attack.is_ranked_war === true || 
+                            (attack.modifiers && attack.modifiers.war && attack.modifiers.war === 2)
+                        );
+                    return isWarHit;
+                });
+                
+                console.log(`🔍 [MANUAL VERIFICATION] ${name}:`, {
+                    totalAttacksFound: playerAttacks.length,
+                    warHitsFound: warHitsManual.length,
+                    attackIds: playerAttacks.map(a => a.id).slice(0, 10) // First 10 IDs for reference
+                });
+                
+                // Special detailed logging for kokokok
+                if (name === 'kokokok') {
+                    console.log(`🔍 [KOKOKOK DETAILED ANALYSIS] Total attacks found: ${playerAttacks.length}`);
+                    
+                    // Log the first attack's raw structure to understand the data format
+                    if (playerAttacks.length > 0) {
+                        console.log(`🔍 [KOKOKOK RAW DATA SAMPLE] First attack raw structure:`, playerAttacks[0]);
+                        console.log(`🔍 [KOKOKOK RAW DATA SAMPLE] All available keys:`, Object.keys(playerAttacks[0]));
+                    } else {
+                        console.log(`🔍 [KOKOKOK RAW DATA SAMPLE] No attacks found for kokokok!`);
+                    }
+                    
+                    // Log ALL of kokokok's attacks with full details
+                    playerAttacks.forEach((attack, index) => {
+                        const isWarHit = !attack.is_interrupted && 
+                            (
+                                attack.is_ranked_war === true || 
+                                (attack.modifiers && attack.modifiers.war && attack.modifiers.war === 2)
+                            );
+                        
+                        console.log(`🔍 [KOKOKOK ATTACK ${index + 1}] ID: ${attack.id}, War Hit: ${isWarHit}, Defender: ${attack.defender?.name || attack.defender_name}, Details:`, {
+                            id: attack.id,
+                            started: attack.started,
+                            started_readable: attack.started ? new Date(attack.started * 1000).toISOString() : 'undefined',
+                            defender: attack.defender?.name || attack.defender_name,
+                            is_ranked_war: attack.is_ranked_war,
+                            is_interrupted: attack.is_interrupted,
+                            modifiers_war: attack.modifiers?.war,
+                            respect_gain: attack.respect_gain,
+                            score: attack.score,
+                            result: attack.result
+                        });
+                    });
+                    
+                    // Count by different criteria
+                    const rankedWarHits = playerAttacks.filter(a => a.is_ranked_war === true).length;
+                    const warModifier2Hits = playerAttacks.filter(a => a.modifiers?.war === 2).length;
+                    const warModifier1Hits = playerAttacks.filter(a => a.modifiers?.war === 1).length;
+                    const interruptedHits = playerAttacks.filter(a => a.is_interrupted).length;
+                    const nonInterruptedHits = playerAttacks.filter(a => !a.is_interrupted).length;
+                    
+                    console.log(`🔍 [KOKOKOK BREAKDOWN] Ranked war: ${rankedWarHits}, War mod 2: ${warModifier2Hits}, War mod 1: ${warModifier1Hits}, Interrupted: ${interruptedHits}, Non-interrupted: ${nonInterruptedHits}`);
+                }
+            }
         });
 
         // Store data globally for this module
@@ -456,7 +677,7 @@ function renderWarReportTable() {
                     const avgDefLevel = player.avgDefLevel.toFixed(1);
                     return `
                         <tr>
-                            <td><a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
+                            <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
                             <td>${player.level}</td>
                             <td>${Math.round(player.warScore || 0)}</td>
                             <td>${player.warHits}</td>
@@ -665,6 +886,13 @@ function initializeTabs() {
                 } else if (tabId === 'payout-tab') {
                     console.log('[WAR REPORT 2.0] No player stats available for payout table');
                 }
+                // If switching to respect payout tab and we have data, render respect payout table
+                else if (tabId === 'respect-payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+                    console.log('[WAR REPORT 2.0] Rendering respect payout table...');
+                    renderRespectPayoutTable();
+                } else if (tabId === 'respect-payout-tab') {
+                    console.log('[WAR REPORT 2.0] No player stats available for respect payout table');
+                }
             } else {
                 console.error('[WAR REPORT 2.0] Pane not found for tab ID:', tabId);
             }
@@ -747,6 +975,102 @@ function initializeTabs() {
                 });
             }
         });
+
+        // Initialize respect payout input listeners and formatting
+        const respectCacheSalesInput = document.getElementById('respectCacheSales');
+        const respectPayPerHitInput = document.getElementById('respectPayPerHit');
+        
+        if (respectCacheSalesInput && respectPayPerHitInput) {
+            console.log('[WAR REPORT 2.0] Adding respect payout input listeners');
+            addThousandSeparatorInput(respectCacheSalesInput);
+            // respectPayPerHitInput is readonly, so no need to add formatting
+            
+            // Define updateRespectPayoutTable before using it
+            const updateRespectPayoutTable = () => {
+                if (warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+                    console.log('[WAR REPORT 2.0] Updating respect payout table due to input change');
+                    renderRespectPayoutTable();
+                }
+            };
+            
+            // Apply to Respect Other Costs boxes as well
+            const respectOtherCostsInputs = [
+                document.getElementById('respectOtherConsumables'),
+                document.getElementById('respectOtherSpies'),
+                document.getElementById('respectOtherBounties'),
+                document.getElementById('respectOtherTerms'),
+                document.getElementById('respectOtherOther')
+            ];
+            respectOtherCostsInputs.forEach(input => {
+                if (input) {
+                    addThousandSeparatorInput(input);
+                    input.addEventListener('input', updateRespectPayoutTable);
+                    input.addEventListener('blur', () => {
+                        addThousandSeparatorInput(input); // re-apply formatting on blur
+                    });
+                }
+            });
+            respectCacheSalesInput.addEventListener('input', updateRespectPayoutTable);
+            
+            // Add event listeners for respect combined minimum settings
+            const respectEnableCombinedMinCheckbox = document.getElementById('respectEnableCombinedMin');
+            const respectCombinedMinInput = document.getElementById('respectCombinedMin');
+            
+            if (respectEnableCombinedMinCheckbox) {
+                respectEnableCombinedMinCheckbox.addEventListener('change', updateRespectPayoutTable);
+            }
+            
+            if (respectCombinedMinInput) {
+                respectCombinedMinInput.addEventListener('input', (e) => {
+                    updateRespectPayoutTable();
+                });
+            }
+            
+            // Add event listeners for Respect Advanced Payout Options checkboxes and multipliers
+            const respectAdvancedPayoutOptions = [
+                { checkboxId: 'respectPayAssists', multiplierId: 'respectAssistMultiplier' },
+                { checkboxId: 'respectPayRetals', multiplierId: 'respectRetalMultiplier' },
+                { checkboxId: 'respectPayOverseas', multiplierId: 'respectOverseasMultiplier' },
+                { checkboxId: 'respectPayOtherAttacks', multiplierId: 'respectOtherAttacksMultiplier' }
+            ];
+            
+            respectAdvancedPayoutOptions.forEach(option => {
+                const checkbox = document.getElementById(option.checkboxId);
+                const multiplier = document.getElementById(option.multiplierId);
+                
+                if (checkbox) {
+                    checkbox.addEventListener('change', (e) => {
+                        updateRespectPayoutTable();
+                    });
+                }
+                
+                if (multiplier) {
+                    multiplier.addEventListener('input', (e) => {
+                        updateRespectPayoutTable();
+                    });
+                }
+            });
+            
+            // Add event listener for remaining percentage input (only once)
+            const remainingPercentageInput = document.getElementById('respectRemainingPercentage');
+            if (remainingPercentageInput && !remainingPercentageInput.hasAttribute('data-listener-added')) {
+                remainingPercentageInput.addEventListener('input', function() {
+                    // Trigger recalculation when percentage changes
+                    renderRespectPayoutTable();
+                });
+                remainingPercentageInput.setAttribute('data-listener-added', 'true');
+            }
+            
+            // Add event listener for remove modifiers checkbox (only once)
+            const removeModifiersCheckbox = document.getElementById('respectRemoveModifiers');
+            if (removeModifiersCheckbox && !removeModifiersCheckbox.hasAttribute('data-listener-added')) {
+                removeModifiersCheckbox.addEventListener('change', function() {
+                    // Trigger recalculation when checkbox changes
+                    renderRespectPayoutTable();
+                });
+                removeModifiersCheckbox.setAttribute('data-listener-added', 'true');
+            }
+        }
     }
 }
 
@@ -896,14 +1220,14 @@ function renderPayoutTable() {
                     const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
                     return `
                         <tr>
-                            <td><a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
+                            <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
                             <td>${player.level}</td>
                             <td>${player.warHits || 0}</td>
                             <td>${player.warRetals || 0}</td>
                             <td>${player.warAssists || 0}</td>
                             <td>${player.overseasHits || 0}</td>
                             <td>${otherAttacks}</td>
-                            <td><strong>$${player.totalPayout.toLocaleString()}</strong></td>
+                            <td><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
                             <td>${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
                         </tr>
                     `;
@@ -1107,6 +1431,498 @@ function exportPayoutToCSV() {
     document.body.removeChild(link);
 }
 
+// --- Respect Based Payout Table Rendering ---
+function renderRespectPayoutTable() {
+    console.log('🔍 === RESPECT PAYOUT FUNCTION CALLED ===');
+    const playerStats = warReportData.playerStats;
+    const warInfo = warReportData.warInfo;
+    const allAttacks = warReportData.allAttacks;
+    if (!playerStats || Object.keys(playerStats).length === 0) {
+        console.log('[WAR REPORT 2.0] No player stats available for respect payout table');
+        return;
+    }
+    
+    console.log('[RESPECT DEBUG] Starting renderRespectPayoutTable');
+    console.log('[RESPECT DEBUG] allAttacks length:', allAttacks.length);
+    
+    // Get respect payout settings (use raw value for calculations)
+    const respectCacheSalesInput = document.getElementById('respectCacheSales');
+    const respectPayPerHitInput = document.getElementById('respectPayPerHit');
+    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d]/g, '') || '1000000000');
+    
+    // Get advanced options early
+    const removeModifiers = document.getElementById('respectRemoveModifiers')?.checked;
+    
+    // OPTIMIZATION: Process all attacks ONCE and cache player respect data
+    const factionId = parseInt(document.getElementById('factionId').value);
+    const playerRespectData = {};
+    let totalBaseRespect = 0;
+    let totalWarHits = 0;
+    
+    // Initialize player respect data
+    Object.keys(playerStats).forEach(playerId => {
+        playerRespectData[playerId] = {
+            baseRespect: 0,
+            warHits: 0
+        };
+    });
+    
+    // Process all attacks once to calculate both total and per-player respect
+    console.log('[RESPECT DEBUG] Processing attacks for respect calculation...');
+    allAttacks.forEach((attack, index) => {
+        const attackerFactionId = attack.attacker?.faction?.id;
+        const defenderFactionId = attack.defender?.faction?.id;
+        const isAttackerFaction = attackerFactionId === factionId;
+        const isNotDefenderFaction = defenderFactionId !== factionId;
+        
+        if (isAttackerFaction && isNotDefenderFaction) {
+            totalWarHits++;
+            const baseRespect = calculateBaseRespect(attack, removeModifiers);
+            totalBaseRespect += baseRespect;
+            
+            // Add to player's respect data
+            const attackerId = String(attack.attacker?.id);
+            if (playerRespectData[attackerId]) {
+                playerRespectData[attackerId].baseRespect += baseRespect;
+                playerRespectData[attackerId].warHits++;
+            }
+            
+            // Debug logging for first 5 attacks
+            if (totalWarHits <= 5) {
+                console.log('[RESPECT DEBUG] Processing war hit:', {
+                    respect_gain: attack.respect_gain,
+                    modifiers: attack.modifiers,
+                    baseRespect: baseRespect,
+                    attacker: attack.attacker?.name
+                });
+            }
+        }
+    });
+    console.log('[RESPECT DEBUG] Total war hits found:', totalWarHits);
+    console.log('[RESPECT DEBUG] Total base respect calculated:', totalBaseRespect);
+    
+    // Get Other Costs (calculate this before pay per hit calculation)
+    const otherCosts = [
+        { label: 'Consumables', id: 'respectOtherConsumables' },
+        { label: 'Spies', id: 'respectOtherSpies' },
+        { label: 'Bounties', id: 'respectOtherBounties' },
+        { label: 'Terms', id: 'respectOtherTerms' },
+        { label: 'Other', id: 'respectOtherOther' }
+    ];
+    let totalCosts = 0;
+    otherCosts.forEach(cost => {
+        const input = document.getElementById(cost.id);
+        let value = 0;
+        if (input) {
+            // Always parse cleaned .value (remove all non-digit chars)
+            value = parseInt(input.value.replace(/[^\d]/g, '') || '0', 10);
+        }
+        totalCosts += value;
+    });
+    
+    // Auto-calculate pay per hit: (Cache Sales - All Other Costs - Remaining) / Total War Hits
+    const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
+    const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
+    const remaining = cacheSales * remainingPercentage;
+    const availablePayout = cacheSales - remaining - totalCosts;
+    const payPerHit = totalWarHits > 0 ? availablePayout / totalWarHits : 0;
+    
+    // Update the readonly input field
+    if (respectPayPerHitInput) {
+        respectPayPerHitInput.value = payPerHit.toLocaleString();
+        respectPayPerHitInput.dataset.raw = payPerHit.toString();
+    }
+
+    // Get war name and dates for summary
+    let warName = '';
+    if (warInfo && warInfo.factions && Array.isArray(warInfo.factions)) {
+        // Use factionId from input to determine enemy
+        const factionIdInput = document.getElementById('factionId');
+        const factionId = factionIdInput ? factionIdInput.value.trim() : '';
+        const enemy = warInfo.factions.find(f => String(f.id) !== String(factionId));
+        const start = new Date(warInfo.start * 1000).toLocaleDateString();
+        const end = new Date(warInfo.end * 1000).toLocaleDateString();
+        warName = enemy ? `vs ${enemy.name} (${start} - ${end})` : `(${start} - ${end})`;
+    }
+
+    // Advanced payout options
+    const payAssists = document.getElementById('respectPayAssists')?.checked;
+    const assistMultiplier = parseFloat(document.getElementById('respectAssistMultiplier')?.value || '0.25');
+    const payRetals = document.getElementById('respectPayRetals')?.checked;
+    const retalMultiplier = parseFloat(document.getElementById('respectRetalMultiplier')?.value || '0.5');
+    const payOverseas = document.getElementById('respectPayOverseas')?.checked;
+    const overseasMultiplier = parseFloat(document.getElementById('respectOverseasMultiplier')?.value || '0.25');
+    const payOtherAttacks = document.getElementById('respectPayOtherAttacks')?.checked;
+    const otherAttacksMultiplier = parseFloat(document.getElementById('respectOtherAttacksMultiplier')?.value || '0.1');
+    const enableCombinedMin = document.getElementById('respectEnableCombinedMin')?.checked;
+    const combinedMin = parseInt(document.getElementById('respectCombinedMin')?.value || '0');
+
+    // Calculate respect-based payouts for each player
+    const playersWithRespectPayouts = Object.values(playerStats).map(player => {
+        // Use cached player respect data instead of processing all attacks again
+        const playerIdStr = String(player.id);
+        const playerData = playerRespectData[playerIdStr] || { baseRespect: 0, warHits: 0 };
+        const playerBaseRespect = playerData.baseRespect;
+        const playerWarHits = playerData.warHits;
+        
+        // Debug first few players
+        if (player.name === 'iNico' || player.name === 'Jimidy' || player.name === 'Joe21') {
+            console.log('[RESPECT DEBUG] Player calculation:', {
+                name: player.name,
+                id: player.id,
+                playerWarHits: playerWarHits,
+                playerBaseRespect: playerBaseRespect
+            });
+        }
+        
+        // Calculate additional payouts first (retaliations, assists, overseas, other attacks)
+        let retalPayout = payRetals ? (player.warRetals || 0) * payPerHit * retalMultiplier : 0;
+        let assistPayout = payAssists ? (player.warAssists || 0) * payPerHit * assistMultiplier : 0;
+        let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerHit * overseasMultiplier : 0;
+        let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier) : 0;
+
+        // Check combined minimum requirement
+        const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
+        if (enableCombinedMin && combinedCount < combinedMin) {
+            retalPayout = 0;
+            assistPayout = 0;
+            overseasPayout = 0;
+            otherAttacksPayout = 0;
+        }
+        
+        // Calculate respect ratio for this player
+        const respectRatio = totalBaseRespect > 0 ? playerBaseRespect / totalBaseRespect : 0;
+        
+        // Initialize war hit payout (will be calculated in next step)
+        let warHitPayout = 0;
+        
+        return {
+            ...player,
+            playerBaseRespect,
+            respectRatio: respectRatio.toFixed(4),
+            warHitPayout,
+            retalPayout,
+            assistPayout,
+            overseasPayout,
+            otherAttacksPayout,
+            totalPayout: warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout
+        };
+    });
+
+    // Calculate total additional payouts (retals, assists, overseas, other attacks)
+    const totalAdditionalPayouts = playersWithRespectPayouts.reduce((sum, p) => 
+        sum + p.retalPayout + p.assistPayout + p.overseasPayout + p.otherAttacksPayout, 0);
+    
+    // Calculate remaining money for respect-based distribution
+    const respectDistributionPool = availablePayout - totalAdditionalPayouts;
+    
+    // Filter players who qualify for respect-based distribution (meet combined minimum)
+    const qualifyingPlayers = playersWithRespectPayouts.filter(player => {
+        if (enableCombinedMin) {
+            const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
+            return combinedCount >= combinedMin;
+        }
+        return true; // If no combined minimum, all players qualify
+    });
+    
+    // Calculate total respect of qualifying players
+    const totalQualifyingRespect = qualifyingPlayers.reduce((sum, p) => sum + p.playerBaseRespect, 0);
+    
+    // Distribute remaining money proportionally based on respect
+    qualifyingPlayers.forEach(player => {
+        if (totalQualifyingRespect > 0) {
+            const respectShare = player.playerBaseRespect / totalQualifyingRespect;
+            player.warHitPayout = respectShare * respectDistributionPool;
+        } else {
+            player.warHitPayout = 0;
+        }
+        
+        // Update total payout
+        player.totalPayout = player.warHitPayout + player.retalPayout + player.assistPayout + player.overseasPayout + player.otherAttacksPayout;
+    });
+    
+    // Calculate final total payout
+    let totalPayout = playersWithRespectPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
+    
+    // Sort by respect payout sort state (AFTER all calculations are complete)
+    const { column: sortColumn, direction: sortDirection } = warReportData.respectPayoutSortState;
+    playersWithRespectPayouts.sort((a, b) => {
+        let aValue = a[sortColumn];
+        let bValue = b[sortColumn];
+        if (typeof aValue === 'string') {
+            aValue = aValue.toLowerCase();
+            bValue = bValue.toLowerCase();
+        }
+        if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+        if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+    
+    // Use the same remaining calculation for summary
+    const remainingPercentageSlider2 = document.getElementById('respectRemainingPercentage');
+    const remainingPercentage2 = remainingPercentageSlider2 ? parseFloat(remainingPercentageSlider2.value) / 100 : 0.3;
+    const remaining2 = cacheSales * remainingPercentage2;
+    const remainingPercent = cacheSales !== 0 ? ((remaining2 / cacheSales) * 100).toFixed(2) : '0.00';
+    
+    const respectPayoutTableDiv = document.getElementById('respectPayoutTable');
+    if (!respectPayoutTableDiv) return;
+    
+    const tableHtml = `
+        <div class="summary-box" style="margin-bottom: 20px;">
+            <h3><strong>Respect Based War Payout Summary</strong>${warName ? ' <span style=\"font-weight:normal;color:#ccc;font-size:0.95em;\">' + warName + '</span>' : ''}</h3>
+            <p><strong>Cache Sales:</strong> $${cacheSales.toLocaleString()}</p>
+            <p><strong>Total Costs:</strong> $${totalCosts.toLocaleString()}</p>
+            <p><strong>Total Base Respect:</strong> ${totalBaseRespect.toLocaleString()}</p>
+            <p><strong>Total War Hits:</strong> ${totalWarHits.toLocaleString()}</p>
+            <p><strong>Pay Per Hit (Auto-calculated):</strong> $${Math.round(payPerHit).toLocaleString()}</p>
+            <p><strong>Total Payout:</strong> $${totalPayout.toLocaleString()}</p>
+            <p><strong>Remaining:</strong> $${remaining2.toLocaleString()} <span style=\"color:#ffd700;font-weight:normal;\">(${remainingPercent}% of cache sales)</span></p>
+            <button id="exportRespectPayoutCSV" class="btn btn-secondary">Export to CSV</button>
+        </div>
+        <div class="table-container">
+        <div class="table-header" style="display: flex; align-items: flex-end; justify-content: space-between;">
+            <h3>Payout Table (respect based)</h3>
+            <button id="openAllRespectPayLinks" class="btn btn-primary" style="margin-bottom: 4px;">Open All Links</button>
+        </div>
+        <div style="margin-bottom: 10px; font-size: 12px; color: #666; font-style: italic;">
+            💡 <strong>Note:</strong> If links don't open, please allow popups for this site in your browser settings.
+        </div>
+        <table id="respectPayoutTable" style="width:100%;border-collapse:collapse;margin-top:20px;">
+            <thead>
+                <tr>
+                    <th data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Member <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'name' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="level" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Level <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'level' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War Hits <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="playerBaseRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Base Respect <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'playerBaseRespect' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="respectRatio" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Respect % <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'respectRatio' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warRetals" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Retaliations <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warRetals' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warAssists" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Assists <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warAssists' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="overseasHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Overseas <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'overseasHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="otherAttacks" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Other Attacks <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'otherAttacks' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>Total Payout</strong> <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'totalPayout' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Pay link</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${playersWithRespectPayouts.map(player => {
+                    const otherAttacks = (player.totalAttacks || 0) - (player.warHits || 0) - (player.warAssists || 0);
+                    const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
+                    return `
+                        <tr>
+                            <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.level}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warHits || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerBaseRespect}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${(parseFloat(player.respectRatio) * 100).toFixed(2)}%</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warRetals || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warAssists || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.overseasHits || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${otherAttacks}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
+                        </tr>
+                    `;
+                }).join('')}
+            </tbody>
+            <tfoot>
+                <tr class="totals-row" style="background-color: #1a1a1a;">
+                    <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><strong>TOTALS</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalWarHits}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalBaseRespect}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>100.00%</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + ((p.totalAttacks || 0) - (p.warHits || 0) - (p.warAssists || 0)), 0)}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${totalPayout.toLocaleString()}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
+                </tr>
+            </tfoot>
+        </table>
+        </div>
+    `;
+    respectPayoutTableDiv.innerHTML = tableHtml;
+    
+    // Add click event listeners for respect payout table sorting
+    const respectTable = document.getElementById('respectPayoutTable');
+    console.log('[WAR REPORT 2.0] Respect payout table found:', !!respectTable);
+    if (respectTable) {
+        const headers = respectTable.querySelectorAll('th[data-column]');
+        console.log('[WAR REPORT 2.0] Found respect payout table headers:', headers.length);
+        headers.forEach(header => {
+            header.addEventListener('click', () => {
+                const column = header.getAttribute('data-column');
+                console.log('[WAR REPORT 2.0] Respect payout header clicked:', column);
+                console.log('[WAR REPORT 2.0] Current respect payout sort state:', warReportData.respectPayoutSortState);
+                
+                if (warReportData.respectPayoutSortState.column === column) {
+                    warReportData.respectPayoutSortState.direction = warReportData.respectPayoutSortState.direction === 'asc' ? 'desc' : 'asc';
+                } else {
+                    warReportData.respectPayoutSortState.column = column;
+                    warReportData.respectPayoutSortState.direction = column === 'name' ? 'asc' : 'desc';
+                }
+                
+                console.log('[WAR REPORT 2.0] New respect payout sort state:', warReportData.respectPayoutSortState);
+                renderRespectPayoutTable();
+            });
+        });
+    }
+    
+    // Add click event listener for "Open All Respect Links" button
+    const openAllRespectPayLinksBtn = document.getElementById('openAllRespectPayLinks');
+    if (openAllRespectPayLinksBtn) {
+        openAllRespectPayLinksBtn.addEventListener('click', () => {
+            const payLinks = document.querySelectorAll('#respectPayoutTable a[href*="factions.php?step=your"]');
+            if (payLinks.length === 0) {
+                alert('No payment links found. Please ensure the respect payout table is loaded.');
+                return;
+            }
+            
+            // Check if popup blocker might be active
+            const testWindow = window.open('', '_blank');
+            if (!testWindow || testWindow.closed || typeof testWindow.closed === 'undefined') {
+                alert('⚠️ Popup blocker detected! Please allow popups for this site to use "Open All Links".');
+                return;
+            }
+            testWindow.close();
+            
+            // Open all payment links
+            payLinks.forEach(link => {
+                window.open(link.href, '_blank');
+            });
+            
+            alert(`Opened ${payLinks.length} payment links in new tabs.`);
+        });
+    }
+    
+    // Add click event listener for respect export button
+    const exportRespectPayoutBtn = document.getElementById('exportRespectPayoutCSV');
+    if (exportRespectPayoutBtn) {
+        exportRespectPayoutBtn.addEventListener('click', exportRespectPayoutToCSV);
+    }
+    
+}
+
+// --- Export Respect Payout to CSV ---
+function exportRespectPayoutToCSV() {
+    const playerStats = warReportData.playerStats;
+    const allAttacks = warReportData.allAttacks;
+    if (!playerStats || Object.keys(playerStats).length === 0) {
+        alert('No respect payout data to export. Please fetch war data first.');
+        return;
+    }
+    
+    // Get respect payout settings
+    const respectCacheSalesInput = document.getElementById('respectCacheSales');
+    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d]/g, '') || '1000000000');
+    
+    // Calculate total base respect for all war hits
+    let totalBaseRespect = 0;
+    let totalWarHits = 0;
+    
+    // Process all attacks to calculate base respect
+    allAttacks.forEach(attack => {
+        if (attack.attacker_faction === parseInt(document.getElementById('factionId').value) && 
+            attack.defender_faction !== parseInt(document.getElementById('factionId').value)) {
+            totalWarHits++;
+            totalBaseRespect += calculateBaseRespect(attack);
+        }
+    });
+    
+    // Auto-calculate pay per hit
+    const payPerHit = totalWarHits > 0 ? Math.round((cacheSales * 0.7) / totalWarHits) : 0;
+    
+    const headers = [
+        'Member',
+        'Level',
+        'War Hits',
+        'Base Respect',
+        'Respect %',
+        'Retaliations',
+        'Assists',
+        'Overseas',
+        'Other Attacks',
+        'Total Payout',
+        'Pay link'
+    ];
+    let csvContent = headers.join(',') + '\r\n';
+    
+    // Calculate respect-based payouts and sort by total payout
+    const playersWithRespectPayouts = Object.values(playerStats).map(player => {
+        // Calculate base respect for this player's war hits
+        let playerBaseRespect = 0;
+        
+        // Find all war hits for this player
+        allAttacks.forEach(attack => {
+            if (attack.attacker_id === player.id && 
+                attack.attacker_faction === parseInt(document.getElementById('factionId').value) && 
+                attack.defender_faction !== parseInt(document.getElementById('factionId').value)) {
+                playerBaseRespect += calculateBaseRespect(attack);
+            }
+        });
+        
+        // Calculate proportional payout based on base respect ratio
+        const respectRatio = totalBaseRespect > 0 ? playerBaseRespect / totalBaseRespect : 0;
+        const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
+        const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
+        const remaining = cacheSales * remainingPercentage;
+        const availablePayout = cacheSales - remaining - totalCosts;
+        let warHitPayout = Math.round(respectRatio * availablePayout);
+        
+        // Calculate additional payouts using the same multipliers as hit-based
+        const payRetals = document.getElementById('respectPayRetals')?.checked;
+        const retalMultiplier = parseFloat(document.getElementById('respectRetalMultiplier')?.value || '0.5');
+        const payAssists = document.getElementById('respectPayAssists')?.checked;
+        const assistMultiplier = parseFloat(document.getElementById('respectAssistMultiplier')?.value || '0.25');
+        const payOverseas = document.getElementById('respectPayOverseas')?.checked;
+        const overseasMultiplier = parseFloat(document.getElementById('respectOverseasMultiplier')?.value || '0.25');
+        const payOtherAttacks = document.getElementById('respectPayOtherAttacks')?.checked;
+        const otherAttacksMultiplier = parseFloat(document.getElementById('respectOtherAttacksMultiplier')?.value || '0.1');
+        
+        let retalPayout = payRetals ? (player.warRetals || 0) * payPerHit * retalMultiplier : 0;
+        let assistPayout = payAssists ? (player.warAssists || 0) * payPerHit * assistMultiplier : 0;
+        let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerHit * overseasMultiplier : 0;
+        let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier) : 0;
+        
+        const totalPayout = warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout;
+        
+        return {
+            ...player,
+            playerBaseRespect,
+            respectRatio: respectRatio.toFixed(4),
+            totalPayout
+        };
+    }).sort((a, b) => b.totalPayout - a.totalPayout);
+    
+    playersWithRespectPayouts.forEach(player => {
+        const otherAttacks = (player.totalAttacks || 0) - (player.warHits || 0) - (player.warAssists || 0);
+        const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
+        const row = [
+            '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
+            player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
+            player.warHits || 0,
+            player.playerBaseRespect,
+            (parseFloat(player.respectRatio) * 100).toFixed(2) + '%',
+            player.warRetals || 0,
+            player.warAssists || 0,
+            player.overseasHits || 0,
+            otherAttacks,
+            player.totalPayout,
+            payLink
+        ];
+        csvContent += row.join(',') + '\r\n';
+    });
+    
+    const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', 'respect_based_war_payout_report.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
 // --- Loading Dots Animation ---
 let loadingDotsInterval = null;
 function startLoadingDots() {
@@ -1143,7 +1959,13 @@ document.addEventListener('DOMContentLoaded', function() {
         'otherSpies',
         'otherBounties',
         'otherTerms',
-        'otherOther'
+        'otherOther',
+        'respectCacheSales',
+        'respectOtherConsumables',
+        'respectOtherSpies',
+        'respectOtherBounties',
+        'respectOtherTerms',
+        'respectOtherOther'
     ].forEach(id => {
         const input = document.getElementById(id);
         if (input) addThousandSeparatorInput(input);

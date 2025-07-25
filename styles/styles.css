@@ -729,3 +729,9 @@ nav a:hover::after {
   margin-top: 12px;
   letter-spacing: 0.5px;
 }
+
+.player-link {
+  color: #ffd700 !important;
+  font-weight: bold;
+  text-decoration: underline;
+}

@@ -222,8 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('click', (event) => {
         const target = event.target;
         if (target) {
-            // Only handle fetchData for consumption tracker page, not war-report-2.0
-            if (target.id === 'fetchData' && !window.location.pathname.includes('war-report-2.0')) {
+            if (target.id === 'fetchData') {
                 handleConsumptionFetch();
             } else if (target.id === 'fetchFactionStats') {
                 handleBattleStatsFetch();
