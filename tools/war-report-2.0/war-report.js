@@ -193,12 +193,35 @@ async function handleWarReportFetch() {
 
     console.log(`[WAR REPORT 2.0] Starting war report generation for War ID: ${warId}, Faction ID: ${factionId}`);
 
+    // Show progress bar
+    const progressContainer = document.getElementById('progressContainer');
+    const progressMessage = document.getElementById('progressMessage');
+    const progressPercentage = document.getElementById('progressPercentage');
+    const progressFill = document.getElementById('progressFill');
+    const progressDetails = document.getElementById('progressDetails');
+    
+            if (progressContainer) {
+            progressContainer.style.display = 'block';
+            progressMessage.textContent = 'Fetching war information...';
+            progressPercentage.textContent = '0%';
+            progressFill.style.width = '0%';
+            progressDetails.textContent = 'Initializing...';
+        }
+
     startLoadingDots();
     resultsSection.style.display = 'none';
 
     try {
         // Step 1: Get ranked war information to determine start/end timestamps
         console.log('[WAR REPORT 2.0] Fetching ranked war information...');
+        
+        if (progressContainer) {
+            progressMessage.textContent = 'Fetching war information...';
+            progressPercentage.textContent = '0%';
+            progressFill.style.width = '0%';
+            progressDetails.textContent = 'Getting war details...';
+        }
+        
         const warInfoUrl = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
         const warInfoResponse = await fetch(warInfoUrl);
         const warInfoData = await warInfoResponse.json();
@@ -227,6 +250,23 @@ async function handleWarReportFetch() {
         console.log(`🔍 [TIMESTAMP DEBUG] War start: ${warStartTime} (${new Date(warStartTime * 1000).toISOString()})`);
         console.log(`🔍 [TIMESTAMP DEBUG] War end: ${warEndTime} (${new Date(warEndTime * 1000).toISOString()})`);
         
+        // Calculate war duration and show appropriate message
+        const warDuration = warEndTime - warStartTime;
+        const warDurationHours = warDuration / 3600;
+        
+        if (progressContainer) {
+            if (warDurationHours > 48) {
+                progressMessage.textContent = 'Fetching war attacks (large war detected)...';
+                progressDetails.textContent = `This war lasted ${Math.round(warDurationHours)} hours - this may take a while`;
+            } else if (warDurationHours > 24) {
+                progressMessage.textContent = 'Fetching war attacks...';
+                progressDetails.textContent = `This war lasted ${Math.round(warDurationHours)} hours`;
+            } else {
+                progressMessage.textContent = 'Fetching war attacks...';
+                progressDetails.textContent = 'Collecting attack data...';
+            }
+        }
+        
         // Ensure war end time is after war start time
         if (warEndTime <= warStartTime) {
             console.log(`🔍 [TIMESTAMP DEBUG] War end time (${warEndTime}) is before or equal to start time (${warStartTime}), using current time`);
@@ -246,6 +286,14 @@ async function handleWarReportFetch() {
 
         // Step 2: Fetch faction attacks during the war period
         console.log('[WAR REPORT 2.0] Fetching faction attacks during war period...');
+        
+        if (progressContainer) {
+            progressMessage.textContent = 'Fetching war attacks...';
+            progressPercentage.textContent = '0%';
+            progressFill.style.width = '0%';
+            progressDetails.textContent = 'Starting attack data collection...';
+        }
+        
         let allAttacks = [];
         
         // Ensure we have a valid end time that's after the start time
@@ -274,9 +322,35 @@ async function handleWarReportFetch() {
         const attackIds = new Set(); // Track unique attack IDs to avoid duplicates
         
         while (keepFetching && batchCount < maxBatches) {
+            // Update progress based on timestamp progress (0-100% for attack fetching)
+            if (progressContainer) {
+                const timeProgress = Math.max(0, Math.min(100, ((currentBatchFrom - warStartTime) / (warEndTime - warStartTime)) * 100));
+                progressPercentage.textContent = `${Math.round(timeProgress)}%`;
+                progressFill.style.width = `${timeProgress}%`;
+                progressDetails.textContent = `Processing batch ${batchCount + 1}... (${allAttacks.length} attacks found)`;
+            }
+            
             if (batchCount === 50) {
                 console.log('[WAR REPORT 2.0] Hit 5000 attacks. Waiting 30 seconds before continuing at 1.5 requests/sec...');
-                await sleep(30000);
+                
+                // Show countdown for API limit wait
+                if (progressContainer) {
+                    progressMessage.textContent = 'Waiting for API Limit...';
+                    progressDetails.textContent = 'API rate limit reached, waiting 30 seconds...';
+                }
+                
+                // Countdown from 30 to 0
+                for (let i = 30; i > 0; i--) {
+                    if (progressContainer) {
+                        progressDetails.textContent = `API rate limit reached, waiting ${i} seconds...`;
+                    }
+                    await sleep(1000);
+                }
+                
+                if (progressContainer) {
+                    progressMessage.textContent = 'Fetching war attacks...';
+                    progressDetails.textContent = 'Resuming data collection...';
+                }
             } else if (batchCount > 50) {
                 await sleep(667); // 1.5 calls per second = 667ms between calls
             }
@@ -340,6 +414,8 @@ async function handleWarReportFetch() {
         
         console.log(`[WAR REPORT 2.0] Total attacks fetched: ${allAttacks.length}`);
 
+        // Processing phase - no progress update needed since we're already at 100%
+
         // Final duplicate check and removal
         const finalAttackIds = new Set();
         const finalAttacks = allAttacks.filter(attack => {
@@ -359,7 +435,9 @@ async function handleWarReportFetch() {
         console.log(`[WAR REPORT 2.0] Processing ${allAttacks.length} attacks for faction ${factionIdStr}`);
         console.log(`[DEBUG TEST] Debug logging is working`);
 
+        let processedCount = 0;
         allAttacks.forEach((attack) => {
+            processedCount++;
             
             // Only include attacks where the attacker is in the user's faction
             if (!attack.attacker || !attack.attacker.faction || String(attack.attacker.faction.id) !== factionIdStr) {
@@ -471,6 +549,11 @@ async function handleWarReportFetch() {
 
         const totalTime = performance.now() - startTime;
         console.log(`[WAR REPORT 2.0] War report generation completed in ${totalTime.toFixed(2)}ms`);
+
+        // Hide progress bar
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
 
         // Update UI
         updateWarReportUI(playerStats, targetWar, allAttacks, totalTime);
