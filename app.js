@@ -176,7 +176,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // After loading, initialize any scripts needed for that page
             if (page.includes('consumption-tracker')) {
-                initConsumptionTracker();
+                // Remove any previous script for this tool
+                const oldScript = document.getElementById('consumption-tracker-script');
+                if (oldScript) oldScript.remove();
+                // Dynamically load the script
+                const script = document.createElement('script');
+                script.src = 'tools/consumption-tracker/consumption-tracker.js';
+                script.id = 'consumption-tracker-script';
+                script.onload = () => {
+                    console.log('[APP] consumption-tracker/consumption-tracker.js loaded, calling initConsumptionTracker');
+                    if (typeof initConsumptionTracker === 'function') {
+                        initConsumptionTracker();
+                    } else if (window.initConsumptionTracker) {
+                        window.initConsumptionTracker();
+                    }
+                };
+                document.head.appendChild(script);
             } else if (page.includes('faction-battle-stats')) {
                 initBattleStats();
             } else if (page.includes('war-chain-reporter')) {
@@ -223,8 +238,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const target = event.target;
         if (target) {
             // Only handle fetchData for consumption tracker page, not war-report-2.0
-            if (target.id === 'fetchData' && !window.location.pathname.includes('war-report-2.0')) {
-                handleConsumptionFetch();
+            if (target.id === 'fetchData' && !window.location.pathname.includes('war-report-2.0') && !window.location.hash.includes('consumption-tracker')) {
+                handleConsumptionFetchOld();
             } else if (target.id === 'fetchFactionStats') {
                 handleBattleStatsFetch();
             } else if (target.id === 'fetchWarReports') {
@@ -566,10 +581,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- CONSUMPTION TRACKER TOOL ---
+    // --- CONSUMPTION TRACKER TOOL (OLD - KEPT FOR OTHER TOOLS) ---
     let fetchedMembers = []; // Store fetched members data globally for sorting
 
-    function initConsumptionTracker() {
+    function initConsumptionTrackerOld() {
         // Add specific listener for this tool's table sorting
         const tableContainer = document.getElementById('membersTable');
         if(tableContainer) {
@@ -588,15 +603,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     sortColumnInput.value = column;
                     sortDirectionInput.value = newDirection;
                     
-                    const sortedMembers = sortConsumptionMembers(fetchedMembers, column, newDirection);
-                    updateConsumptionUI(sortedMembers);
+                    const sortedMembers = sortConsumptionMembersOld(fetchedMembers, column, newDirection);
+                    updateConsumptionUIOld(sortedMembers);
                 }
             });
         }
 
         const fetchBtn = document.getElementById('fetchData');
         if (fetchBtn) {
-            fetchBtn.addEventListener('click', handleConsumptionFetch);
+            fetchBtn.addEventListener('click', handleConsumptionFetchOld);
         }
         const startDateInput = document.getElementById('startDate');
         const endDateInput = document.getElementById('endDate');
@@ -612,7 +627,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         // Initialize with empty table and no performance stats
-        updateConsumptionUI([], null, null, false);
+        updateConsumptionUIOld([], null, null, false);
         // Hide the empty results section initially
         const resultsSection = document.querySelector('.results-section');
         if (resultsSection) {
@@ -620,7 +635,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    const handleConsumptionFetch = async () => {
+    const handleConsumptionFetchOld = async () => {
         const startTime = performance.now();
         let wasCached = false;
 
@@ -834,7 +849,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    function sortConsumptionMembers(members, sortColumn, sortDirection) {
+    function sortConsumptionMembersOld(members, sortColumn, sortDirection) {
         return [...members].sort((a, b) => {
             if (sortColumn === 'name') {
                 const aValue = a.name.toLowerCase();
@@ -850,7 +865,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function updateConsumptionUI(members, totalTime, cacheStats, wasCached) {
+    function updateConsumptionUIOld(members, totalTime, cacheStats, wasCached) {
         const columns = [
             { id: 'xanax', label: 'Xanax' },
             { id: 'bloodbags', label: 'Blood Bags' },
@@ -1013,10 +1028,16 @@ document.addEventListener('DOMContentLoaded', () => {
             // Initialize flatpickr instances
             const startDatePicker = flatpickr(startDateInput, {
                 dateFormat: "Y-m-d",
+                locale: {
+                    firstDayOfWeek: 1
+                }
             });
             const endDatePicker = flatpickr(endDateInput, {
                 dateFormat: "Y-m-d",
                 defaultDate: "today",
+                locale: {
+                    firstDayOfWeek: 1
+                }
             });
         }
     }

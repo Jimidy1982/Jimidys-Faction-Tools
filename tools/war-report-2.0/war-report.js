@@ -412,8 +412,8 @@ async function handleWarReportFetch() {
                 // The actual filtering and counting will be done in the payout logic
             }
             
-            // Overseas hits
-            if (attack.modifiers.overseas && attack.modifiers.overseas > 1) {
+            // Overseas hits (only count as overseas if it's also a war hit)
+            if (attack.modifiers.overseas && attack.modifiers.overseas > 1 && isWarHit) {
                 playerStats[attackerId].overseasHits++;
             }
             
@@ -1635,10 +1635,12 @@ function renderRespectPayoutTable() {
             });
         }
         
-        // Calculate additional payouts first (retaliations, assists, overseas, other attacks)
+        // Calculate additional payouts first (retaliations, assists, other attacks)
+        // Note: Overseas hits with war modifier = 2 are already counted as war hits and get respect-based payouts
+        // Overseas payouts are only for hit-based calculator, not respect-based
         let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerHit * retalMultiplier) : 0;
         let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerHit * assistMultiplier) : 0;
-        let overseasPayout = payOverseas ? Math.round((player.overseasHits || 0) * payPerHit * overseasMultiplier) : 0;
+        let overseasPayout = 0; // Overseas hits are already counted in respect-based war hit payouts
         let otherAttacksPayout = payOtherAttacks ? Math.round(((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier)) : 0;
         
         // Add low FF hits payout at "Other Attacks" rate
