@@ -426,14 +426,63 @@ document.addEventListener('DOMContentLoaded', () => {
             // Add sorting functionality (matching consumption tracker style)
             const table = document.getElementById('membersTable');
             const headers = table.querySelectorAll('th[data-column]');
-            let currentSortColumn = null;
-            let currentSortDirection = 'asc';
+            let currentSortColumn = 'stats'; // Default sort column
+            let currentSortDirection = 'desc'; // Default sort direction (biggest first)
+            
+            // Function to sort the table
+            const sortTable = (column, direction) => {
+                const tbody = table.querySelector('tbody');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                
+                // Update sort indicators
+                headers.forEach(h => {
+                    const indicator = h.querySelector('.sort-indicator');
+                    const hColumn = h.getAttribute('data-column');
+                    if (hColumn === column) {
+                        indicator.textContent = direction === 'asc' ? ' ↑' : ' ↓';
+                    } else {
+                        indicator.textContent = '';
+                    }
+                });
+                
+                // Sort rows
+                rows.sort((a, b) => {
+                    const aCell = a.querySelector(`td[data-column="${column}"]`);
+                    const bCell = b.querySelector(`td[data-column="${column}"]`);
+                    
+                    let aValue = aCell.getAttribute('data-value') || aCell.textContent;
+                    let bValue = bCell.getAttribute('data-value') || bCell.textContent;
+                    
+                    if (column === 'member') {
+                        aValue = aValue.toLowerCase();
+                        bValue = bValue.toLowerCase();
+                        if (aValue < bValue) return direction === 'asc' ? -1 : 1;
+                        if (aValue > bValue) return direction === 'asc' ? 1 : -1;
+                        return 0;
+                    } else {
+                        let aNum = parseFloat(aValue);
+                        let bNum = parseFloat(bValue);
+                        if (isNaN(aNum)) aNum = -1; // Treat non-numeric/N/A as lowest value
+                        if (isNaN(bNum)) bNum = -1;
+
+                        if (direction === 'desc') {
+                            return bNum - aNum;
+                        } else {
+                            return aNum - bNum;
+                        }
+                    }
+                });
+                
+                // Reorder rows
+                rows.forEach(row => tbody.appendChild(row));
+            };
+            
+            // Apply default sort (estimated stats, biggest first)
+            sortTable(currentSortColumn, currentSortDirection);
             
             headers.forEach(header => {
                 header.addEventListener('click', () => {
                     const column = header.getAttribute('data-column');
-                    const tbody = table.querySelector('tbody');
-                    const rows = Array.from(tbody.querySelectorAll('tr'));
                     
                     // Update sort direction
                     if (currentSortColumn === column) {
@@ -443,47 +492,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         currentSortDirection = 'asc';
                     }
                     
-                    // Update sort indicators
-                    headers.forEach(h => {
-                        const indicator = h.querySelector('.sort-indicator');
-                        const hColumn = h.getAttribute('data-column');
-                        if (hColumn === currentSortColumn) {
-                            indicator.textContent = currentSortDirection === 'asc' ? ' ↑' : ' ↓';
-                        } else {
-                            indicator.textContent = '';
-                        }
-                    });
-                    
-                    // Sort rows
-                    rows.sort((a, b) => {
-                        const aCell = a.querySelector(`td[data-column="${column}"]`);
-                        const bCell = b.querySelector(`td[data-column="${column}"]`);
-                        
-                        let aValue = aCell.getAttribute('data-value') || aCell.textContent;
-                        let bValue = bCell.getAttribute('data-value') || bCell.textContent;
-                        
-                        if (column === 'member') {
-                            aValue = aValue.toLowerCase();
-                            bValue = bValue.toLowerCase();
-                            if (aValue < bValue) return currentSortDirection === 'asc' ? -1 : 1;
-                            if (aValue > bValue) return currentSortDirection === 'asc' ? 1 : -1;
-                            return 0;
-                        } else {
-                            let aNum = parseFloat(aValue);
-                            let bNum = parseFloat(bValue);
-                            if (isNaN(aNum)) aNum = -1; // Treat non-numeric/N/A as lowest value
-                            if (isNaN(bNum)) bNum = -1;
-
-                            if (currentSortDirection === 'desc') {
-                                return bNum - aNum;
-                            } else {
-                                return aNum - bNum;
-                            }
-                        }
-                    });
-                    
-                    // Reorder rows
-                    rows.forEach(row => tbody.appendChild(row));
+                    // Sort the table
+                    sortTable(currentSortColumn, currentSortDirection);
                 });
             });
 

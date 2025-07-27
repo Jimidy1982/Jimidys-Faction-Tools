@@ -358,7 +358,7 @@ async function handleWarReportFetch() {
 
         console.log(`[WAR REPORT 2.0] Processing ${allAttacks.length} attacks for faction ${factionIdStr}`);
         console.log(`[DEBUG TEST] Debug logging is working`);
-        
+
         allAttacks.forEach((attack) => {
             
             // Only include attacks where the attacker is in the user's faction
@@ -378,6 +378,7 @@ async function handleWarReportFetch() {
                     warAssists: 0,
                     warRetals: 0,
                     overseasHits: 0,
+                    lowFFHits: 0,
                     warScore: 0,
                     totalAttacks: 0,
                     totalFairFight: 0,
@@ -403,6 +404,12 @@ async function handleWarReportFetch() {
             if (isWarHit) {
                 playerStats[attackerId].warHits++;
                 playerStats[attackerId].warScore += attack.respect_gain || 0;
+            }
+            
+            // Track low Fair Fight hits (will be processed in payout calculations)
+            if (isWarHit && attack.modifiers && attack.modifiers.fair_fight !== undefined) {
+                // This will be used in payout calculations to filter out low FF hits
+                // The actual filtering and counting will be done in the payout logic
             }
             
             // Overseas hits
@@ -738,23 +745,43 @@ function calculatePlayerPayout(player, payPerHit) {
     };
 }
 
-// --- Add input formatting for thousand separators ---
+// --- Add input formatting for thousand separators with shortcuts ---
 function addThousandSeparatorInput(input) {
     if (!input) {
         return;
     }
-    input.addEventListener('input', function(e) {
-        let raw = input.value.replace(/[^\d]/g, '');
+    
+    const processInput = function(e) {
+        let value = input.value.toLowerCase();
+        
+        // Handle shortcuts (k, m, b)
+        let multiplier = 1;
+        if (value.includes('k')) {
+            multiplier = 1000;
+            value = value.replace('k', '');
+        } else if (value.includes('m')) {
+            multiplier = 1000000;
+            value = value.replace('m', '');
+        } else if (value.includes('b')) {
+            multiplier = 1000000000;
+            value = value.replace('b', '');
+        }
+        
+        // Extract numbers only
+        let raw = value.replace(/[^\d.]/g, '');
         if (raw === '') raw = '0';
-        input.value = Number(raw).toLocaleString();
-        input.dataset.raw = raw;
-    });
-    input.addEventListener('blur', function(e) {
-        let raw = input.value.replace(/[^\d]/g, '');
-        if (raw === '') raw = '0';
-        input.value = Number(raw).toLocaleString();
-        input.dataset.raw = raw;
-    });
+        
+        // Apply multiplier
+        let numericValue = parseFloat(raw) * multiplier;
+        
+        // Format with thousand separators
+        input.value = Math.round(numericValue).toLocaleString();
+        input.dataset.raw = Math.round(numericValue).toString();
+    };
+    
+    input.addEventListener('input', processInput);
+    input.addEventListener('blur', processInput);
+    
     // Initialize
     let raw = input.value.replace(/[^\d]/g, '');
     if (raw === '') raw = '0';
@@ -899,6 +926,22 @@ function initializeTabs() {
             }
         });
 
+        // Add event listeners for Fair Fight Filter options
+        const filterLowFFCheckbox = document.getElementById('filterLowFF');
+        const minFFRatingInput = document.getElementById('minFFRating');
+        
+        if (filterLowFFCheckbox) {
+            filterLowFFCheckbox.addEventListener('change', (e) => {
+                updatePayoutTable();
+            });
+        }
+        
+        if (minFFRatingInput) {
+            minFFRatingInput.addEventListener('input', (e) => {
+                updatePayoutTable();
+            });
+        }
+
         // Initialize respect payout input listeners and formatting
         const respectCacheSalesInput = document.getElementById('respectCacheSales');
         const respectPayPerHitInput = document.getElementById('respectPayPerHit');
@@ -973,6 +1016,22 @@ function initializeTabs() {
                     });
                 }
             });
+
+            // Add event listeners for Respect Fair Fight Filter options
+            const respectFilterLowFFCheckbox = document.getElementById('respectFilterLowFF');
+            const respectMinFFRatingInput = document.getElementById('respectMinFFRating');
+            
+            if (respectFilterLowFFCheckbox) {
+                respectFilterLowFFCheckbox.addEventListener('change', (e) => {
+                    updateRespectPayoutTable();
+                });
+            }
+            
+            if (respectMinFFRatingInput) {
+                respectMinFFRatingInput.addEventListener('input', (e) => {
+                    updateRespectPayoutTable();
+                });
+            }
             
             // Add event listener for remaining percentage input (only once)
             const remainingPercentageInput = document.getElementById('respectRemainingPercentage');
@@ -1055,14 +1114,44 @@ function renderPayoutTable() {
     const otherAttacksMultiplier = parseFloat(document.getElementById('otherAttacksMultiplier')?.value || '0.1');
     const enableCombinedMin = document.getElementById('enableCombinedMin')?.checked;
     const combinedMin = parseInt(document.getElementById('combinedMin')?.value || '0');
+    const filterLowFF = document.getElementById('filterLowFF')?.checked;
+    const minFFRating = parseFloat(document.getElementById('minFFRating')?.value || '2.0');
 
-
+    // Process attacks to count low FF hits and calculate filtered payouts
     const playersWithPayouts = Object.values(playerStats).map(player => {
-        let warHitPayout = (player.warHits || 0) * payPerHit;
-        let retalPayout = payRetals ? (player.warRetals || 0) * payPerHit * retalMultiplier : 0;
-        let assistPayout = payAssists ? (player.warAssists || 0) * payPerHit * assistMultiplier : 0;
-        let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerHit * overseasMultiplier : 0;
-        let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier) : 0;
+        // Count low FF hits for this player
+        let lowFFHits = 0;
+        let qualifiedWarHits = player.warHits || 0;
+        
+        if (filterLowFF) {
+            // Find all war hits for this player and check FF ratings
+            const playerAttacks = warReportData.allAttacks.filter(attack => 
+                String(attack.attacker?.id) === String(player.id) &&
+                attack.modifiers?.war === 2 &&
+                !attack.is_interrupted
+            );
+            
+            lowFFHits = playerAttacks.filter(attack => 
+                attack.modifiers?.fair_fight !== undefined && 
+                attack.modifiers.fair_fight < minFFRating &&
+                // Don't count retaliation hits (1.5) as low FF - they're good hits
+                !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
+            ).length;
+            
+            qualifiedWarHits = (player.warHits || 0) - lowFFHits;
+        }
+        
+        let warHitPayout = Math.round(qualifiedWarHits * payPerHit);
+        let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerHit * retalMultiplier) : 0;
+        let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerHit * assistMultiplier) : 0;
+        let overseasPayout = payOverseas ? Math.round((player.overseasHits || 0) * payPerHit * overseasMultiplier) : 0;
+        let otherAttacksPayout = payOtherAttacks ? Math.round(((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier)) : 0;
+        
+        // Add low FF hits payout at "Other Attacks" rate
+        let lowFFPayout = 0;
+        if (filterLowFF && lowFFHits > 0) {
+            lowFFPayout = Math.round(lowFFHits * payPerHit * otherAttacksMultiplier);
+        }
 
         const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
         if (enableCombinedMin && combinedCount < combinedMin) {
@@ -1071,15 +1160,19 @@ function renderPayoutTable() {
             retalPayout = 0;
             overseasPayout = 0;
             otherAttacksPayout = 0;
+            lowFFPayout = 0;
         }
         return {
             ...player,
+            lowFFHits,
+            qualifiedWarHits,
             warHitPayout,
             retalPayout,
             assistPayout,
             overseasPayout,
             otherAttacksPayout,
-            totalPayout: warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout
+            lowFFPayout,
+            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout + lowFFPayout)
         };
     });
 
@@ -1129,6 +1222,7 @@ function renderPayoutTable() {
                     <th data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${warReportData.payoutSortState.column === 'name' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="level" style="cursor: pointer;">Level <span class="sort-indicator">${warReportData.payoutSortState.column === 'level' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warHits" style="cursor: pointer;">War Hits <span class="sort-indicator">${warReportData.payoutSortState.column === 'warHits' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="lowFFHits" style="cursor: pointer; color: #ff6b6b;">Low FF Hits <span class="sort-indicator">${warReportData.payoutSortState.column === 'lowFFHits' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warRetals" style="cursor: pointer;">Retaliations <span class="sort-indicator">${warReportData.payoutSortState.column === 'warRetals' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warAssists" style="cursor: pointer;">Assists <span class="sort-indicator">${warReportData.payoutSortState.column === 'warAssists' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="overseasHits" style="cursor: pointer;">Overseas <span class="sort-indicator">${warReportData.payoutSortState.column === 'overseasHits' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -1146,6 +1240,7 @@ function renderPayoutTable() {
                             <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
                             <td>${player.level}</td>
                             <td>${player.warHits || 0}</td>
+                            <td style="color: #ff6b6b;">${player.lowFFHits || 0}</td>
                             <td>${player.warRetals || 0}</td>
                             <td>${player.warAssists || 0}</td>
                             <td>${player.overseasHits || 0}</td>
@@ -1161,6 +1256,7 @@ function renderPayoutTable() {
                     <td><strong>TOTALS</strong></td>
                     <td></td>
                     <td><strong>${totalWarHits}</strong></td>
+                    <td><strong style="color: #ff6b6b;">${playersWithPayouts.reduce((sum, p) => sum + (p.lowFFHits || 0), 0)}</strong></td>
                     <td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td>
                     <td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td>
                     <td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td>
@@ -1316,6 +1412,7 @@ function exportPayoutToCSV() {
         'Member',
         'Level',
         'War Hits',
+        'Low FF Hits',
         'Retaliations',
         'Assists',
         'Overseas',
@@ -1336,6 +1433,7 @@ function exportPayoutToCSV() {
             '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
             player.warHits || 0,
+            player.lowFFHits || 0,
             player.warRetals || 0,
             player.warAssists || 0,
             player.overseasHits || 0,
@@ -1448,7 +1546,7 @@ function renderRespectPayoutTable() {
     const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
     const remaining = cacheSales * remainingPercentage;
     const availablePayout = cacheSales - remaining - totalCosts;
-    const payPerHit = totalWarHits > 0 ? availablePayout / totalWarHits : 0;
+    const payPerHit = totalWarHits > 0 ? Math.round(availablePayout / totalWarHits) : 0;
     
     // Update the readonly input field
     if (respectPayPerHitInput) {
@@ -1479,14 +1577,53 @@ function renderRespectPayoutTable() {
     const otherAttacksMultiplier = parseFloat(document.getElementById('respectOtherAttacksMultiplier')?.value || '0.1');
     const enableCombinedMin = document.getElementById('respectEnableCombinedMin')?.checked;
     const combinedMin = parseInt(document.getElementById('respectCombinedMin')?.value || '0');
+    const filterLowFF = document.getElementById('respectFilterLowFF')?.checked;
+    const minFFRating = parseFloat(document.getElementById('respectMinFFRating')?.value || '2.0');
 
     // Calculate respect-based payouts for each player
     const playersWithRespectPayouts = Object.values(playerStats).map(player => {
         // Use cached player respect data instead of processing all attacks again
         const playerIdStr = String(player.id);
         const playerData = playerRespectData[playerIdStr] || { baseRespect: 0, warHits: 0 };
-        const playerBaseRespect = playerData.baseRespect;
-        const playerWarHits = playerData.warHits;
+        let playerBaseRespect = playerData.baseRespect;
+        let playerWarHits = playerData.warHits;
+        
+        // Count low FF hits and adjust base respect if filtering is enabled
+        let lowFFHits = 0;
+        if (filterLowFF) {
+            // Find all war hits for this player and check FF ratings
+            const playerAttacks = warReportData.allAttacks.filter(attack => 
+                String(attack.attacker?.id) === String(player.id) &&
+                attack.modifiers?.war === 2 &&
+                !attack.is_interrupted
+            );
+            
+            lowFFHits = playerAttacks.filter(attack => 
+                attack.modifiers?.fair_fight !== undefined && 
+                attack.modifiers.fair_fight < minFFRating &&
+                // Don't count retaliation hits (1.5) as low FF - they're good hits
+                !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
+            ).length;
+            
+            // Recalculate base respect excluding low FF hits
+            if (lowFFHits > 0) {
+                const lowFFAttacks = playerAttacks.filter(attack => 
+                    attack.modifiers?.fair_fight !== undefined && 
+                    attack.modifiers.fair_fight < minFFRating &&
+                    // Don't count retaliation hits (1.5) as low FF - they're good hits
+                    !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
+                );
+                
+                let lowFFRespect = 0;
+                lowFFAttacks.forEach(attack => {
+                    const removeModifiers = document.getElementById('respectRemoveModifiers')?.checked;
+                    lowFFRespect += calculateBaseRespect(attack, removeModifiers);
+                });
+                
+                playerBaseRespect -= lowFFRespect;
+                playerWarHits -= lowFFHits;
+            }
+        }
         
         // Debug first few players
         if (player.name === 'iNico' || player.name === 'Jimidy' || player.name === 'Joe21') {
@@ -1499,10 +1636,16 @@ function renderRespectPayoutTable() {
         }
         
         // Calculate additional payouts first (retaliations, assists, overseas, other attacks)
-        let retalPayout = payRetals ? (player.warRetals || 0) * payPerHit * retalMultiplier : 0;
-        let assistPayout = payAssists ? (player.warAssists || 0) * payPerHit * assistMultiplier : 0;
-        let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerHit * overseasMultiplier : 0;
-        let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier) : 0;
+        let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerHit * retalMultiplier) : 0;
+        let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerHit * assistMultiplier) : 0;
+        let overseasPayout = payOverseas ? Math.round((player.overseasHits || 0) * payPerHit * overseasMultiplier) : 0;
+        let otherAttacksPayout = payOtherAttacks ? Math.round(((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier)) : 0;
+        
+        // Add low FF hits payout at "Other Attacks" rate
+        let lowFFPayout = 0;
+        if (filterLowFF && lowFFHits > 0) {
+            lowFFPayout = Math.round(lowFFHits * payPerHit * otherAttacksMultiplier);
+        }
 
         // Check combined minimum requirement
         const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
@@ -1511,6 +1654,7 @@ function renderRespectPayoutTable() {
             assistPayout = 0;
             overseasPayout = 0;
             otherAttacksPayout = 0;
+            lowFFPayout = 0;
         }
         
         // Calculate respect ratio for this player
@@ -1521,6 +1665,7 @@ function renderRespectPayoutTable() {
         
         return {
             ...player,
+            lowFFHits,
             playerBaseRespect,
             respectRatio: respectRatio.toFixed(4),
             warHitPayout,
@@ -1528,13 +1673,14 @@ function renderRespectPayoutTable() {
             assistPayout,
             overseasPayout,
             otherAttacksPayout,
-            totalPayout: warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout
+            lowFFPayout,
+            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout + lowFFPayout)
         };
     });
 
-    // Calculate total additional payouts (retals, assists, overseas, other attacks)
+    // Calculate total additional payouts (retals, assists, overseas, other attacks, low FF hits)
     const totalAdditionalPayouts = playersWithRespectPayouts.reduce((sum, p) => 
-        sum + p.retalPayout + p.assistPayout + p.overseasPayout + p.otherAttacksPayout, 0);
+        sum + p.retalPayout + p.assistPayout + p.overseasPayout + p.otherAttacksPayout + p.lowFFPayout, 0);
     
     // Calculate remaining money for respect-based distribution
     const respectDistributionPool = availablePayout - totalAdditionalPayouts;
@@ -1555,13 +1701,13 @@ function renderRespectPayoutTable() {
     qualifyingPlayers.forEach(player => {
         if (totalQualifyingRespect > 0) {
             const respectShare = player.playerBaseRespect / totalQualifyingRespect;
-            player.warHitPayout = respectShare * respectDistributionPool;
+            player.warHitPayout = Math.round(respectShare * respectDistributionPool);
         } else {
             player.warHitPayout = 0;
         }
         
         // Update total payout
-        player.totalPayout = player.warHitPayout + player.retalPayout + player.assistPayout + player.overseasPayout + player.otherAttacksPayout;
+        player.totalPayout = Math.round(player.warHitPayout + player.retalPayout + player.assistPayout + player.overseasPayout + player.otherAttacksPayout + player.lowFFPayout);
     });
     
     // Calculate final total payout
@@ -1616,6 +1762,7 @@ function renderRespectPayoutTable() {
                     <th data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Member <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'name' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="level" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Level <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'level' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War Hits <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="lowFFHits" style="cursor: pointer; background-color: #2d2d2d; color: #ff6b6b; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Low FF Hits <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'lowFFHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="playerBaseRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Base Respect <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'playerBaseRespect' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="respectRatio" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Respect % <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'respectRatio' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warRetals" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Retaliations <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warRetals' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -1635,6 +1782,7 @@ function renderRespectPayoutTable() {
                             <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.level}</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warHits || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040; color: #ff6b6b;">${player.lowFFHits || 0}</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerBaseRespect}</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${(parseFloat(player.respectRatio) * 100).toFixed(2)}%</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warRetals || 0}</td>
@@ -1652,6 +1800,7 @@ function renderRespectPayoutTable() {
                     <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><strong>TOTALS</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalWarHits}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong style="color: #ff6b6b;">${playersWithRespectPayouts.reduce((sum, p) => sum + (p.lowFFHits || 0), 0)}</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalBaseRespect}</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>100.00%</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td>
@@ -1760,6 +1909,7 @@ function exportRespectPayoutToCSV() {
         'Member',
         'Level',
         'War Hits',
+        'Low FF Hits',
         'Base Respect',
         'Respect %',
         'Retaliations',
@@ -1825,6 +1975,7 @@ function exportRespectPayoutToCSV() {
             '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
             player.warHits || 0,
+            player.lowFFHits || 0,
             player.playerBaseRespect,
             (parseFloat(player.respectRatio) * 100).toFixed(2) + '%',
             player.warRetals || 0,
