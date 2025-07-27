@@ -264,6 +264,15 @@ async function handleWarReportFetch() {
         let keepFetching = true;
         const maxBatches = 1000; // Arbitrary high limit for safety
         
+        // Use v2 API with Omanpx's approach: only 'from' timestamp, stop at war end time
+        console.log('[WAR REPORT 2.0] Using v2 API with Omanpx approach (from timestamp only)...');
+        
+        // Start from war start time
+        let currentBatchFrom = warStartTime;
+        console.log(`🔍 [OMANPX APPROACH] Fetching from: ${currentBatchFrom} (${new Date(currentBatchFrom * 1000).toISOString()}), stopping at war end: ${warEndTime} (${new Date(warEndTime * 1000).toISOString()})`);
+        
+        const attackIds = new Set(); // Track unique attack IDs to avoid duplicates
+        
         while (keepFetching && batchCount < maxBatches) {
             if (batchCount === 50) {
                 console.log('[WAR REPORT 2.0] Hit 5000 attacks. Waiting 30 seconds before continuing at 1.5 requests/sec...');
@@ -272,7 +281,8 @@ async function handleWarReportFetch() {
                 await sleep(667); // 1.5 calls per second = 667ms between calls
             }
             
-            const attacksUrl = `https://api.torn.com/v2/faction/attacks?limit=100&sort=DESC&to=${batchTo}&from=${batchFrom}&key=${apiKey}`;
+            // Use v2 API endpoint with ASCENDING sort to get oldest attacks first
+            const attacksUrl = `https://api.torn.com/v2/faction/attacks?limit=100&sort=ASC&from=${currentBatchFrom}&key=${apiKey}`;
             console.log(`[WAR REPORT 2.0] Batch ${batchCount + 1}: ${attacksUrl}`);
             
             const attacksResponse = await fetch(attacksUrl);
@@ -283,22 +293,44 @@ async function handleWarReportFetch() {
             }
 
             const attacks = attacksData.attacks || [];
-            allAttacks = allAttacks.concat(attacks);
-            console.log(`[WAR REPORT 2.0] Fetched ${attacks.length} attacks in batch ${batchCount + 1}`);
             
-            // Debug: Log the first attack structure
-            if (batchCount === 0 && attacks.length > 0) {
-                console.log('🔍 [API DEBUG] First attack from faction attacks API:', attacks[0]);
-                console.log('🔍 [API DEBUG] Attack keys:', Object.keys(attacks[0]));
-            }
+            // Filter out duplicates and attacks after war end time
+            const validAttacks = attacks.filter(attack => {
+                // Skip if we've seen this attack ID before
+                if (attackIds.has(attack.id)) {
+                    return false;
+                }
+                attackIds.add(attack.id);
+                
+                // Skip if attack started after war end time
+                if (attack.started > warEndTime) {
+                    return false;
+                }
+                
+                return true;
+            });
             
-            if (attacks.length < 100) {
+            allAttacks = allAttacks.concat(validAttacks);
+            console.log(`[WAR REPORT 2.0] Batch ${batchCount + 1}: Fetched ${attacks.length} attacks, ${validAttacks.length} valid (${allAttacks.length} total unique)`);
+            
+
+            
+            // Check if we found any post-war attacks (indicating we've gone past the war period)
+            const postWarAttacks = attacks.filter(attack => attack.started > warEndTime);
+            if (postWarAttacks.length > 0) {
+                keepFetching = false;
+            } else if (attacks.length < 100) {
                 keepFetching = false; // No more attacks to fetch
             } else {
-                // Find the earliest started timestamp in this batch
-                const earliest = Math.min(...attacks.map(a => a.started));
-                if (isFinite(earliest) && earliest > batchFrom) {
-                    batchTo = earliest - 1; // Next batch: up to just before the earliest in this batch
+                // Find the latest started timestamp in this batch to use as next starting point (ASC order)
+                const timestamps = validAttacks.map(a => a.started).filter(t => t && t > 0);
+                if (timestamps.length > 0) {
+                    const latest = Math.max(...timestamps);
+                    if (latest > currentBatchFrom) {
+                        currentBatchFrom = latest; // Start from the latest attack
+                    } else {
+                        keepFetching = false;
+                    }
                 } else {
                     keepFetching = false;
                 }
@@ -308,6 +340,18 @@ async function handleWarReportFetch() {
         
         console.log(`[WAR REPORT 2.0] Total attacks fetched: ${allAttacks.length}`);
 
+        // Final duplicate check and removal
+        const finalAttackIds = new Set();
+        const finalAttacks = allAttacks.filter(attack => {
+            if (finalAttackIds.has(attack.id)) {
+                return false;
+            }
+            finalAttackIds.add(attack.id);
+            return true;
+        });
+        
+        allAttacks = finalAttacks;
+
         // Step 3: Process attacks and create player report
         const playerStats = {};
         const factionIdStr = String(factionId);
@@ -316,18 +360,9 @@ async function handleWarReportFetch() {
         console.log(`[DEBUG TEST] Debug logging is working`);
         
         allAttacks.forEach((attack) => {
+            
             // Only include attacks where the attacker is in the user's faction
             if (!attack.attacker || !attack.attacker.faction || String(attack.attacker.faction.id) !== factionIdStr) {
-                // Debug: Log attacks that are being filtered out
-                if (attack.attacker && ['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(attack.attacker.name)) {
-                    console.log(`🔍 [FILTERED OUT] ${attack.attacker.name} attack filtered:`, {
-                        attacker_faction: attack.attacker.faction?.id,
-                        expected_faction: factionIdStr,
-                        id: attack.id,
-                        started: attack.started,
-                        started_readable: attack.started ? new Date(attack.started * 1000).toISOString() : 'undefined'
-                    });
-                }
                 return;
             }
 
@@ -354,54 +389,20 @@ async function handleWarReportFetch() {
             // Count total attacks
             playerStats[attackerId].totalAttacks++;
             
-            // Debug: Log attacks that might be missing for specific players
             const playerName = attack.attacker.name;
-            if (['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(playerName)) {
-                console.log(`🔍 [ATTACK DEBUG] ${playerName} attack:`, {
-                    id: attack.id,
-                    started: attack.started,
-                    started_readable: attack.started ? new Date(attack.started * 1000).toISOString() : 'undefined',
-                    is_ranked_war: attack.is_ranked_war,
-                    is_interrupted: attack.is_interrupted,
-                    result: attack.result,
-                    respect_gain: attack.respect_gain,
-                    modifiers_war: attack.modifiers?.war,
-                    started: attack.started,
-                    id: attack.id
-                });
-            }
             
-            // Check for war hits using the original criteria
+            // Check for war hits - only count attacks with war modifier = 2 (actual war hits)
             const isWarHit = (
                 !attack.is_interrupted && 
-                (
-                    attack.is_ranked_war === true || 
-                    (attack.modifiers && attack.modifiers.war && attack.modifiers.war === 2)
-                )
+                attack.modifiers && 
+                attack.modifiers.war === 2
             );
+            
+
             
             if (isWarHit) {
                 playerStats[attackerId].warHits++;
                 playerStats[attackerId].warScore += attack.respect_gain || 0;
-                if (['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(playerName)) {
-                    console.log(`✅ [WAR HIT COUNTED] ${playerName} attack counted as war hit:`, {
-                        id: attack.id,
-                        is_ranked_war: attack.is_ranked_war,
-                        modifiers_war: attack.modifiers?.war,
-                        respect_gain: attack.respect_gain
-                    });
-                }
-            } else if (['Jimidy', 'Plebian', 'kokokok', 'Joe21'].includes(playerName)) {
-                // Log why this attack wasn't counted as a war hit
-                console.log(`❌ [WAR HIT MISSED] ${playerName} attack NOT counted as war hit:`, {
-                    id: attack.id,
-                    is_ranked_war: attack.is_ranked_war,
-                    is_interrupted: attack.is_interrupted,
-                    modifiers_war: attack.modifiers?.war,
-                    respect_gain: attack.respect_gain,
-                    score: attack.score,
-                    reason: attack.is_interrupted ? 'interrupted' : 'not_war_attack'
-                });
             }
             
             // Overseas hits
@@ -454,84 +455,6 @@ async function handleWarReportFetch() {
         Object.values(playerStats).forEach(player => {
             player.avgFairFight = player.totalAttacks > 0 ? player.totalFairFight / player.totalAttacks : 0;
             player.avgDefLevel = player.successfulAttacks > 0 ? player.totalDefeatedLevel / player.successfulAttacks : 0;
-        });
-
-        // Debug: Log final counts for specific players
-        ['Jimidy', 'Plebian', 'kokokok', 'Joe21'].forEach(name => {
-            const player = Object.values(playerStats).find(p => p.name === name);
-            if (player) {
-                console.log(`🔍 [FINAL COUNTS] ${name}:`, {
-                    totalAttacks: player.totalAttacks,
-                    warHits: player.warHits,
-                    warAssists: player.warAssists,
-                    warRetals: player.warRetals
-                });
-                
-                // Count attacks manually for verification
-                const playerAttacks = allAttacks.filter(attack => {
-                    const attackerName = attack.attacker?.name || attack.attacker_name;
-                    return attackerName === name;
-                });
-                
-                const warHitsManual = playerAttacks.filter(attack => {
-                    const isWarHit = !attack.is_interrupted && 
-                        (
-                            attack.is_ranked_war === true || 
-                            (attack.modifiers && attack.modifiers.war && attack.modifiers.war === 2)
-                        );
-                    return isWarHit;
-                });
-                
-                console.log(`🔍 [MANUAL VERIFICATION] ${name}:`, {
-                    totalAttacksFound: playerAttacks.length,
-                    warHitsFound: warHitsManual.length,
-                    attackIds: playerAttacks.map(a => a.id).slice(0, 10) // First 10 IDs for reference
-                });
-                
-                // Special detailed logging for kokokok
-                if (name === 'kokokok') {
-                    console.log(`🔍 [KOKOKOK DETAILED ANALYSIS] Total attacks found: ${playerAttacks.length}`);
-                    
-                    // Log the first attack's raw structure to understand the data format
-                    if (playerAttacks.length > 0) {
-                        console.log(`🔍 [KOKOKOK RAW DATA SAMPLE] First attack raw structure:`, playerAttacks[0]);
-                        console.log(`🔍 [KOKOKOK RAW DATA SAMPLE] All available keys:`, Object.keys(playerAttacks[0]));
-                    } else {
-                        console.log(`🔍 [KOKOKOK RAW DATA SAMPLE] No attacks found for kokokok!`);
-                    }
-                    
-                    // Log ALL of kokokok's attacks with full details
-                    playerAttacks.forEach((attack, index) => {
-                        const isWarHit = !attack.is_interrupted && 
-                            (
-                                attack.is_ranked_war === true || 
-                                (attack.modifiers && attack.modifiers.war && attack.modifiers.war === 2)
-                            );
-                        
-                        console.log(`🔍 [KOKOKOK ATTACK ${index + 1}] ID: ${attack.id}, War Hit: ${isWarHit}, Defender: ${attack.defender?.name || attack.defender_name}, Details:`, {
-                            id: attack.id,
-                            started: attack.started,
-                            started_readable: attack.started ? new Date(attack.started * 1000).toISOString() : 'undefined',
-                            defender: attack.defender?.name || attack.defender_name,
-                            is_ranked_war: attack.is_ranked_war,
-                            is_interrupted: attack.is_interrupted,
-                            modifiers_war: attack.modifiers?.war,
-                            respect_gain: attack.respect_gain,
-                            score: attack.score,
-                            result: attack.result
-                        });
-                    });
-                    
-                    // Count by different criteria
-                    const rankedWarHits = playerAttacks.filter(a => a.is_ranked_war === true).length;
-                    const warModifier2Hits = playerAttacks.filter(a => a.modifiers?.war === 2).length;
-                    const warModifier1Hits = playerAttacks.filter(a => a.modifiers?.war === 1).length;
-                    const interruptedHits = playerAttacks.filter(a => a.is_interrupted).length;
-                    const nonInterruptedHits = playerAttacks.filter(a => !a.is_interrupted).length;
-                    
-                    console.log(`🔍 [KOKOKOK BREAKDOWN] Ranked war: ${rankedWarHits}, War mod 2: ${warModifier2Hits}, War mod 1: ${warModifier1Hits}, Interrupted: ${interruptedHits}, Non-interrupted: ${nonInterruptedHits}`);
-                }
-            }
         });
 
         // Store data globally for this module
