@@ -891,50 +891,50 @@ function initializeTabs() {
         console.error('[WAR REPORT 2.0] .tab-buttons container not found!');
         return;
     }
-    if (!tabsInitialized) {
-        tabButtonsContainer.addEventListener('click', function(e) {
-            const btn = e.target.closest('.tab-button');
-            if (!btn) return;
-            console.log('[WAR REPORT 2.0] Tab button clicked (direct):', btn.textContent, 'data-tab:', btn.getAttribute('data-tab'));
-            // Remove active class from all buttons and panes
-            tabButtons.forEach(b => b.classList.remove('active'));
-            tabPanes.forEach(p => {
-                p.classList.remove('active');
-                p.style.display = 'none';
-            });
-            // Add active class to clicked button
-            btn.classList.add('active');
-            // Show the corresponding pane
-            const tabId = btn.getAttribute('data-tab');
-            const pane = document.getElementById(tabId);
-            console.log('[WAR REPORT 2.0] Looking for pane with ID:', tabId, 'Found:', !!pane);
-            if (pane) {
-                pane.classList.add('active');
-                pane.style.display = 'block';
-                console.log('[WAR REPORT 2.0] Pane displayed:', tabId);
-                // If switching to payout tab and we have data, render payout table
-                if (tabId === 'payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
-                    console.log('[WAR REPORT 2.0] Rendering payout table...');
-                    renderPayoutTable();
-                } else if (tabId === 'payout-tab') {
-                    console.log('[WAR REPORT 2.0] No player stats available for payout table');
-                }
-                // If switching to respect payout tab and we have data, render respect payout table
-                else if (tabId === 'respect-payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
-                    console.log('[WAR REPORT 2.0] Rendering respect payout table...');
-                    renderRespectPayoutTable();
-                } else if (tabId === 'respect-payout-tab') {
-                    console.log('[WAR REPORT 2.0] No player stats available for respect payout table');
-                }
-            } else {
-                console.error('[WAR REPORT 2.0] Pane not found for tab ID:', tabId);
-            }
+        // Remove any existing event listeners and re-attach
+    const newTabButtonsContainer = tabButtonsContainer.cloneNode(true);
+    tabButtonsContainer.parentNode.replaceChild(newTabButtonsContainer, tabButtonsContainer);
+    
+    newTabButtonsContainer.addEventListener('click', function(e) {
+        const btn = e.target.closest('.tab-button');
+        if (!btn) return;
+        console.log('[WAR REPORT 2.0] Tab button clicked (direct):', btn.textContent, 'data-tab:', btn.getAttribute('data-tab'));
+        // Remove active class from all buttons and panes
+        tabButtons.forEach(b => b.classList.remove('active'));
+        tabPanes.forEach(p => {
+            p.classList.remove('active');
+            p.style.display = 'none';
         });
-        tabsInitialized = true;
-        console.log('[WAR REPORT 2.0] Tab event listener attached.');
-    } else {
-        console.log('[WAR REPORT 2.0] Tab event listener already attached.');
-    }
+        // Add active class to clicked button
+        btn.classList.add('active');
+        // Show the corresponding pane
+        const tabId = btn.getAttribute('data-tab');
+        const pane = document.getElementById(tabId);
+        console.log('[WAR REPORT 2.0] Looking for pane with ID:', tabId, 'Found:', !!pane);
+        if (pane) {
+            pane.classList.add('active');
+            pane.style.display = 'block';
+            console.log('[WAR REPORT 2.0] Pane displayed:', tabId);
+            // If switching to payout tab and we have data, render payout table
+            if (tabId === 'payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+                console.log('[WAR REPORT 2.0] Rendering payout table...');
+                renderPayoutTable();
+            } else if (tabId === 'payout-tab') {
+                console.log('[WAR REPORT 2.0] No player stats available for payout table');
+            }
+            // If switching to respect payout tab and we have data, render respect payout table
+            else if (tabId === 'respect-payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+                console.log('[WAR REPORT 2.0] Rendering respect payout table...');
+                renderRespectPayoutTable();
+            } else if (tabId === 'respect-payout-tab') {
+                console.log('[WAR REPORT 2.0] No player stats available for respect payout table');
+            }
+        } else {
+            console.error('[WAR REPORT 2.0] Pane not found for tab ID:', tabId);
+        }
+    });
+    
+    console.log('[WAR REPORT 2.0] Tab event listener attached.');
     // Initialize payout input listeners and formatting
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
