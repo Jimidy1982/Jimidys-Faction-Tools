@@ -393,6 +393,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button id="exportCsvBtn" class="btn" style="background-color: #FFD700; color: #333; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
                         Export to CSV
                     </button>
+                    <button id="collectDetailedStatsBtn" class="btn" style="background-color: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px;">
+                        Collect Detailed Stats
+                    </button>
                 </div>
                 <div style="text-align: center; margin-bottom: 10px; color: #00ff00; font-size: 0.9em;">
                     ⚡ Fetched in ${totalTime.toFixed(0)}ms using optimized batching
@@ -565,6 +568,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.body.removeChild(a);
                 window.URL.revokeObjectURL(url);
             });
+
+            // Add detailed stats collection functionality
+            document.getElementById('collectDetailedStatsBtn').addEventListener('click', () => {
+                handleDetailedStatsCollection(memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID);
+            });
         } catch (error) {
             console.error("An error occurred:", error.message);
             const resultsContainer = document.getElementById('battle-stats-results');
@@ -579,6 +587,415 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             spinner.style.display = 'none';
         }
+    };
+
+    // --- DETAILED STATS COLLECTION ---
+    // Global cache for detailed stats to persist across view switches
+    let detailedStatsCache = {};
+    let detailedStatsCacheTimestamp = 0;
+    const DETAILED_STATS_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+    const handleDetailedStatsCollection = async (memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID) => {
+        console.log("--- Starting Detailed Stats Collection ---");
+        const startTime = performance.now();
+
+        const apiKey = localStorage.getItem('tornApiKey');
+        if (!apiKey) {
+            alert('Please enter your API key in the sidebar first.');
+            return;
+        }
+
+        // Show loading state with progress bar
+        const resultsContainer = document.getElementById('battle-stats-results');
+        const originalContent = resultsContainer.innerHTML;
+        resultsContainer.innerHTML = `
+            <div style="text-align: center; padding: 20px;">
+                <div class="loading-spinner"></div>
+                <div style="margin-top: 10px; color: #FFD700;">
+                    Collecting detailed stats for ${memberIDs.length} players...
+                    <br>
+                    <small>This may take a few minutes due to API rate limits.</small>
+                </div>
+                <div class="progress-container" style="margin-top: 20px; padding: 15px; background-color: var(--secondary-color); border-radius: 8px;">
+                    <div class="progress-info" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: var(--text-color);">
+                        <span>Progress</span>
+                        <span id="detailed-progress-text">0 / ${memberIDs.length}</span>
+                    </div>
+                    <div class="progress-bar" style="width: 100%; height: 20px; background-color: var(--primary-color); border-radius: 10px; overflow: hidden; border: 1px solid var(--accent-color);">
+                        <div id="detailed-progress-fill" class="progress-fill" style="height: 100%; background: linear-gradient(90deg, var(--accent-color), #ffd700); width: 0%; transition: width 0.3s ease; border-radius: 10px;"></div>
+                    </div>
+                    <div class="progress-details" style="margin-top: 8px; font-size: 0.9em; color: var(--text-color); opacity: 0.8;">
+                        Processing players...
+                    </div>
+                </div>
+            </div>
+        `;
+
+        try {
+            // Check if we have cached detailed stats for this faction
+            const cacheKey = `detailed_stats_${factionID}`;
+            const now = Date.now();
+            
+            if (detailedStatsCache[cacheKey] && (now - detailedStatsCacheTimestamp) < DETAILED_STATS_CACHE_TTL) {
+                console.log(`Using cached detailed stats for faction ${factionID}`);
+                displayDetailedStatsTable(detailedStatsCache[cacheKey], memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID, 0, true);
+                return;
+            }
+
+            const detailedStats = {};
+            const totalMembers = memberIDs.length;
+            let processedCount = 0;
+            
+            // Progress tracking function
+            const updateProgress = (count, total, message = 'Processing players...') => {
+                processedCount = count;
+                const percentage = (count / total) * 100;
+                const progressText = document.getElementById('detailed-progress-text');
+                const progressFill = document.getElementById('detailed-progress-fill');
+                const progressDetails = document.querySelector('.progress-details');
+                
+                if (progressText) progressText.textContent = `${count} / ${total}`;
+                if (progressFill) progressFill.style.width = `${percentage}%`;
+                if (progressDetails) progressDetails.textContent = message;
+            };
+            
+            // Process in batches: first 90 immediately, then wait 1 minute for remaining
+            const firstBatchSize = Math.min(90, totalMembers);
+            const firstBatch = memberIDs.slice(0, firstBatchSize);
+            const remainingBatch = memberIDs.slice(firstBatchSize);
+
+            console.log(`Processing first batch of ${firstBatch.length} members immediately...`);
+            updateProgress(0, totalMembers, 'Starting first batch...');
+            
+            // Process first batch
+            for (let i = 0; i < firstBatch.length; i += 5) { // Process 5 at a time
+                const batch = firstBatch.slice(i, i + 5);
+                const batchPromises = batch.map(async (memberID) => {
+                    const cacheKey = `personalstats_${memberID}`;
+                    const cached = getCachedData(cacheKey);
+                    if (cached) {
+                        console.log(`Using cached data for member ${memberID}`);
+                        return { memberID, data: cached };
+                    }
+
+                    const url = `https://api.torn.com/user/${memberID}?selections=personalstats&key=${apiKey}`;
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        console.error(`Error fetching stats for ${memberID}:`, data.error);
+                        return { memberID, data: null };
+                    }
+                    
+                    setCachedData(cacheKey, data);
+                    return { memberID, data };
+                });
+
+                const batchResults = await Promise.all(batchPromises);
+                batchResults.forEach(result => {
+                    if (result.data) {
+                        detailedStats[result.memberID] = result.data;
+                    }
+                });
+
+                // Update progress
+                processedCount += batch.length;
+                updateProgress(processedCount, totalMembers, `Processed ${processedCount} of ${totalMembers} players...`);
+
+                // Rate limiting delay between batches
+                if (i + 5 < firstBatch.length) {
+                    await new Promise(resolve => setTimeout(resolve, 667)); // ~3 calls every 2 seconds
+                }
+            }
+
+            // Process remaining batch after 1 minute delay if needed
+            if (remainingBatch.length > 0) {
+                console.log(`Waiting 60 seconds before processing remaining ${remainingBatch.length} members...`);
+                updateProgress(processedCount, totalMembers, `First batch completed. Waiting 60 seconds before processing remaining ${remainingBatch.length} members...`);
+                
+                // Update the loading message
+                const progressDetails = document.querySelector('.progress-details');
+                if (progressDetails) {
+                    progressDetails.innerHTML = `
+                        First batch completed. Waiting 60 seconds before processing remaining ${remainingBatch.length} members...
+                        <br>
+                        <small>This is required to respect Torn API rate limits.</small>
+                    `;
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 60 seconds
+
+                console.log(`Processing remaining batch of ${remainingBatch.length} members...`);
+                updateProgress(processedCount, totalMembers, `Processing remaining ${remainingBatch.length} members...`);
+
+                for (let i = 0; i < remainingBatch.length; i += 5) {
+                    const batch = remainingBatch.slice(i, i + 5);
+                    const batchPromises = batch.map(async (memberID) => {
+                        const cacheKey = `personalstats_${memberID}`;
+                        const cached = getCachedData(cacheKey);
+                        if (cached) {
+                            console.log(`Using cached data for member ${memberID}`);
+                            return { memberID, data: cached };
+                        }
+
+                        const url = `https://api.torn.com/user/${memberID}?selections=personalstats&key=${apiKey}`;
+                        const response = await fetch(url);
+                        const data = await response.json();
+                        
+                        if (data.error) {
+                            console.error(`Error fetching stats for ${memberID}:`, data.error);
+                            return { memberID, data: null };
+                        }
+                        
+                        setCachedData(cacheKey, data);
+                        return { memberID, data };
+                    });
+
+                    const batchResults = await Promise.all(batchPromises);
+                    batchResults.forEach(result => {
+                        if (result.data) {
+                            detailedStats[result.memberID] = result.data;
+                        }
+                    });
+
+                    // Update progress
+                    processedCount += batch.length;
+                    updateProgress(processedCount, totalMembers, `Processed ${processedCount} of ${totalMembers} players...`);
+
+                    // Rate limiting delay between batches
+                    if (i + 5 < remainingBatch.length) {
+                        await new Promise(resolve => setTimeout(resolve, 667));
+                    }
+                }
+            }
+
+            const totalTime = performance.now() - startTime;
+            console.log(`Detailed stats collection completed in ${totalTime.toFixed(2)}ms`);
+
+            // Cache the detailed stats
+            detailedStatsCache[cacheKey] = detailedStats;
+            detailedStatsCacheTimestamp = now;
+
+            // Display the detailed stats table
+            displayDetailedStatsTable(detailedStats, memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID, totalTime, false);
+
+        } catch (error) {
+            console.error("Error collecting detailed stats:", error);
+            resultsContainer.innerHTML = `
+                <div style="text-align: center; padding: 20px; color: #ff6b6b;">
+                    Error collecting detailed stats: ${error.message}
+                    <br><br>
+                    <button onclick="location.reload()" class="btn" style="background-color: #FFD700; color: #333; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
+                        Try Again
+                    </button>
+                </div>
+            `;
+        }
+    };
+
+    const displayDetailedStatsTable = (detailedStats, memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID, totalTime, wasCached = false) => {
+        const resultsContainer = document.getElementById('battle-stats-results');
+        
+        // Create table data
+        const tableData = memberIDs.map(memberID => {
+            const member = membersObject[memberID];
+            const fairFightScore = ffScores[memberID] || 'Unknown';
+            const rawEstimatedStat = (fairFightScore !== 'Unknown' && fairFightScore > 0)
+                ? calculateStat(myTotalStats, fairFightScore)
+                : 'N/A';
+            
+            const personalStats = detailedStats[memberID]?.personalstats;
+            const stats = {
+                memberID,
+                name: member.name,
+                level: member.level || 'Unknown',
+                estimatedStats: rawEstimatedStat,
+                warHits: personalStats?.rankedwarhits || 0,
+                cansUsed: personalStats?.energydrinkused || 0,
+                xanaxUsed: personalStats?.xantaken || 0,
+                networth: personalStats?.networth || 0,
+                biggestHit: personalStats?.bestdamage || 0,
+                refills: personalStats?.refills || 0
+            };
+            
+            return stats;
+        });
+
+        // Sort by estimated stats (descending)
+        tableData.sort((a, b) => {
+            const statA = a.estimatedStats === 'N/A' ? -1 : a.estimatedStats;
+            const statB = b.estimatedStats === 'N/A' ? -1 : b.estimatedStats;
+            return statB - statA;
+        });
+
+        let tableHtml = `
+            <div style="margin-bottom: 20px;">
+                <button id="exportDetailedCsvBtn" class="btn" style="background-color: #FFD700; color: #333; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
+                    Export Detailed Stats to CSV
+                </button>
+                <button id="backToOriginalBtn" class="btn" style="background-color: #6c757d; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px;">
+                    Back to Original View
+                </button>
+            </div>
+            <div style="text-align: center; margin-bottom: 10px; color: #00ff00; font-size: 0.9em;">
+                ${wasCached ? '💾' : '⚡'} ${wasCached ? 'Using cached detailed stats' : `Detailed stats collected in ${totalTime.toFixed(0)}ms`}
+                <br>
+                📊 Showing ${tableData.length} members with personal stats
+            </div>
+            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName} - Detailed Stats</h2>
+            <table id="detailedStatsTable" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th data-column="member" style="min-width: 220px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Member <span class="sort-indicator"></span></th>
+                        <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Level <span class="sort-indicator"></span></th>
+                        <th data-column="estimatedStats" style="min-width: 140px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Estimated Stats <span class="sort-indicator">↓</span></th>
+                        <th data-column="warHits" style="min-width: 110px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">War Hits <span class="sort-indicator"></span></th>
+                        <th data-column="cansUsed" style="min-width: 110px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Cans Used <span class="sort-indicator"></span></th>
+                        <th data-column="xanaxUsed" style="min-width: 110px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Xanax Used <span class="sort-indicator"></span></th>
+                        <th data-column="networth" style="min-width: 140px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Networth <span class="sort-indicator"></span></th>
+                        <th data-column="biggestHit" style="min-width: 120px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Biggest Hit <span class="sort-indicator"></span></th>
+                        <th data-column="refills" style="min-width: 90px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Refills <span class="sort-indicator"></span></th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+        tableData.forEach(stats => {
+            const displayEstimatedStat = (stats.estimatedStats !== 'N/A') ? stats.estimatedStats.toLocaleString() : 'N/A';
+            const displayNetworth = stats.networth.toLocaleString();
+            const displayBiggestHit = stats.biggestHit.toLocaleString();
+
+            tableHtml += `
+                <tr>
+                    <td data-column="member" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);"><a href="https://www.torn.com/profiles.php?XID=${stats.memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${stats.name} [${stats.memberID}]</a></td>
+                    <td data-column="level" data-value="${stats.level === 'Unknown' ? -1 : stats.level}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.level}</td>
+                    <td data-column="estimatedStats" data-value="${stats.estimatedStats === 'N/A' ? -1 : stats.estimatedStats}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${displayEstimatedStat}</td>
+                    <td data-column="warHits" data-value="${stats.warHits}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.warHits.toLocaleString()}</td>
+                    <td data-column="cansUsed" data-value="${stats.cansUsed}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.cansUsed.toLocaleString()}</td>
+                    <td data-column="xanaxUsed" data-value="${stats.xanaxUsed}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.xanaxUsed.toLocaleString()}</td>
+                    <td data-column="networth" data-value="${stats.networth}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">$${displayNetworth}</td>
+                    <td data-column="biggestHit" data-value="${stats.biggestHit}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${displayBiggestHit}</td>
+                    <td data-column="refills" data-value="${stats.refills}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.refills.toLocaleString()}</td>
+                </tr>`;
+        });
+
+        tableHtml += `</tbody></table>`;
+
+        resultsContainer.innerHTML = tableHtml;
+
+        // Add sorting functionality
+        const table = document.getElementById('detailedStatsTable');
+        const headers = table.querySelectorAll('th[data-column]');
+        let currentSortColumn = 'estimatedStats';
+        let currentSortDirection = 'desc';
+        
+        const sortDetailedTable = (column, direction) => {
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            // Update sort indicators
+            headers.forEach(h => {
+                const indicator = h.querySelector('.sort-indicator');
+                const hColumn = h.getAttribute('data-column');
+                if (hColumn === column) {
+                    indicator.textContent = direction === 'asc' ? ' ↑' : ' ↓';
+                } else {
+                    indicator.textContent = '';
+                }
+            });
+            
+            // Sort rows
+            rows.sort((a, b) => {
+                const aCell = a.querySelector(`td[data-column="${column}"]`);
+                const bCell = b.querySelector(`td[data-column="${column}"]`);
+                
+                let aValue = aCell.getAttribute('data-value') || aCell.textContent;
+                let bValue = bCell.getAttribute('data-value') || bCell.textContent;
+                
+                if (column === 'member') {
+                    aValue = aValue.toLowerCase();
+                    bValue = bValue.toLowerCase();
+                    if (aValue < bValue) return direction === 'asc' ? -1 : 1;
+                    if (aValue > bValue) return direction === 'asc' ? 1 : -1;
+                    return 0;
+                } else {
+                    let aNum = parseFloat(aValue);
+                    let bNum = parseFloat(bValue);
+                    if (isNaN(aNum)) aNum = -1;
+                    if (isNaN(bNum)) bNum = -1;
+
+                    if (direction === 'desc') {
+                        return bNum - aNum;
+                    } else {
+                        return aNum - bNum;
+                    }
+                }
+            });
+            
+            // Reorder rows
+            rows.forEach(row => tbody.appendChild(row));
+        };
+        
+        // Apply default sort
+        sortDetailedTable(currentSortColumn, currentSortDirection);
+        
+        headers.forEach(header => {
+            header.addEventListener('click', () => {
+                const column = header.getAttribute('data-column');
+                
+                if (currentSortColumn === column) {
+                    currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSortColumn = column;
+                    currentSortDirection = 'asc';
+                }
+                
+                sortDetailedTable(currentSortColumn, currentSortDirection);
+            });
+        });
+
+        // Add CSV export functionality for detailed stats
+        document.getElementById('exportDetailedCsvBtn').addEventListener('click', () => {
+            const csvData = [
+                [`Faction: ${factionName} - Detailed Stats`],
+                [],
+                ['Member', 'Level', 'Estimated Stats', 'War Hits', 'Cans Used', 'Xanax Used', 'Networth', 'Biggest Hit', 'Refills']
+            ];
+            
+            tableData.forEach(stats => {
+                const displayEstimatedStat = (stats.estimatedStats !== 'N/A') ? stats.estimatedStats.toLocaleString() : 'N/A';
+                const escapedMemberName = stats.name.replace(/"/g, '""');
+                const memberLinkFormula = `=HYPERLINK("https://www.torn.com/profiles.php?XID=${stats.memberID}", "${escapedMemberName} [${stats.memberID}]")`;
+
+                csvData.push([
+                    memberLinkFormula,
+                    stats.level,
+                    displayEstimatedStat,
+                    stats.warHits.toLocaleString(),
+                    stats.cansUsed.toLocaleString(),
+                    stats.xanaxUsed.toLocaleString(),
+                    `$${stats.networth.toLocaleString()}`,
+                    stats.biggestHit.toLocaleString(),
+                    stats.refills.toLocaleString()
+                ]);
+            });
+            
+            const csvContent = csvData.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `faction_detailed_stats_${factionID}_${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        });
+
+        // Add back button functionality
+        document.getElementById('backToOriginalBtn').addEventListener('click', () => {
+            // Re-run the original battle stats fetch to restore the original view
+            handleBattleStatsFetch();
+        });
     };
 
     // --- CONSUMPTION TRACKER TOOL (OLD - KEPT FOR OTHER TOOLS) ---
