@@ -85,9 +85,10 @@ Statistical analysis tool for faction member performance and battle statistics.
 - You can clear the saved API key by clearing your browser's localStorage
 
 ### **Setup for Development/Deployment**
-- Replace `YOUR_ADMIN_KEY_HERE` in `app.js` with your actual admin API key
+- Update `ADMIN_USER_ID` in `app.js` with your Torn user ID
 - Update `ADMIN_USER_NAME` in `app.js` with your Torn username
 - These settings control access to the admin dashboard and usage filtering
+- Any API key belonging to the admin user ID will grant admin access
 
 ### **War Payout Calculator**
 1. Enter your faction ID and war ID

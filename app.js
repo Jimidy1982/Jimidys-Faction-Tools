@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const appContent = document.getElementById('app-content');
 
     // Admin system
-    const ADMIN_API_KEY = 'YOUR_ADMIN_KEY_HERE'; // Replace with your actual key
+    const ADMIN_USER_ID = 2935825; // Your Torn user ID (Jimidy)
     const ADMIN_USER_NAME = 'Jimidy'; // Your username to exclude from results
     let userCache = {}; // Cache for API key -> user data
     let showAdminData = false; // Global toggle for showing admin data
@@ -72,9 +72,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Function to check if current user is admin
-    function isAdmin() {
+    async function isAdmin() {
         const apiKey = localStorage.getItem('tornApiKey');
-        return apiKey === ADMIN_API_KEY;
+        if (!apiKey) return false;
+        
+        try {
+            const userData = await getUserData(apiKey);
+            return userData && userData.playerId === ADMIN_USER_ID;
+        } catch (error) {
+            console.error('Error checking admin status:', error);
+            return false;
+        }
     }
 
     // Function to add admin menu item if user is admin
@@ -82,7 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const nav = document.querySelector('nav ul');
         const existingAdminItem = document.querySelector('#admin-menu-item');
         
-        if (isAdmin()) {
+        if (await isAdmin()) {
             // Add admin menu item if it doesn't exist
             if (nav && !existingAdminItem) {
                 const adminItem = document.createElement('li');
@@ -591,7 +599,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Handle admin dashboard specially (no file fetch needed)
             if (page === 'admin-dashboard') {
                 // Check if user is admin before loading dashboard
-                if (!isAdmin()) {
+                if (!(await isAdmin())) {
                     appContent.innerHTML = `<div class="container"><h2>Access Denied</h2><p>You don't have permission to access this page.</p></div>`;
                     return;
                 }
