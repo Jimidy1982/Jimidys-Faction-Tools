@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const appContent = document.getElementById('app-content');
 
     // Admin system
-    const ADMIN_API_KEY = 'FO1umxJf8g6xkUTn';
+    const ADMIN_API_KEY = 'YOUR_ADMIN_KEY_HERE'; // Replace with your actual key
     const ADMIN_USER_NAME = 'Jimidy'; // Your username to exclude from results
     let userCache = {}; // Cache for API key -> user data
     let showAdminData = false; // Global toggle for showing admin data

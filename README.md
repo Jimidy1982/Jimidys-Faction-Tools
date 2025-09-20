@@ -4,6 +4,18 @@ A comprehensive web-based suite of tools for Torn faction management and analysi
 
 ## 🎯 Current Tools
 
+### ✅ **Termed War Calculator**
+Advanced termed war calculation tool with cache swapping functionality.
+
+**Features:**
+- **War timing calculations** based on Torn Wiki rules (24h grace period, 1% decay per hour)
+- **Cache Swapping Tool** with real-time API integration
+- **Optimal cache distribution** calculations with cash compensation
+- **Real-time market value integration** for accurate pricing
+- **Bidirectional score editing** with automatic updates
+- **TCT time zone support** with intuitive day/hour selectors
+- **Tabbed interface** for organized tool access
+
 ### ✅ **War Payout Calculator (2.0)**
 Advanced war payout calculation tool with hit-based calculations and enhanced features.
 
@@ -71,6 +83,11 @@ Statistical analysis tool for faction member performance and battle statistics.
 - Your API key is stored locally in your browser's localStorage
 - It is never sent to any server other than Torn's API
 - You can clear the saved API key by clearing your browser's localStorage
+
+### **Setup for Development/Deployment**
+- Replace `YOUR_ADMIN_KEY_HERE` in `app.js` with your actual admin API key
+- Update `ADMIN_USER_NAME` in `app.js` with your Torn username
+- These settings control access to the admin dashboard and usage filtering
 
 ### **War Payout Calculator**
 1. Enter your faction ID and war ID
