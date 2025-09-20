@@ -1,6 +1,425 @@
 document.addEventListener('DOMContentLoaded', () => {
     const appContent = document.getElementById('app-content');
 
+    // Admin system
+    const ADMIN_API_KEY = 'FO1umxJf8g6xkUTn';
+    const ADMIN_USER_NAME = 'Jimidy'; // Your username to exclude from results
+    let userCache = {}; // Cache for API key -> user data
+    let showAdminData = false; // Global toggle for showing admin data
+
+    // Function to get user data from API key
+    async function getUserData(apiKey) {
+        if (!apiKey) return null;
+        
+        // Check cache first
+        if (userCache[apiKey]) {
+            return userCache[apiKey];
+        }
+        
+        try {
+            const response = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+            const data = await response.json();
+            
+            
+            if (data.error) {
+                console.error('API Error:', data.error);
+                return null;
+            }
+            
+            const userData = {
+                name: data.name,
+                playerId: data.player_id,
+                profileUrl: `https://www.torn.com/profiles.php?XID=${data.player_id}`,
+                factionName: data.faction_name || data.faction?.faction_name || 'Unknown Faction',
+                factionId: data.faction_id || data.faction?.faction_id || null
+            };
+            
+            // Cache the result
+            userCache[apiKey] = userData;
+            return userData;
+        } catch (error) {
+            console.error('Error fetching user data:', error);
+            return null;
+        }
+    }
+
+    // Function to log tool usage
+    async function logToolUsage(toolName) {
+        const apiKey = localStorage.getItem('tornApiKey');
+        if (!apiKey) return;
+        
+        const userData = await getUserData(apiKey);
+        if (!userData) return;
+        
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            userName: userData.name,
+            playerId: userData.playerId,
+            profileUrl: userData.profileUrl,
+            factionName: userData.factionName,
+            factionId: userData.factionId,
+            tool: toolName,
+            apiKey: apiKey.substring(0, 8) + '...' // Only store partial key for privacy
+        };
+        
+        // Send to server for logging (we'll implement this)
+        console.log('Tool Usage:', logEntry);
+        
+        // For now, store in localStorage (we'll move this to server-side later)
+        const logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+        logs.push(logEntry);
+        localStorage.setItem('toolUsageLogs', JSON.stringify(logs));
+    }
+
+    // Function to check if current user is admin
+    function isAdmin() {
+        const apiKey = localStorage.getItem('tornApiKey');
+        return apiKey === ADMIN_API_KEY;
+    }
+
+    // Function to add admin menu item if user is admin
+    async function checkAndAddAdminMenu() {
+        const nav = document.querySelector('nav ul');
+        const existingAdminItem = document.querySelector('#admin-menu-item');
+        
+        if (isAdmin()) {
+            // Add admin menu item if it doesn't exist
+            if (nav && !existingAdminItem) {
+                const adminItem = document.createElement('li');
+                adminItem.id = 'admin-menu-item';
+                adminItem.innerHTML = '<a href="#admin-dashboard" class="nav-link">🔧 Admin Dashboard</a>';
+                nav.appendChild(adminItem);
+            }
+        } else {
+            // Remove admin menu item if it exists and user is not admin
+            if (existingAdminItem) {
+                existingAdminItem.remove();
+            }
+        }
+    }
+
+    // Function to initialize admin dashboard
+    function initAdminDashboard() {
+        const logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+        
+        // Filter out admin usage based on toggle setting
+        const filteredLogs = showAdminData ? logs : logs.filter(log => log.userName !== ADMIN_USER_NAME);
+        const allLogs = logs; // Keep original logs for complete view
+        
+        // Calculate statistics (excluding admin by default)
+        const stats = {};
+        const userStats = {};
+        const recentLogs = filteredLogs.slice(-20).reverse(); // Last 20 logs, most recent first
+        
+        filteredLogs.forEach(log => {
+            // Tool usage stats
+            if (!stats[log.tool]) {
+                stats[log.tool] = { count: 0, users: new Set() };
+            }
+            stats[log.tool].count++;
+            stats[log.tool].users.add(log.userName);
+            
+            // User stats
+            if (!userStats[log.userName]) {
+                userStats[log.userName] = { 
+                    count: 0, 
+                    tools: new Set(), 
+                    profileUrl: log.profileUrl,
+                    factionName: log.factionName || 'No Faction',
+                    lastUsed: log.timestamp
+                };
+            }
+            userStats[log.userName].count++;
+            userStats[log.userName].tools.add(log.tool);
+            if (new Date(log.timestamp) > new Date(userStats[log.userName].lastUsed)) {
+                userStats[log.userName].lastUsed = log.timestamp;
+                // Update faction name to the most recent entry
+                userStats[log.userName].factionName = log.factionName || 'No Faction';
+            }
+        });
+        
+        // Sort stats
+        const sortedToolStats = Object.entries(stats).sort((a, b) => b[1].count - a[1].count);
+        const sortedUserStats = Object.entries(userStats).sort((a, b) => b[1].count - a[1].count).slice(0, 10); // Top 10 users
+        
+        // Generate HTML
+        let html = `
+            <div class="container">
+                <h1>🔧 Admin Dashboard</h1>
+                
+                <div style="margin-bottom: 20px; text-align: center;">
+                    <button id="toggleAdminFilter" class="fetch-button" style="background-color: var(--accent-color);">
+                        ${showAdminData ? '📊 Including Your Usage' : '📊 Excluding Your Usage'} (${filteredLogs.length} uses)
+                    </button>
+                    <p style="margin: 10px 0; color: var(--text-color); font-size: 0.9em;">
+                        ${showAdminData ? 
+                            `Showing all usage including your testing (${allLogs.length} total uses)` : 
+                            `Excluding your testing usage. Click to show all usage (${allLogs.length} total)`
+                        }
+                    </p>
+                </div>
+                
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Tool Uses</h3>
+                        <div class="stat-number">${filteredLogs.length}</div>
+                        <div style="font-size: 0.8em; color: #888;">${showAdminData ? '(including admin)' : `(${allLogs.length} total)`}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Unique Users</h3>
+                        <div class="stat-number">${Object.keys(userStats).length}</div>
+                        <div style="font-size: 0.8em; color: #888;">${showAdminData ? '(including admin)' : '(excluding admin)'}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Tools Available</h3>
+                        <div class="stat-number">${Object.keys(stats).length}</div>
+                    </div>
+                </div>
+                
+                <div class="dashboard-section">
+                    <h2>Most Used Tools</h2>
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Tool</th>
+                                <th>Uses</th>
+                                <th>Unique Users</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        `;
+        
+        sortedToolStats.forEach(([tool, data]) => {
+            html += `
+                <tr>
+                    <td><strong>${tool}</strong></td>
+                    <td>${data.count}</td>
+                    <td>${data.users.size}</td>
+                </tr>
+            `;
+        });
+        
+        html += `
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="dashboard-section">
+                    <h2>Top 10 Most Active Users</h2>
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Faction</th>
+                                <th>Total Uses</th>
+                                <th>Tools Used</th>
+                                <th>Last Used</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        `;
+        
+        sortedUserStats.forEach(([userName, data]) => {
+            const lastUsed = new Date(data.lastUsed).toLocaleDateString();
+            html += `
+                <tr>
+                    <td><a href="${data.profileUrl}" target="_blank" class="user-link">${userName}</a></td>
+                    <td>${data.factionName}</td>
+                    <td>${data.count}</td>
+                    <td>${Array.from(data.tools).join(', ')}</td>
+                    <td>${lastUsed}</td>
+                </tr>
+            `;
+        });
+        
+        html += `
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="dashboard-section">
+                    <h2>Recent Activity (Last 20)</h2>
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>User</th>
+                                <th>Faction</th>
+                                <th>Tool</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        `;
+        
+        recentLogs.forEach(log => {
+            const timestamp = new Date(log.timestamp).toLocaleString();
+            html += `
+                <tr>
+                    <td>${timestamp}</td>
+                    <td><a href="${log.profileUrl}" target="_blank" class="user-link">${log.userName}</a></td>
+                    <td>${log.factionName || 'Unknown Faction'}</td>
+                    <td><strong>${log.tool}</strong></td>
+                </tr>
+            `;
+        });
+        
+        html += `
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="dashboard-section">
+                    <h2>All Users & Complete Logs</h2>
+                    <div style="margin-bottom: 15px;">
+                        <button id="showAllUsers" class="fetch-button" style="margin-right: 10px;">Show All Users</button>
+                        <button id="showAllLogs" class="fetch-button" style="margin-right: 10px;">Show All Logs</button>
+                        <button id="exportLogs" class="fetch-button" style="background-color: var(--accent-color);">Export Logs (JSON)</button>
+                    </div>
+                    <div id="allUsersSection" style="display: none;">
+                        <h3>Complete User List (${Object.keys(userStats).length} users)</h3>
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Faction</th>
+                                    <th>Total Uses</th>
+                                    <th>Tools Used</th>
+                                    <th>First Used</th>
+                                    <th>Last Used</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+        `;
+        
+        // Sort users by first appearance (oldest first)
+        const sortedAllUsers = Object.entries(userStats).sort((a, b) => 
+            new Date(a[1].firstUsed || a[1].lastUsed) - new Date(b[1].firstUsed || b[1].lastUsed)
+        );
+        
+        // Calculate first used date for each user
+        sortedAllUsers.forEach(([userName, data]) => {
+            const userLogs = logs.filter(log => log.userName === userName);
+            const firstUsed = userLogs.length > 0 ? userLogs[userLogs.length - 1].timestamp : data.lastUsed;
+            data.firstUsed = firstUsed;
+        });
+        
+        sortedAllUsers.forEach(([userName, data]) => {
+            const firstUsed = new Date(data.firstUsed).toLocaleDateString();
+            const lastUsed = new Date(data.lastUsed).toLocaleDateString();
+            html += `
+                <tr>
+                    <td><a href="${data.profileUrl}" target="_blank" class="user-link">${userName}</a></td>
+                    <td>${data.factionName}</td>
+                    <td>${data.count}</td>
+                    <td>${Array.from(data.tools).join(', ')}</td>
+                    <td>${firstUsed}</td>
+                    <td>${lastUsed}</td>
+                </tr>
+            `;
+        });
+        
+        html += `
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div id="allLogsSection" style="display: none;">
+                        <h3>Complete Activity Log (${logs.length} entries)</h3>
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>User</th>
+                                    <th>Faction</th>
+                                    <th>Tool</th>
+                                    <th>Player ID</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+        `;
+        
+        // Sort all logs by timestamp (newest first)
+        const sortedAllLogs = [...logs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        
+        sortedAllLogs.forEach(log => {
+            const timestamp = new Date(log.timestamp).toLocaleString();
+            html += `
+                <tr>
+                    <td>${timestamp}</td>
+                    <td><a href="${log.profileUrl}" target="_blank" class="user-link">${log.userName}</a></td>
+                    <td>${log.factionName || 'Unknown Faction'}</td>
+                    <td><strong>${log.tool}</strong></td>
+                    <td>${log.playerId}</td>
+                </tr>
+            `;
+        });
+        
+        html += `
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        appContent.innerHTML = html;
+        
+        // Add event listeners for the new buttons
+        document.getElementById('toggleAdminFilter')?.addEventListener('click', () => {
+            showAdminData = !showAdminData;
+            // Reload the dashboard with the new filter setting
+            initAdminDashboard();
+        });
+        
+        document.getElementById('showAllUsers')?.addEventListener('click', () => {
+            const section = document.getElementById('allUsersSection');
+            const button = document.getElementById('showAllUsers');
+            if (section && button) {
+                if (section.style.display === 'none') {
+                    section.style.display = 'block';
+                    button.textContent = 'Hide All Users';
+                } else {
+                    section.style.display = 'none';
+                    button.textContent = 'Show All Users';
+                }
+            }
+        });
+        
+        document.getElementById('showAllLogs')?.addEventListener('click', () => {
+            const section = document.getElementById('allLogsSection');
+            const button = document.getElementById('showAllLogs');
+            if (section && button) {
+                if (section.style.display === 'none') {
+                    section.style.display = 'block';
+                    button.textContent = 'Hide All Logs';
+                } else {
+                    section.style.display = 'none';
+                    button.textContent = 'Show All Logs';
+                }
+            }
+        });
+        
+        document.getElementById('exportLogs')?.addEventListener('click', () => {
+            const logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+            const dataStr = JSON.stringify(logs, null, 2);
+            const dataBlob = new Blob([dataStr], {type: 'application/json'});
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `tool-usage-logs-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        });
+    }
+
+    // Make functions globally accessible
+    window.logToolUsage = logToolUsage;
+    window.isAdmin = isAdmin;
+    window.checkAndAddAdminMenu = checkAndAddAdminMenu;
+    window.initAdminDashboard = initAdminDashboard;
+
     // --- API BATCHING UTILITIES ---
     
     // Parallel batching with rate limiting
@@ -169,6 +588,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- ROUTER & PAGE LOADING ---
     const loadPage = async (page) => {
         try {
+            // Handle admin dashboard specially (no file fetch needed)
+            if (page === 'admin-dashboard') {
+                // Check if user is admin before loading dashboard
+                if (!isAdmin()) {
+                    appContent.innerHTML = `<div class="container"><h2>Access Denied</h2><p>You don't have permission to access this page.</p></div>`;
+                    return;
+                }
+                initAdminDashboard();
+                console.log('[APP] Loaded admin dashboard');
+                return;
+            }
+            
             const response = await fetch(page);
             if (!response.ok) throw new Error(`Page not found: ${page}`);
             appContent.innerHTML = await response.text();
@@ -215,6 +646,30 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 };
                 document.body.appendChild(script);
+            } else if (page.includes('termed-war-calculator')) {
+                // Remove any previous script for this tool
+                const oldScript = document.getElementById('termed-war-calculator-script');
+                if (oldScript) oldScript.remove();
+                // Dynamically load the script
+                const script = document.createElement('script');
+                script.src = 'tools/termed-war-calculator/termed-war-calculator.js';
+                script.id = 'termed-war-calculator-script';
+                script.onload = () => {
+                    console.log('[APP] termed-war-calculator/termed-war-calculator.js loaded, calling initTermedWarCalculator');
+                    if (typeof initTermedWarCalculator === 'function') {
+                        initTermedWarCalculator();
+                    } else if (window.initTermedWarCalculator) {
+                        window.initTermedWarCalculator();
+                    } else {
+                        console.error('[APP] initTermedWarCalculator is still not available after script load!');
+                    }
+                };
+                document.head.appendChild(script);
+            } else if (page.includes('home.html')) {
+                // Log home page visit
+                if (window.logToolUsage) {
+                    window.logToolUsage('home');
+                }
             }
         } catch (error) {
             console.error('Failed to load page:', error);
@@ -225,12 +680,44 @@ document.addEventListener('DOMContentLoaded', () => {
     const router = () => {
         const hash = window.location.hash.substring(1) || 'home';
         const pageName = `${hash.split('/')[0]}`;
+        
+        // Handle admin dashboard specially (no HTML file needed)
+        if (pageName === 'admin-dashboard') {
+            loadPage('admin-dashboard');
+            return;
+        }
+        
         const pagePath = `pages/${pageName}.html`;
         loadPage(pagePath);
     };
 
     window.addEventListener('hashchange', router);
     router(); // Initial load
+    
+    // Check and add admin menu if user is admin
+    checkAndAddAdminMenu();
+    
+    // Add event listener to API key input for automatic admin menu detection
+    const apiKeyInput = document.getElementById('globalApiKey');
+    if (apiKeyInput) {
+        let adminCheckTimeout;
+        
+        apiKeyInput.addEventListener('input', () => {
+            // Clear any existing timeout
+            if (adminCheckTimeout) {
+                clearTimeout(adminCheckTimeout);
+            }
+            
+            // Set a new timeout to check for admin after user stops typing
+            adminCheckTimeout = setTimeout(() => {
+                // Update localStorage with current API key value
+                localStorage.setItem('tornApiKey', apiKeyInput.value);
+                
+                // Check if admin menu should be shown/hidden
+                checkAndAddAdminMenu();
+            }, 500); // 0.5 second delay
+        });
+    }
 
     // --- EVENT DELEGATION ---
     // Listen for clicks on the whole app container
@@ -254,6 +741,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- BATTLE STATS TOOL ---
     function initBattleStats() {
+        // Log tool usage
+        if (window.logToolUsage) {
+            window.logToolUsage('faction-battle-stats');
+        }
+        
         const fetchBtn = document.getElementById('fetchBattleStatsBtn');
         if (fetchBtn) {
             fetchBtn.addEventListener('click', handleBattleStatsFetch);
@@ -1155,8 +1647,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const allWarsArray = warsResponse.rankedwars || [];
             console.log(`Found ${allWarsArray.length} total ranked wars in the array.`);
 
-            // Slice the array to only include the number of wars requested
-            const warsToAnalyze = allWarsArray.slice(0, warCount);
+            // Filter out ongoing wars (end: 0) and slice to only include the number of wars requested
+            const completedWars = allWarsArray.filter(war => war.end > 0);
+            console.log(`Found ${completedWars.length} completed wars (filtered out ${allWarsArray.length - completedWars.length} ongoing wars).`);
+            
+            const warsToAnalyze = completedWars.slice(0, warCount);
             console.log(`Analyzing the ${warsToAnalyze.length} most recent wars.`);
 
             // If no start date was provided, set it to the earliest war *from the analyzed slice*
@@ -1255,7 +1750,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             console.log('Calling updateWarReportUI...');
-            updateWarReportUI(memberStats, startTime);
+            // Create date range labels for display
+            const chainDateRangeLabel = startDate && endDate ? `(${startDate} to ${endDate})` : '';
+            const warDateRangeLabel = startDate && endDate ? `(${startDate} to ${endDate})` : '';
+            updateWarReportUI(memberStats, startTime, 'total-summary', chainDateRangeLabel, warDateRangeLabel, currentMembers, warsToAnalyze.length);
 
         } catch (error) {
             console.error('Failed to fetch war reports:', error);
@@ -1432,6 +1930,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function initWarChainReporter() {
+        // Log tool usage
+        if (window.logToolUsage) {
+            window.logToolUsage('war-chain-reporter');
+        }
+        
         const fetchBtn = document.getElementById('fetchWarReports');
         if (fetchBtn) {
             fetchBtn.addEventListener('click', handleWarReportFetch);
@@ -1755,8 +2258,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const allWarsArray = warsResponse.rankedwars || [];
             console.log(`Found ${allWarsArray.length} total ranked wars in the array.`);
 
-            // Slice the array to only include the number of wars requested
-            const warsToAnalyze = allWarsArray.slice(0, warCount);
+            // Filter out ongoing wars (end: 0) and slice to only include the number of wars requested
+            const completedWars = allWarsArray.filter(war => war.end > 0);
+            console.log(`Found ${completedWars.length} completed wars (filtered out ${allWarsArray.length - completedWars.length} ongoing wars).`);
+            
+            const warsToAnalyze = completedWars.slice(0, warCount);
             console.log(`Analyzing the ${warsToAnalyze.length} most recent wars.`);
 
             // If no start date was provided, set it to the earliest war *from the analyzed slice*
@@ -1882,6 +2388,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const resultsSection = document.querySelector('.results-section');
         const totalTime = performance.now() - startTime;
         const individualWars = window.individualWarsData || [];
+        console.log('Individual wars data:', individualWars);
+        console.log('Individual wars length:', individualWars.length);
+        console.log('Member stats object:', memberStats);
+        console.log('Member stats keys:', Object.keys(memberStats));
 
         // Convert memberStats object to array for sorting
         const membersArray = Object.entries(memberStats).map(([id, stats]) => ({
@@ -1903,6 +2413,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         console.log('Members array:', membersArray);
         console.log('Members array length:', membersArray.length);
+        if (membersArray.length > 0) {
+            console.log('First member data:', membersArray[0]);
+        }
 
         // Calculate totals
         const totals = {
@@ -1931,11 +2444,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Only show tabs if there are individual wars
         if (individualWars.length > 0) {
+            console.log('Generating tabs for', individualWars.length, 'wars');
+            const tabButtons = individualWars.map(war => `<button class="tab-button" data-tab="war-${war.id}">War vs. ${war.enemyFaction.name}</button>`).join('');
+            console.log('Tab buttons HTML:', tabButtons);
+            
             html += `
                 <div class="war-tabs">
                     <div class="tab-buttons">
                         <button class="tab-button" data-tab="total-summary">Total Summary</button>
-                        ${individualWars.map(war => `<button class="tab-button" data-tab="war-${war.id}">War vs. ${war.enemyFaction.name}</button>`).join('')}
+                        ${tabButtons}
                     </div>
                     <div class="tab-content">
                         <div class="tab-pane" id="total-summary">
@@ -2124,9 +2641,18 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsSection.innerHTML = html;
         resultsSection.style.display = 'block';
         
-        // Restore active tab after re-render
-        document.querySelector(`.tab-button[data-tab="${activeTabId}"]`)?.classList.add('active');
-        document.querySelector(`.tab-pane#${activeTabId}`)?.classList.add('active');
+        
+        // Small delay to ensure DOM is updated before tab activation
+        setTimeout(() => {
+            console.log('Activating tab:', activeTabId);
+            const tabButton = document.querySelector(`.tab-button[data-tab="${activeTabId}"]`);
+            const tabPane = document.querySelector(`.tab-pane#${activeTabId}`);
+            console.log('Tab button found:', tabButton);
+            console.log('Tab pane found:', tabPane);
+            
+            if (tabButton) tabButton.classList.add('active');
+            if (tabPane) tabPane.classList.add('active');
+        }, 10);
 
         // Add tab functionality
         document.querySelectorAll('.tab-button').forEach(button => {

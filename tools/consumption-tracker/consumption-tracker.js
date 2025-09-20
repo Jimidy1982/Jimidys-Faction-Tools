@@ -8,6 +8,11 @@ let consumptionTrackerData = {
 
 function initConsumptionTracker() {
     console.log('[CONSUMPTION TRACKER] initConsumptionTracker CALLED');
+    
+    // Log tool usage
+    if (window.logToolUsage) {
+        window.logToolUsage('consumption-tracker');
+    }
 
     const fetchBtn = document.getElementById('fetchData');
     if (fetchBtn) {
@@ -131,7 +136,7 @@ const handleConsumptionFetch = async () => {
                            'Ecstasy': 'Ecstasy',
                            'LSD': 'LSD',
                            'Love Juice': 'Love Juice',
-                           'Blood Bag': 'Blood Bag',
+                           'Blood Bag': 'Blood Bag', // This will be calculated as average of all blood bag types
                            'First Aid Kit': 'First Aid Kit',
                            'Small First Aid Kit': 'Small First Aid Kit',
                            'Morphine': 'Morphine',
@@ -173,12 +178,14 @@ const handleConsumptionFetch = async () => {
             bloodBagItems.forEach(item => {
                 console.log(`  - ${item.name}: ${item.market_value} (${item.type})`);
             });
+        } else {
+            console.warn('No blood bag items found in the API response');
         }
         
                        // Log any missing items
                const itemNameMapping = {
                    'Xanax': 'Xanax',
-                   'Blood Bag': 'Blood Bag',
+                   'Blood Bag': 'Blood Bag', // Special handling - calculated as average of all blood bag types
                    'First Aid Kit': 'First Aid Kit',
                    'Small First Aid Kit': 'Small First Aid Kit',
                    'Morphine': 'Morphine',
@@ -441,7 +448,16 @@ const handleConsumptionFetch = async () => {
                 playerConsumption[playerName].lsd++;
             } else if (logText.includes('used one of the faction\'s Love Juice items')) {
                 playerConsumption[playerName].loveJuice++;
-            } else if (logText.includes('used one of the faction\'s Blood Bag items')) {
+            } else if (logText.includes('used one of the faction\'s Blood Bag') || 
+                       logText.includes('used one of the faction\'s Blood Bag : A+') ||
+                       logText.includes('used one of the faction\'s Blood Bag : A-') ||
+                       logText.includes('used one of the faction\'s Blood Bag : AB+') ||
+                       logText.includes('used one of the faction\'s Blood Bag : AB-') ||
+                       logText.includes('used one of the faction\'s Blood Bag : B+') ||
+                       logText.includes('used one of the faction\'s Blood Bag : B-') ||
+                       logText.includes('used one of the faction\'s Blood Bag : O+') ||
+                       logText.includes('used one of the faction\'s Blood Bag : O-') ||
+                       logText.includes('used one of the faction\'s Empty Blood Bag')) {
                 playerConsumption[playerName].bloodbags++;
             } else if (logText.includes('used one of the faction\'s First Aid Kit items') && !logText.includes('Small')) {
                 playerConsumption[playerName].firstAidKit++;

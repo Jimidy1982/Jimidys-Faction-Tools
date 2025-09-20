@@ -1,0 +1,184 @@
+<div class="container">
+    <h1>Termed War Calculator</h1>
+    
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+        <button class="tab-button active" data-tab="termed-war">Termed War Calculator</button>
+        <button class="tab-button" data-tab="cache-swap">Cache Swapping</button>
+    </div>
+    
+    <!-- Tab Content Container -->
+    <div class="tab-content">
+        <!-- Termed War Calculator Tab -->
+        <div class="tab-pane active" id="termed-war">
+            <div class="input-section">
+                <div class="war-timing-controls">
+                    <div class="war-start-group">
+                        <h3>War Start (TCT)</h3>
+                        <div class="time-control-row">
+                            <div class="control-group">
+                                <label for="warStartDay">Day:</label>
+                                <select id="warStartDay">
+                                    <option value="thursday">Thursday</option>
+                                    <option value="friday">Friday</option>
+                                    <option value="saturday">Saturday</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label for="warStartHour">Hour:</label>
+                                <select id="warStartHour">
+                                    <option value="0">00:00</option>
+                                    <option value="1">01:00</option>
+                                    <option value="2">02:00</option>
+                                    <option value="3">03:00</option>
+                                    <option value="4">04:00</option>
+                                    <option value="5">05:00</option>
+                                    <option value="6">06:00</option>
+                                    <option value="7">07:00</option>
+                                    <option value="8">08:00</option>
+                                    <option value="9">09:00</option>
+                                    <option value="10">10:00</option>
+                                    <option value="11">11:00</option>
+                                    <option value="12">12:00</option>
+                                    <option value="13">13:00</option>
+                                    <option value="14">14:00</option>
+                                    <option value="15">15:00</option>
+                                    <option value="16">16:00</option>
+                                    <option value="17">17:00</option>
+                                    <option value="18">18:00</option>
+                                    <option value="19">19:00</option>
+                                    <option value="20">20:00</option>
+                                    <option value="21">21:00</option>
+                                    <option value="22">22:00</option>
+                                    <option value="23">23:00</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="war-finish-group">
+                        <h3>Required Finish (TCT)</h3>
+                        <div class="time-control-row">
+                            <div class="control-group">
+                                <label for="warFinishDay">Day:</label>
+                                <select id="warFinishDay">
+                                    <option value="thursday">Thursday</option>
+                                    <option value="friday">Friday</option>
+                                    <option value="saturday">Saturday</option>
+                                    <option value="sunday">Sunday</option>
+                                    <option value="monday">Monday</option>
+                                    <option value="tuesday" selected>Tuesday</option>
+                                    <option value="wednesday">Wednesday</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label for="warFinishHour">Hour:</label>
+                                <select id="warFinishHour">
+                                    <option value="0" selected>00:00</option>
+                                    <option value="1">01:00</option>
+                                    <option value="2">02:00</option>
+                                    <option value="3">03:00</option>
+                                    <option value="4">04:00</option>
+                                    <option value="5">05:00</option>
+                                    <option value="6">06:00</option>
+                                    <option value="7">07:00</option>
+                                    <option value="8">08:00</option>
+                                    <option value="9">09:00</option>
+                                    <option value="10">10:00</option>
+                                    <option value="11">11:00</option>
+                                    <option value="12">12:00</option>
+                                    <option value="13">13:00</option>
+                                    <option value="14">14:00</option>
+                                    <option value="15">15:00</option>
+                                    <option value="16">16:00</option>
+                                    <option value="17">17:00</option>
+                                    <option value="18">18:00</option>
+                                    <option value="19">19:00</option>
+                                    <option value="20">20:00</option>
+                                    <option value="21">21:00</option>
+                                    <option value="22">22:00</option>
+                                    <option value="23">23:00</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="lead-requirement-section">
+                    <div class="control-group">
+                        <label for="startingLeadRequirement">Starting Lead Requirement:</label>
+                        <input type="number" id="startingLeadRequirement" value="1000" min="1">
+                    </div>
+                </div>
+                
+                <div class="score-display-section">
+                    <p style="text-align: center; margin-bottom: 20px;">Edit either score below to see the other automatically update</p>
+                    <div class="score-container">
+                        <div class="score-card">
+                            <label for="winningScore">Winning Score:</label>
+                            <input type="number" id="winningScore" class="score-input" value="2000">
+                        </div>
+                        <div class="score-card">
+                            <label for="losingScore">Losing Score:</label>
+                            <input type="number" id="losingScore" class="score-input" value="2000">
+                        </div>
+                    </div>
+                    <div class="lead-requirement-display">
+                        <strong>Lead Requirement: <span id="leadRequirementDisplay">1000</span></strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Cache Swapping Tab -->
+        <div class="tab-pane" id="cache-swap">
+            <div class="war-id-section">
+                <div class="control-group">
+                    <label for="warIdInput">War ID:</label>
+                    <input type="number" id="warIdInput" placeholder="Enter War ID" max="99999999">
+                    <button id="fetchWarData" class="fetch-button">Fetch War Data</button>
+                </div>
+            </div>
+            
+            <div class="war-data-section" id="warDataDisplay" style="display: none;">
+                <div class="war-info-grid">
+                    <div class="faction-info" id="factionAInfo">
+                        <h3 id="factionAName">Faction A</h3>
+                        <div class="cache-items" id="factionACaches">
+                            <!-- Cache items will be populated here -->
+                        </div>
+                    </div>
+                    <div class="faction-info" id="factionBInfo">
+                        <h3 id="factionBName">Faction B</h3>
+                        <div class="cache-items" id="factionBCaches">
+                            <!-- Cache items will be populated here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="distribution-section" id="cacheDistributionSection" style="display: none;">
+                <h3>Cache Distribution</h3>
+                <div class="percentage-controls">
+                    <div class="percentage-group">
+                        <label for="factionAPercentage" id="factionAPercentageLabel">Faction A: 50%</label>
+                        <input type="range" id="factionAPercentage" min="0" max="100" value="50" step="5">
+                        <div class="total-value" id="factionATotalValue">$0</div>
+                    </div>
+                    <div class="percentage-group">
+                        <label for="factionBPercentage" id="factionBPercentageLabel">Faction B: 50%</label>
+                        <input type="range" id="factionBPercentage" min="0" max="100" value="50" step="5">
+                        <div class="total-value" id="factionBTotalValue">$0</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="swap-results-section" id="swapResults" style="display: none;">
+                <h3>Recommended Cache Swaps</h3>
+                <div id="swapDetails">
+                    <!-- Swap details will be populated here -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

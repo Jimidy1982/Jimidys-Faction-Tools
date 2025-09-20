@@ -60,6 +60,11 @@ function initWarReport2() {
     console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
     console.log('[WAR REPORT 2.0] Initialized');
     
+    // Log tool usage
+    if (window.logToolUsage) {
+        window.logToolUsage('war-report-2.0');
+    }
+    
     const fetchWarsBtn = document.getElementById('fetchWarsButton');
     const warSelector = document.getElementById('warSelector');
     const warSelectorContainer = document.getElementById('warSelectorContainer');
