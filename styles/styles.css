@@ -1395,22 +1395,30 @@ th small {
     border-bottom: 3px solid transparent;
     color: var(--text-color);
     font-size: 1.1em;
-    font-weight: bold;
+    font-weight: 500;
     cursor: pointer;
     transition: all 0.3s ease;
     flex: 1;
     text-align: center;
+    opacity: 0.7;
 }
 
 .tab-button:hover {
     background-color: var(--primary-color);
     color: var(--accent-color);
+    opacity: 1;
+    transform: translateY(-1px);
 }
 
 .tab-button.active {
-    background-color: var(--primary-color);
-    color: var(--accent-color);
+    background-color: var(--accent-color);
+    color: var(--primary-color);
     border-bottom-color: var(--accent-color);
+    border-bottom-width: 4px;
+    font-weight: bold;
+    box-shadow: 0 2px 8px rgba(255, 215, 0, 0.3);
+    opacity: 1;
+    transform: translateY(-1px);
 }
 
 .tab-content {
@@ -1432,6 +1440,38 @@ th small {
     }
 }
 
+/* Help Tip Styles */
+.help-tip {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background-color: rgba(255, 215, 0, 0.1);
+    border-left: 3px solid var(--accent-color);
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: var(--text-color);
+    line-height: 1.4;
+}
+
+.help-tip strong {
+    color: var(--accent-color);
+}
+
+.tab-link {
+    color: var(--accent-color);
+    text-decoration: underline;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.2s ease;
+}
+
+.tab-link:hover {
+    color: #fff;
+    text-decoration: none;
+    background-color: var(--accent-color);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
 /* Cache Swapping Styles */
 .war-id-section {
     margin-bottom: 20px;
@@ -1441,11 +1481,46 @@ th small {
     border-left: 4px solid var(--accent-color);
 }
 
-.war-id-section .control-group {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    flex-wrap: wrap;
+.swap-results-section {
+    min-height: 350px;
+    transition: all 0.3s ease;
+}
+
+.swap-placeholder {
+    text-align: center;
+    padding: 40px 20px;
+    color: #888;
+    font-style: italic;
+}
+
+.swap-placeholder p {
+    margin: 0;
+    font-size: 1.1em;
+}
+
+.war-id-section .control-group label {
+    font-weight: bold;
+    color: var(--accent-color);
+}
+
+.war-id-table {
+    border: none;
+    border-collapse: collapse;
+    margin-bottom: 10px;
+}
+
+.war-id-table td {
+    border: none;
+    padding: 0 10px 0 0;
+    vertical-align: middle;
+}
+
+.war-id-table td:first-child {
+    padding-left: 0;
+}
+
+.war-id-section .button-group {
+    margin-top: 10px;
 }
 
 .war-id-section input[type="number"] {
@@ -1473,6 +1548,8 @@ th small {
     font-weight: bold;
     cursor: pointer;
     transition: background-color 0.3s ease;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .fetch-button:hover {
@@ -1683,11 +1760,6 @@ th small {
         gap: 20px;
     }
     
-    .war-id-section .control-group {
-        flex-direction: row;
-        align-items: center;
-        flex-wrap: wrap;
-    }
     
     .war-id-section input[type="number"] {
         min-width: auto;

@@ -54,6 +54,9 @@
                                 </select>
                             </div>
                         </div>
+                        <div class="help-tip">
+                            <strong>⚠️ Important:</strong> Enter the exact war start time shown in the game. This is crucial for accurate calculations!
+                        </div>
                     </div>
                     
                     <div class="war-finish-group">
@@ -101,6 +104,9 @@
                                 </select>
                             </div>
                         </div>
+                        <div class="help-tip">
+                            <strong>💡 Pro Tip:</strong> Next week's war enlistment opens at 12:00 Tuesday TCT. Consider finishing before this time to allow for next week's war preparation!
+                        </div>
                     </div>
                 </div>
                 
@@ -108,6 +114,9 @@
                     <div class="control-group">
                         <label for="startingLeadRequirement">Starting Lead Requirement:</label>
                         <input type="number" id="startingLeadRequirement" value="1000" min="1">
+                    </div>
+                    <div class="help-tip">
+                        <strong>⚠️ Critical:</strong> Enter the exact lead requirement the game displays. This is the starting value before any decay occurs!
                     </div>
                 </div>
                 
@@ -126,6 +135,9 @@
                     <div class="lead-requirement-display">
                         <strong>Lead Requirement: <span id="leadRequirementDisplay">1000</span></strong>
                     </div>
+                    <div class="help-tip" style="margin-top: 20px;">
+                        <strong>🔄 Next Step:</strong> After the war finishes, switch to the <span class="tab-link" data-tab="cache-swap">Cache Swapping</span> tab to help distribute caches correctly between factions!
+                    </div>
                 </div>
             </div>
         </div>
@@ -133,10 +145,14 @@
         <!-- Cache Swapping Tab -->
         <div class="tab-pane" id="cache-swap">
             <div class="war-id-section">
-                <div class="control-group">
-                    <label for="warIdInput">War ID:</label>
-                    <input type="number" id="warIdInput" placeholder="Enter War ID" max="99999999">
-                    <button id="fetchWarData" class="fetch-button">Fetch War Data</button>
+                <table class="war-id-table">
+                    <tr>
+                        <td><label for="warIdInput">War ID:</label></td>
+                        <td><input type="number" id="warIdInput" placeholder="Enter War ID" max="99999999"></td>
+                    </tr>
+                </table>
+                <div class="button-group">
+                    <button id="fetchWarData" class="fetch-button">Fetch War Rewards Data</button>
                 </div>
             </div>
             
@@ -176,7 +192,9 @@
             <div class="swap-results-section" id="swapResults" style="display: none;">
                 <h3>Recommended Cache Swaps</h3>
                 <div id="swapDetails">
-                    <!-- Swap details will be populated here -->
+                    <div class="swap-placeholder">
+                        <p>Fetch war data to see recommended cache swaps</p>
+                    </div>
                 </div>
             </div>
         </div>

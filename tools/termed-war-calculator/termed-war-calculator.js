@@ -426,6 +426,20 @@ function initTabs() {
             switchTab(targetTab);
         });
     });
+    
+    // Add click handler for tab links within help tips (with a small delay to ensure DOM is ready)
+    setTimeout(() => {
+        const tabLinks = document.querySelectorAll('.tab-link');
+        console.log(`[TERMED WAR CALCULATOR] Found ${tabLinks.length} tab links`);
+        tabLinks.forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const targetTab = link.getAttribute('data-tab');
+                console.log(`[TERMED WAR CALCULATOR] Tab link clicked, switching to: ${targetTab}`);
+                switchTab(targetTab);
+            });
+        });
+    }, 100);
 }
 
 function switchTab(tabId) {
