@@ -62,13 +62,26 @@ document.addEventListener('DOMContentLoaded', () => {
             apiKey: apiKey.substring(0, 8) + '...' // Only store partial key for privacy
         };
         
-        // Send to server for logging (we'll implement this)
         console.log('Tool Usage:', logEntry);
         
-        // For now, store in localStorage (we'll move this to server-side later)
-        const logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
-        logs.push(logEntry);
-        localStorage.setItem('toolUsageLogs', JSON.stringify(logs));
+        // Send to Google Sheets
+        try {
+            await fetch('https://script.google.com/macros/s/AKfycbx9dnveoMQYIAzjvsBrhzO1Fl9y29SAUsqLlQLG4YSiyIJ0FyAFpbj0idb854_7w87u/exec', {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(logEntry)
+            });
+            console.log('Successfully logged to Google Sheets');
+        } catch (error) {
+            console.error('Failed to log to Google Sheets:', error);
+            // Fallback to localStorage if Google Sheets fails
+            const logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+            logs.push(logEntry);
+            localStorage.setItem('toolUsageLogs', JSON.stringify(logs));
+        }
     }
 
     // Function to check if current user is admin
@@ -107,8 +120,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Function to initialize admin dashboard
-    function initAdminDashboard() {
-        const logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+    async function initAdminDashboard() {
+        let logs = [];
+        
+        // Try to fetch from Google Sheets first
+        try {
+            const response = await fetch('https://script.google.com/macros/s/AKfycbx9dnveoMQYIAzjvsBrhzO1Fl9y29SAUsqLlQLG4YSiyIJ0FyAFpbj0idb854_7w87u/exec');
+            if (response.ok) {
+                logs = await response.json();
+                console.log('Loaded logs from Google Sheets:', logs.length);
+            }
+        } catch (error) {
+            console.error('Failed to fetch from Google Sheets, falling back to localStorage:', error);
+            // Fallback to localStorage if Google Sheets fails
+            logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+        }
         
         // Filter out admin usage based on toggle setting
         const filteredLogs = showAdminData ? logs : logs.filter(log => log.userName !== ADMIN_USER_NAME);
@@ -373,10 +399,10 @@ document.addEventListener('DOMContentLoaded', () => {
         appContent.innerHTML = html;
         
         // Add event listeners for the new buttons
-        document.getElementById('toggleAdminFilter')?.addEventListener('click', () => {
+        document.getElementById('toggleAdminFilter')?.addEventListener('click', async () => {
             showAdminData = !showAdminData;
             // Reload the dashboard with the new filter setting
-            initAdminDashboard();
+            await initAdminDashboard();
         });
         
         document.getElementById('showAllUsers')?.addEventListener('click', () => {
@@ -603,7 +629,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     appContent.innerHTML = `<div class="container"><h2>Access Denied</h2><p>You don't have permission to access this page.</p></div>`;
                     return;
                 }
-                initAdminDashboard();
+                await initAdminDashboard();
                 console.log('[APP] Loaded admin dashboard');
                 return;
             }
