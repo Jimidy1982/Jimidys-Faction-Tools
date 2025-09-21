@@ -2,8 +2,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const appContent = document.getElementById('app-content');
 
     // Admin system
-    const ADMIN_USER_ID = 2935825; // Your Torn user ID (Jimidy)
-    const ADMIN_USER_NAME = 'Jimidy'; // Your username to exclude from results
+    const ADMIN_USER_IDS = [2935825, 2093859]; // Admin user IDs (Jimidy, Havean)
+    const ADMIN_USER_NAMES = ['Jimidy', 'Havean']; // Admin usernames to exclude from results
+    const ADMIN_USER_NAME = 'Jimidy'; // Your username to exclude from results (keeping for backward compatibility)
     let userCache = {}; // Cache for API key -> user data
     let showAdminData = false; // Global toggle for showing admin data
 
@@ -91,7 +92,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             const userData = await getUserData(apiKey);
-            return userData && userData.playerId === ADMIN_USER_ID;
+            return userData && ADMIN_USER_IDS.includes(userData.playerId);
         } catch (error) {
             console.error('Error checking admin status:', error);
             return false;
@@ -148,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         // Filter out admin usage based on toggle setting
-        const filteredLogs = showAdminData ? logs : logs.filter(log => log.userName !== ADMIN_USER_NAME);
+        const filteredLogs = showAdminData ? logs : logs.filter(log => !ADMIN_USER_NAMES.includes(log.userName));
         const allLogs = logs; // Keep original logs for complete view
         
         // Calculate statistics (excluding admin by default)
@@ -194,12 +195,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 <div style="margin-bottom: 20px; text-align: center;">
                     <button id="toggleAdminFilter" class="fetch-button" style="background-color: var(--accent-color);">
-                        ${showAdminData ? '📊 Including Your Usage' : '📊 Excluding Your Usage'} (${filteredLogs.length} uses)
+                        ${showAdminData ? '📊 Including Admin Usage' : '📊 Excluding Admin Usage'} (${filteredLogs.length} uses)
                     </button>
                     <p style="margin: 10px 0; color: var(--text-color); font-size: 0.9em;">
                         ${showAdminData ? 
-                            `Showing all usage including your testing (${allLogs.length} total uses)` : 
-                            `Excluding your testing usage. Click to show all usage (${allLogs.length} total)`
+                            `Showing all usage including admin testing (${allLogs.length} total uses)` : 
+                            `Excluding admin testing usage. Click to show all usage (${allLogs.length} total)`
                         }
                     </p>
                 </div>
