@@ -121,6 +121,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Function to initialize admin dashboard
     async function initAdminDashboard() {
+        // Show loading indicator
+        appContent.innerHTML = `
+            <div class="container">
+                <h2>🔧 Admin Dashboard</h2>
+                <div style="text-align: center; padding: 40px;">
+                    <div style="font-size: 24px; margin-bottom: 20px;">⏳</div>
+                    <div>Loading usage data...</div>
+                </div>
+            </div>
+        `;
+        
         let logs = [];
         
         // Try to fetch from Google Sheets first
