@@ -7,17 +7,46 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Helper to detect chain bonus and get chain milestone
+function detectChainBonus(totalRespect) {
+    const chainMilestones = {
+        10: '10th Chain',
+        20: '25th Chain', 
+        40: '50th Chain',
+        80: '100th Chain',
+        160: '250th Chain',
+        320: '500th Chain',
+        640: '1000th Chain',
+        1280: '2500th Chain',
+        2560: '5000th Chain',
+        5120: '10000th Chain',
+        10240: '25000th Chain',
+        20480: '50000th Chain',
+        40960: '100000th Chain'
+    };
+    
+    if (chainMilestones[totalRespect]) {
+        return {
+            milestone: chainMilestones[totalRespect],
+            points: totalRespect,
+            deduction: totalRespect - 10 // Base respect is always 10, so deduction is total - 10
+        };
+    }
+    
+    return null;
+}
+
 // Helper to calculate base respect from attack data
-function calculateBaseRespect(attack, removeModifiers = false) {
+function calculateBaseRespect(attack, removeModifiers = false, shouldRound = true) {
     const totalRespect = attack.respect_gain || 0;
     const groupBonus = attack.modifiers?.group || 0;
     const chainBonus = attack.modifiers?.chain || 0;
     
     // Check if this is a chain attack (respect_gain is 10, 20, 40, 80, 160, etc.)
     // Chain attacks follow the pattern: 10 * 2^n where n >= 0
-    const chainValues = [10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120];
+    const chainValues = [10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960];
     if (chainValues.includes(totalRespect)) {
-        return 10; // Chain attacks are worth exactly 10 base respect points
+        return shouldRound ? 10 : 10; // Chain attacks are worth exactly 10 base respect points
     }
     
     // For non-chain attacks, calculate base respect
@@ -40,8 +69,8 @@ function calculateBaseRespect(attack, removeModifiers = false) {
         }
     }
     
-    // Return whole integer for base respect
-    return Math.round(baseRespect);
+    // Return whole integer for base respect only if shouldRound is true
+    return shouldRound ? Math.round(baseRespect) : baseRespect;
 }
 
 // Global state for this module
@@ -54,11 +83,312 @@ let warReportData = {
     respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
 };
 
+// Global state for linked options group
+let chainGroupLinked = true; // All three options are linked together by default
+const chainGroupOptions = ['respectPayRetals', 'respectPayOverseas', 'respectRemoveModifiers'];
+
+// Function to show confirmation dialog for opening multiple links
+function showOpenLinksConfirmation(linkCount, callback) {
+    const rememberChoice = localStorage.getItem('openLinksConfirmation');
+    
+    if (rememberChoice) {
+        // User has already chosen to remember their preference
+        if (rememberChoice === 'yes') {
+            callback(); // Execute the callback immediately
+            return;
+        } else {
+            // User chose "no" and wants to remember it
+            return; // Don't execute callback
+        }
+    }
+    
+    // Create confirmation dialog
+    const dialog = document.createElement('div');
+    dialog.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.7);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10000;
+        font-family: Arial, sans-serif;
+    `;
+    
+    const dialogContent = document.createElement('div');
+    dialogContent.style.cssText = `
+        background-color: #2a2a2a;
+        border: 2px solid #ffd700;
+        border-radius: 8px;
+        padding: 30px;
+        max-width: 400px;
+        width: 90%;
+        text-align: center;
+        color: #ffffff;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    `;
+    
+    dialogContent.innerHTML = `
+        <h3 style="color: #ffd700; margin: 0 0 20px 0; font-size: 1.3em;">Open ${linkCount} Payment Links?</h3>
+        <p style="margin: 0 0 25px 0; color: #cccccc; line-height: 1.5;">
+            This will open ${linkCount} payment links in new tabs. Make sure popups are allowed for this site.
+        </p>
+        <div style="margin: 20px 0;">
+            <label style="display: flex; align-items: center; justify-content: center; color: #ffd700; cursor: pointer;">
+                <input type="checkbox" id="rememberChoice" style="margin-right: 8px; accent-color: #ffd700;">
+                Remember my choice for next time
+            </label>
+        </div>
+        <div style="display: flex; gap: 15px; justify-content: center; margin-top: 25px;">
+            <button id="confirmYes" style="
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-weight: bold;
+                transition: background-color 0.3s;
+            ">Yes, Open Links</button>
+            <button id="confirmNo" style="
+                background-color: #f44336;
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-weight: bold;
+                transition: background-color 0.3s;
+            ">Cancel</button>
+        </div>
+    `;
+    
+    dialog.appendChild(dialogContent);
+    document.body.appendChild(dialog);
+    
+    // Add hover effects
+    const yesBtn = dialogContent.querySelector('#confirmYes');
+    const noBtn = dialogContent.querySelector('#confirmNo');
+    
+    yesBtn.addEventListener('mouseenter', () => yesBtn.style.backgroundColor = '#45a049');
+    yesBtn.addEventListener('mouseleave', () => yesBtn.style.backgroundColor = '#4CAF50');
+    noBtn.addEventListener('mouseenter', () => noBtn.style.backgroundColor = '#da190b');
+    noBtn.addEventListener('mouseleave', () => noBtn.style.backgroundColor = '#f44336');
+    
+    // Add event listeners
+    yesBtn.addEventListener('click', () => {
+        const remember = dialogContent.querySelector('#rememberChoice').checked;
+        if (remember) {
+            localStorage.setItem('openLinksConfirmation', 'yes');
+        }
+        document.body.removeChild(dialog);
+        callback();
+    });
+    
+    noBtn.addEventListener('click', () => {
+        const remember = dialogContent.querySelector('#rememberChoice').checked;
+        if (remember) {
+            localStorage.setItem('openLinksConfirmation', 'no');
+        }
+        document.body.removeChild(dialog);
+    });
+    
+    // Close dialog when clicking outside
+    dialog.addEventListener('click', (e) => {
+        if (e.target === dialog) {
+            document.body.removeChild(dialog);
+        }
+    });
+}
+
+// Functions to save and load respect payout settings
+function saveRespectPayoutSettings() {
+    const settings = {
+        payAssists: document.getElementById('respectPayAssists')?.checked || false,
+        payRetals: document.getElementById('respectPayRetals')?.checked || false,
+        payOverseas: document.getElementById('respectPayOverseas')?.checked || false,
+        payOtherAttacks: document.getElementById('respectPayOtherAttacks')?.checked || false,
+        enableCombinedMin: document.getElementById('respectEnableCombinedMin')?.checked || false,
+        combinedMin: document.getElementById('respectCombinedMin')?.value || '20',
+        removeModifiers: document.getElementById('respectRemoveModifiers')?.checked || false,
+        includeOutsideRespect: document.getElementById('respectIncludeOutside')?.checked || false,
+        filterLowFF: document.getElementById('respectFilterLowFF')?.checked || false,
+        minFFRating: document.getElementById('respectMinFFRating')?.value || '2.0',
+        assistMultiplier: document.getElementById('respectAssistMultiplier')?.value || '0.25',
+        retalMultiplier: document.getElementById('respectRetalMultiplier')?.value || '0.5',
+        overseasMultiplier: document.getElementById('respectOverseasMultiplier')?.value || '0.25',
+        otherAttacksMultiplier: document.getElementById('respectOtherAttacksMultiplier')?.value || '0.1',
+        chainGroupLinked: chainGroupLinked,
+        enableThresholds: document.getElementById('respectEnableThresholds')?.checked || false,
+        minThreshold: document.getElementById('respectMinThreshold')?.value || '100',
+        maxThreshold: document.getElementById('respectMaxThreshold')?.value || '300',
+        payoutMode: document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio'
+    };
+    localStorage.setItem('respectPayoutSettings', JSON.stringify(settings));
+    console.log('Saved respect payout settings:', settings);
+}
+
+// Functions to save and load hit payout settings
+function saveHitPayoutSettings() {
+    const settings = {
+        payAssists: document.getElementById('payAssists')?.checked || false,
+        payRetals: document.getElementById('payRetals')?.checked || false,
+        payOverseas: document.getElementById('payOverseas')?.checked || false,
+        payOtherAttacks: document.getElementById('payOtherAttacks')?.checked || false,
+        filterLowFF: document.getElementById('filterLowFF')?.checked || false,
+        minFFRating: document.getElementById('minFFRating')?.value || '2.0',
+        assistMultiplier: document.getElementById('assistMultiplier')?.value || '0.25',
+        retalMultiplier: document.getElementById('retalMultiplier')?.value || '0.5',
+        overseasMultiplier: document.getElementById('overseasMultiplier')?.value || '0.25',
+        otherAttacksMultiplier: document.getElementById('otherAttacksMultiplier')?.value || '0.1',
+        enableThresholds: document.getElementById('hitEnableThresholds')?.checked || false,
+        minThreshold: document.getElementById('hitMinThreshold')?.value || '20',
+        maxThreshold: document.getElementById('hitMaxThreshold')?.value || '50',
+        payoutMode: document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio'
+    };
+    localStorage.setItem('hitPayoutSettings', JSON.stringify(settings));
+    console.log('Saved hit payout settings:', settings);
+}
+
+function loadHitPayoutSettings() {
+    const savedSettings = localStorage.getItem('hitPayoutSettings');
+    if (savedSettings) {
+        try {
+            const settings = JSON.parse(savedSettings);
+            // Apply settings to elements
+            if (settings.payAssists !== undefined) document.getElementById('payAssists').checked = settings.payAssists;
+            if (settings.payRetals !== undefined) document.getElementById('payRetals').checked = settings.payRetals;
+            if (settings.payOverseas !== undefined) document.getElementById('payOverseas').checked = settings.payOverseas;
+            if (settings.payOtherAttacks !== undefined) document.getElementById('payOtherAttacks').checked = settings.payOtherAttacks;
+            if (settings.filterLowFF !== undefined) document.getElementById('filterLowFF').checked = settings.filterLowFF;
+            if (settings.minFFRating !== undefined) document.getElementById('minFFRating').value = settings.minFFRating;
+            if (settings.assistMultiplier !== undefined) document.getElementById('assistMultiplier').value = settings.assistMultiplier;
+            if (settings.retalMultiplier !== undefined) document.getElementById('retalMultiplier').value = settings.retalMultiplier;
+            if (settings.overseasMultiplier !== undefined) document.getElementById('overseasMultiplier').value = settings.overseasMultiplier;
+            if (settings.otherAttacksMultiplier !== undefined) document.getElementById('otherAttacksMultiplier').value = settings.otherAttacksMultiplier;
+            if (settings.enableThresholds !== undefined) document.getElementById('hitEnableThresholds').checked = settings.enableThresholds;
+            if (settings.minThreshold !== undefined) document.getElementById('hitMinThreshold').value = settings.minThreshold;
+            if (settings.maxThreshold !== undefined) document.getElementById('hitMaxThreshold').value = settings.maxThreshold;
+            if (settings.payoutMode !== undefined) {
+                const payoutModeRadio = document.querySelector(`input[name="hitPayoutMode"][value="${settings.payoutMode}"]`);
+                if (payoutModeRadio) payoutModeRadio.checked = true;
+            }
+            console.log('Loaded saved hit payout settings:', settings);
+        } catch (error) {
+            console.error('Error loading hit payout settings:', error);
+        }
+    }
+}
+
+// Function to handle chain group toggle (clicking any chain button toggles all)
+function toggleChainGroup() {
+    chainGroupLinked = !chainGroupLinked;
+    
+    // Update all chain buttons to show the same state
+    chainGroupOptions.forEach(optionId => {
+        updateChainButtonState(optionId);
+    });
+    
+    if (chainGroupLinked) {
+        console.log('Chain group linked - all options will sync together');
+    } else {
+        console.log('Chain group unlinked - options can be edited individually');
+    }
+    
+    // Save settings and update table
+    saveRespectPayoutSettings();
+    updateRespectPayoutTable();
+}
+
+// Function to handle checkbox changes when group is linked
+function handleLinkedOptionChange(changedCheckboxId) {
+    if (chainGroupLinked && chainGroupOptions.includes(changedCheckboxId)) {
+        const isChecked = document.getElementById(changedCheckboxId).checked;
+        
+        // Sync all options in the group
+        chainGroupOptions.forEach(optionId => {
+            document.getElementById(optionId).checked = isChecked;
+        });
+        
+        console.log('Linked group changed - all options set to:', isChecked);
+    }
+}
+
+// Function to update chain button visual state
+function updateChainButtonState(optionId) {
+    const button = document.querySelector(`[data-option="${optionId}"]`);
+    if (!button) return;
+    
+    if (chainGroupLinked) {
+        button.innerHTML = '🔗';
+        button.title = 'Click to unlink all options';
+        button.style.color = '#ffd700';
+    } else {
+        button.innerHTML = '🔓';
+        button.title = 'Click to link all options';
+        button.style.color = '#ff6b6b';
+    }
+}
+
+function loadRespectPayoutSettings() {
+    const savedSettings = localStorage.getItem('respectPayoutSettings');
+    if (savedSettings) {
+        try {
+            const settings = JSON.parse(savedSettings);
+            
+            // Apply saved settings to form elements
+            if (settings.payAssists !== undefined) document.getElementById('respectPayAssists').checked = settings.payAssists;
+            if (settings.payRetals !== undefined) document.getElementById('respectPayRetals').checked = settings.payRetals;
+            if (settings.payOverseas !== undefined) document.getElementById('respectPayOverseas').checked = settings.payOverseas;
+            if (settings.payOtherAttacks !== undefined) document.getElementById('respectPayOtherAttacks').checked = settings.payOtherAttacks;
+            if (settings.enableCombinedMin !== undefined) document.getElementById('respectEnableCombinedMin').checked = settings.enableCombinedMin;
+            if (settings.combinedMin !== undefined) document.getElementById('respectCombinedMin').value = settings.combinedMin;
+            if (settings.removeModifiers !== undefined) document.getElementById('respectRemoveModifiers').checked = settings.removeModifiers;
+            if (settings.includeOutsideRespect !== undefined) document.getElementById('respectIncludeOutside').checked = settings.includeOutsideRespect;
+            if (settings.filterLowFF !== undefined) document.getElementById('respectFilterLowFF').checked = settings.filterLowFF;
+            if (settings.minFFRating !== undefined) document.getElementById('respectMinFFRating').value = settings.minFFRating;
+            if (settings.assistMultiplier !== undefined) document.getElementById('respectAssistMultiplier').value = settings.assistMultiplier;
+            if (settings.retalMultiplier !== undefined) document.getElementById('respectRetalMultiplier').value = settings.retalMultiplier;
+            if (settings.overseasMultiplier !== undefined) document.getElementById('respectOverseasMultiplier').value = settings.overseasMultiplier;
+            if (settings.otherAttacksMultiplier !== undefined) document.getElementById('respectOtherAttacksMultiplier').value = settings.otherAttacksMultiplier;
+            if (settings.enableThresholds !== undefined) document.getElementById('respectEnableThresholds').checked = settings.enableThresholds;
+            if (settings.minThreshold !== undefined) document.getElementById('respectMinThreshold').value = settings.minThreshold;
+            if (settings.maxThreshold !== undefined) document.getElementById('respectMaxThreshold').value = settings.maxThreshold;
+            if (settings.payoutMode !== undefined) {
+                const payoutModeRadio = document.querySelector(`input[name="respectPayoutMode"][value="${settings.payoutMode}"]`);
+                if (payoutModeRadio) payoutModeRadio.checked = true;
+            }
+            
+            // Load chain group linked state
+            if (settings.chainGroupLinked !== undefined) {
+                chainGroupLinked = settings.chainGroupLinked;
+                // Update all chain button states
+                chainGroupOptions.forEach(optionId => {
+                    updateChainButtonState(optionId);
+                });
+            }
+            
+            console.log('Loaded saved respect payout settings:', settings);
+        } catch (error) {
+            console.error('Error loading respect payout settings:', error);
+        }
+    }
+}
+
 let tabsInitialized = false;
 
 function initWarReport2() {
     console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
     console.log('[WAR REPORT 2.0] Initialized');
+    
+    // Load saved respect payout settings
+    loadRespectPayoutSettings();
+    
+    // Load saved hit payout settings
+    loadHitPayoutSettings();
     
     // Log tool usage
     if (window.logToolUsage) {
@@ -842,6 +1172,14 @@ function addThousandSeparatorInput(input) {
     const processInput = function(e) {
         let value = input.value.toLowerCase();
         
+        // Check if user typed a letter (k, m, b) - if so, format immediately
+        const hasLetter = value.includes('k') || value.includes('m') || value.includes('b');
+        
+        // Only process if user typed a letter or on blur
+        if (e.type === 'input' && !hasLetter) {
+            return; // Allow free typing of numbers and decimals, don't format yet
+        }
+        
         // Handle shortcuts (k, m, b)
         let multiplier = 1;
         if (value.includes('k')) {
@@ -855,14 +1193,14 @@ function addThousandSeparatorInput(input) {
             value = value.replace('b', '');
         }
         
-        // Extract numbers only
+        // Extract numbers and decimals
         let raw = value.replace(/[^\d.]/g, '');
         if (raw === '') raw = '0';
         
         // Apply multiplier
         let numericValue = parseFloat(raw) * multiplier;
         
-        // Format with thousand separators
+        // Format with thousand separators (round for display)
         input.value = Math.round(numericValue).toLocaleString();
         input.dataset.raw = Math.round(numericValue).toString();
     };
@@ -871,7 +1209,7 @@ function addThousandSeparatorInput(input) {
     input.addEventListener('blur', processInput);
     
     // Initialize
-    let raw = input.value.replace(/[^\d]/g, '');
+    let raw = input.value.replace(/[^\d.]/g, '');
     if (raw === '') raw = '0';
     input.value = Number(raw).toLocaleString();
     input.dataset.raw = raw;
@@ -904,14 +1242,26 @@ function initializeTabs() {
         const btn = e.target.closest('.tab-button');
         if (!btn) return;
         console.log('[WAR REPORT 2.0] Tab button clicked (direct):', btn.textContent, 'data-tab:', btn.getAttribute('data-tab'));
+        
+        // Get fresh references to all tab buttons and panes
+        const allTabButtons = document.querySelectorAll('.tab-button');
+        const allTabPanes = document.querySelectorAll('.tab-pane');
+        
         // Remove active class from all buttons and panes
-        tabButtons.forEach(b => b.classList.remove('active'));
-        tabPanes.forEach(p => {
+        allTabButtons.forEach(b => {
+            b.classList.remove('active');
+            console.log('[WAR REPORT 2.0] Removed active from button:', b.textContent);
+        });
+        allTabPanes.forEach(p => {
             p.classList.remove('active');
             p.style.display = 'none';
+            console.log('[WAR REPORT 2.0] Removed active from pane:', p.id);
         });
+        
         // Add active class to clicked button
         btn.classList.add('active');
+        console.log('[WAR REPORT 2.0] Added active to button:', btn.textContent);
+        
         // Show the corresponding pane
         const tabId = btn.getAttribute('data-tab');
         const pane = document.getElementById(tabId);
@@ -968,26 +1318,13 @@ function initializeTabs() {
                 addThousandSeparatorInput(input);
                 input.addEventListener('input', updatePayoutTable);
                 input.addEventListener('blur', () => {
-                    addThousandSeparatorInput(input); // re-apply formatting on blur
+                    // Formatting is already handled by the input's own blur listener
                 });
             }
         });
         cacheSalesInput.addEventListener('input', updatePayoutTable);
         payPerHitInput.addEventListener('input', updatePayoutTable);
         
-        // Add event listeners for combined minimum settings
-        const enableCombinedMinCheckbox = document.getElementById('enableCombinedMin');
-        const combinedMinInput = document.getElementById('combinedMin');
-        
-        if (enableCombinedMinCheckbox) {
-            enableCombinedMinCheckbox.addEventListener('change', updatePayoutTable);
-        }
-        
-        if (combinedMinInput) {
-            combinedMinInput.addEventListener('input', (e) => {
-                updatePayoutTable();
-            });
-        }
         
         // Add event listeners for Advanced Payout Options checkboxes and multipliers
         const advancedPayoutOptions = [
@@ -1004,12 +1341,14 @@ function initializeTabs() {
             if (checkbox) {
                 checkbox.addEventListener('change', (e) => {
                     updatePayoutTable();
+                    saveHitPayoutSettings();
                 });
             }
             
             if (multiplier) {
                 multiplier.addEventListener('input', (e) => {
                     updatePayoutTable();
+                    saveHitPayoutSettings();
                 });
             }
         });
@@ -1021,14 +1360,139 @@ function initializeTabs() {
         if (filterLowFFCheckbox) {
             filterLowFFCheckbox.addEventListener('change', (e) => {
                 updatePayoutTable();
+                saveHitPayoutSettings();
             });
         }
         
         if (minFFRatingInput) {
             minFFRatingInput.addEventListener('input', (e) => {
                 updatePayoutTable();
+                saveHitPayoutSettings();
             });
         }
+        
+        // Add event listeners for hit threshold controls (only once)
+        setTimeout(() => {
+            const hitEnableThresholdsCheckbox = document.getElementById('hitEnableThresholds');
+            const hitMinThresholdInput = document.getElementById('hitMinThreshold');
+            const hitMaxThresholdInput = document.getElementById('hitMaxThreshold');
+            const hitPayoutModeRadios = document.querySelectorAll('input[name="hitPayoutMode"]');
+            
+            console.log('🎯 [HIT THRESHOLD DEBUG] Setting up event listeners...');
+            console.log('🎯 [HIT THRESHOLD DEBUG] Found elements:', {
+                checkbox: !!hitEnableThresholdsCheckbox,
+                minInput: !!hitMinThresholdInput,
+                maxInput: !!hitMaxThresholdInput,
+                radios: hitPayoutModeRadios.length
+            });
+            
+            if (hitEnableThresholdsCheckbox && !hitEnableThresholdsCheckbox.hasAttribute('data-listener-added')) {
+                console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for hitEnableThresholdsCheckbox');
+                hitEnableThresholdsCheckbox.addEventListener('change', (e) => {
+                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== CHECKBOX CHANGED =====');
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Checkbox value:', e.target.checked);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Current min threshold:', document.getElementById('hitMinThreshold')?.value);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Current max threshold:', document.getElementById('hitMaxThreshold')?.value);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Current payout mode:', document.querySelector('input[name="hitPayoutMode"]:checked')?.value);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+                    updatePayoutTable();
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+                    saveHitPayoutSettings();
+                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== CHECKBOX CHANGE COMPLETE =====');
+                });
+                hitEnableThresholdsCheckbox.setAttribute('data-listener-added', 'true');
+            }
+            
+            if (hitMinThresholdInput && !hitMinThresholdInput.hasAttribute('data-listener-added')) {
+                console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for hitMinThresholdInput');
+                hitMinThresholdInput.addEventListener('input', (e) => {
+                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGED =====');
+                    console.log('🎯 [HIT THRESHOLD DEBUG] New min threshold:', e.target.value);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Current checkbox state:', document.getElementById('hitEnableThresholds')?.checked);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+                    updatePayoutTable();
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+                    saveHitPayoutSettings();
+                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGE COMPLETE =====');
+                });
+                hitMinThresholdInput.setAttribute('data-listener-added', 'true');
+            }
+            
+            if (hitMaxThresholdInput && !hitMaxThresholdInput.hasAttribute('data-listener-added')) {
+                console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for hitMaxThresholdInput');
+                hitMaxThresholdInput.addEventListener('input', (e) => {
+                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGED =====');
+                    console.log('🎯 [HIT THRESHOLD DEBUG] New max threshold:', e.target.value);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Current checkbox state:', document.getElementById('hitEnableThresholds')?.checked);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+                    updatePayoutTable();
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+                    saveHitPayoutSettings();
+                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGE COMPLETE =====');
+                });
+                hitMaxThresholdInput.setAttribute('data-listener-added', 'true');
+            }
+            
+            hitPayoutModeRadios.forEach(radio => {
+                if (!radio.hasAttribute('data-listener-added')) {
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for payout mode radio:', radio.value);
+                    radio.addEventListener('change', (e) => {
+                        console.log('🎯 [HIT THRESHOLD DEBUG] ===== PAYOUT MODE CHANGED =====');
+                        console.log('🎯 [HIT THRESHOLD DEBUG] New payout mode:', e.target.value);
+                        console.log('🎯 [HIT THRESHOLD DEBUG] Current checkbox state:', document.getElementById('hitEnableThresholds')?.checked);
+                        
+                        // Enable/disable max threshold input based on payout mode
+                        const maxThresholdInput = document.getElementById('hitMaxThreshold');
+                        const maxThresholdLabel = document.getElementById('hitMaxThresholdLabel');
+                        if (maxThresholdInput) {
+                            if (e.target.value === 'equal') {
+                                maxThresholdInput.disabled = true;
+                                maxThresholdInput.style.backgroundColor = '#1a1a1a';
+                                maxThresholdInput.style.color = '#666';
+                                maxThresholdInput.style.cursor = 'not-allowed';
+                                if (maxThresholdLabel) {
+                                    maxThresholdLabel.style.color = '#666';
+                                }
+                                console.log('🎯 [HIT THRESHOLD DEBUG] Max threshold input disabled for equal mode');
+                            } else {
+                                maxThresholdInput.disabled = false;
+                                maxThresholdInput.style.backgroundColor = '#2a2a2a';
+                                maxThresholdInput.style.color = '#fff';
+                                maxThresholdInput.style.cursor = 'text';
+                                if (maxThresholdLabel) {
+                                    maxThresholdLabel.style.color = '#ccc';
+                                }
+                                console.log('🎯 [HIT THRESHOLD DEBUG] Max threshold input enabled for ratio mode');
+                            }
+                        }
+                        
+                        console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+                        updatePayoutTable();
+                        console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+                        saveHitPayoutSettings();
+                        console.log('🎯 [HIT THRESHOLD DEBUG] ===== PAYOUT MODE CHANGE COMPLETE =====');
+                    });
+                    radio.setAttribute('data-listener-added', 'true');
+                }
+            });
+        }, 100);
+        
+        // Initialize max threshold input state based on current payout mode
+        setTimeout(() => {
+            const maxThresholdInput = document.getElementById('hitMaxThreshold');
+            const maxThresholdLabel = document.getElementById('hitMaxThresholdLabel');
+            const currentPayoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value;
+            if (maxThresholdInput && currentPayoutMode === 'equal') {
+                maxThresholdInput.disabled = true;
+                maxThresholdInput.style.backgroundColor = '#1a1a1a';
+                maxThresholdInput.style.color = '#666';
+                maxThresholdInput.style.cursor = 'not-allowed';
+                if (maxThresholdLabel) {
+                    maxThresholdLabel.style.color = '#666';
+                }
+                console.log('🎯 [HIT THRESHOLD DEBUG] Initialized max threshold input as disabled (equal mode default)');
+            }
+        }, 150);
 
         // Initialize respect payout input listeners and formatting
         const respectCacheSalesInput = document.getElementById('respectCacheSales');
@@ -1041,10 +1505,19 @@ function initializeTabs() {
             
             // Define updateRespectPayoutTable before using it
             const updateRespectPayoutTable = () => {
+                console.log('🚀 [THRESHOLD DEBUG] ===== updateRespectPayoutTable CALLED =====');
+                console.log('🚀 [THRESHOLD DEBUG] warReportData.playerStats exists:', !!warReportData.playerStats);
+                console.log('🚀 [THRESHOLD DEBUG] playerStats keys length:', warReportData.playerStats ? Object.keys(warReportData.playerStats).length : 0);
+                
                 if (warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
                     console.log('[WAR REPORT 2.0] Updating respect payout table due to input change');
+                    console.log('🚀 [THRESHOLD DEBUG] Calling renderRespectPayoutTable...');
                     renderRespectPayoutTable();
+                    console.log('🚀 [THRESHOLD DEBUG] renderRespectPayoutTable completed');
+                } else {
+                    console.log('🚀 [THRESHOLD DEBUG] No player stats available, skipping table update');
                 }
+                console.log('🚀 [THRESHOLD DEBUG] ===== updateRespectPayoutTable COMPLETE =====');
             };
             
             // Apply to Respect Other Costs boxes as well
@@ -1060,7 +1533,7 @@ function initializeTabs() {
                     addThousandSeparatorInput(input);
                     input.addEventListener('input', updateRespectPayoutTable);
                     input.addEventListener('blur', () => {
-                        addThousandSeparatorInput(input); // re-apply formatting on blur
+                        // Formatting is already handled by the input's own blur listener
                     });
                 }
             });
@@ -1071,12 +1544,18 @@ function initializeTabs() {
             const respectCombinedMinInput = document.getElementById('respectCombinedMin');
             
             if (respectEnableCombinedMinCheckbox) {
-                respectEnableCombinedMinCheckbox.addEventListener('change', updateRespectPayoutTable);
+                respectEnableCombinedMinCheckbox.addEventListener('change', (e) => {
+                    updateRespectPayoutTable();
+                    // Save settings
+                    saveRespectPayoutSettings();
+                });
             }
             
             if (respectCombinedMinInput) {
                 respectCombinedMinInput.addEventListener('input', (e) => {
                     updateRespectPayoutTable();
+                    // Save settings
+                    saveRespectPayoutSettings();
                 });
             }
             
@@ -1088,19 +1567,39 @@ function initializeTabs() {
                 { checkboxId: 'respectPayOtherAttacks', multiplierId: 'respectOtherAttacksMultiplier' }
             ];
             
+            // Add event listeners for chain buttons (all work together as a group)
+            const chainButtons = document.querySelectorAll('.chain-link-btn');
+            chainButtons.forEach(button => {
+                if (!button.hasAttribute('data-listener-added')) {
+                    button.addEventListener('click', (e) => {
+                        toggleChainGroup();
+                    });
+                    button.setAttribute('data-listener-added', 'true');
+                }
+            });
+            
             respectAdvancedPayoutOptions.forEach(option => {
                 const checkbox = document.getElementById(option.checkboxId);
                 const multiplier = document.getElementById(option.multiplierId);
                 
                 if (checkbox) {
                     checkbox.addEventListener('change', (e) => {
+                        // Handle linked group options
+                        if (chainGroupOptions.includes(option.checkboxId)) {
+                            handleLinkedOptionChange(option.checkboxId);
+                        }
+                        
                         updateRespectPayoutTable();
+                        // Save settings
+                        saveRespectPayoutSettings();
                     });
                 }
                 
                 if (multiplier) {
                     multiplier.addEventListener('input', (e) => {
                         updateRespectPayoutTable();
+                        // Save settings
+                        saveRespectPayoutSettings();
                     });
                 }
             });
@@ -1112,14 +1611,98 @@ function initializeTabs() {
             if (respectFilterLowFFCheckbox) {
                 respectFilterLowFFCheckbox.addEventListener('change', (e) => {
                     updateRespectPayoutTable();
+                    // Save settings
+                    saveRespectPayoutSettings();
                 });
             }
             
             if (respectMinFFRatingInput) {
                 respectMinFFRatingInput.addEventListener('input', (e) => {
                     updateRespectPayoutTable();
+                    // Save settings
+                    saveRespectPayoutSettings();
                 });
             }
+            
+            // Add event listeners for respect threshold controls (only once)
+            setTimeout(() => {
+                const respectEnableThresholdsCheckbox = document.getElementById('respectEnableThresholds');
+                const respectMinThresholdInput = document.getElementById('respectMinThreshold');
+                const respectMaxThresholdInput = document.getElementById('respectMaxThreshold');
+                const respectPayoutModeRadios = document.querySelectorAll('input[name="respectPayoutMode"]');
+                
+                console.log('🔍 [THRESHOLD DEBUG] Setting up event listeners...');
+                console.log('🔍 [THRESHOLD DEBUG] Found elements:', {
+                    checkbox: !!respectEnableThresholdsCheckbox,
+                    minInput: !!respectMinThresholdInput,
+                    maxInput: !!respectMaxThresholdInput,
+                    radios: respectPayoutModeRadios.length
+                });
+                
+                if (respectEnableThresholdsCheckbox && !respectEnableThresholdsCheckbox.hasAttribute('data-listener-added')) {
+                    console.log('🔍 [THRESHOLD DEBUG] Adding event listener for respectEnableThresholdsCheckbox');
+                    respectEnableThresholdsCheckbox.addEventListener('change', (e) => {
+                        console.log('🚀 [THRESHOLD DEBUG] ===== CHECKBOX CHANGED =====');
+                        console.log('🚀 [THRESHOLD DEBUG] Checkbox value:', e.target.checked);
+                        console.log('🚀 [THRESHOLD DEBUG] Current min threshold:', document.getElementById('respectMinThreshold')?.value);
+                        console.log('🚀 [THRESHOLD DEBUG] Current max threshold:', document.getElementById('respectMaxThreshold')?.value);
+                        console.log('🚀 [THRESHOLD DEBUG] Current payout mode:', document.querySelector('input[name="respectPayoutMode"]:checked')?.value);
+                        console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+                        updateRespectPayoutTable();
+                        console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+                        saveRespectPayoutSettings();
+                        console.log('🚀 [THRESHOLD DEBUG] ===== CHECKBOX CHANGE COMPLETE =====');
+                    });
+                    respectEnableThresholdsCheckbox.setAttribute('data-listener-added', 'true');
+                }
+                
+                if (respectMinThresholdInput && !respectMinThresholdInput.hasAttribute('data-listener-added')) {
+                    console.log('🔍 [THRESHOLD DEBUG] Adding event listener for respectMinThresholdInput');
+                    respectMinThresholdInput.addEventListener('input', (e) => {
+                        console.log('🚀 [THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGED =====');
+                        console.log('🚀 [THRESHOLD DEBUG] New min threshold:', e.target.value);
+                        console.log('🚀 [THRESHOLD DEBUG] Current checkbox state:', document.getElementById('respectEnableThresholds')?.checked);
+                        console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+                        updateRespectPayoutTable();
+                        console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+                        saveRespectPayoutSettings();
+                        console.log('🚀 [THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGE COMPLETE =====');
+                    });
+                    respectMinThresholdInput.setAttribute('data-listener-added', 'true');
+                }
+                
+                if (respectMaxThresholdInput && !respectMaxThresholdInput.hasAttribute('data-listener-added')) {
+                    console.log('🔍 [THRESHOLD DEBUG] Adding event listener for respectMaxThresholdInput');
+                    respectMaxThresholdInput.addEventListener('input', (e) => {
+                        console.log('🚀 [THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGED =====');
+                        console.log('🚀 [THRESHOLD DEBUG] New max threshold:', e.target.value);
+                        console.log('🚀 [THRESHOLD DEBUG] Current checkbox state:', document.getElementById('respectEnableThresholds')?.checked);
+                        console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+                        updateRespectPayoutTable();
+                        console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+                        saveRespectPayoutSettings();
+                        console.log('🚀 [THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGE COMPLETE =====');
+                    });
+                    respectMaxThresholdInput.setAttribute('data-listener-added', 'true');
+                }
+                
+                respectPayoutModeRadios.forEach(radio => {
+                    if (!radio.hasAttribute('data-listener-added')) {
+                        console.log('🔍 [THRESHOLD DEBUG] Adding event listener for payout mode radio:', radio.value);
+                        radio.addEventListener('change', (e) => {
+                            console.log('🚀 [THRESHOLD DEBUG] ===== PAYOUT MODE CHANGED =====');
+                            console.log('🚀 [THRESHOLD DEBUG] New payout mode:', e.target.value);
+                            console.log('🚀 [THRESHOLD DEBUG] Current checkbox state:', document.getElementById('respectEnableThresholds')?.checked);
+                            console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+                            updateRespectPayoutTable();
+                            console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+                            saveRespectPayoutSettings();
+                            console.log('🚀 [THRESHOLD DEBUG] ===== PAYOUT MODE CHANGE COMPLETE =====');
+                        });
+                        radio.setAttribute('data-listener-added', 'true');
+                    }
+                });
+            }, 100);
             
             // Add event listener for remaining percentage input (only once)
             const remainingPercentageInput = document.getElementById('respectRemainingPercentage');
@@ -1127,6 +1710,8 @@ function initializeTabs() {
                 remainingPercentageInput.addEventListener('input', function() {
                     // Trigger recalculation when percentage changes
                     renderRespectPayoutTable();
+                    // Save settings
+                    saveRespectPayoutSettings();
                 });
                 remainingPercentageInput.setAttribute('data-listener-added', 'true');
             }
@@ -1137,8 +1722,22 @@ function initializeTabs() {
                 removeModifiersCheckbox.addEventListener('change', function() {
                     // Trigger recalculation when checkbox changes
                     renderRespectPayoutTable();
+                    // Save settings
+                    saveRespectPayoutSettings();
                 });
                 removeModifiersCheckbox.setAttribute('data-listener-added', 'true');
+            }
+            
+            // Add event listener for include outside respect checkbox (only once)
+            const includeOutsideRespectCheckbox = document.getElementById('respectIncludeOutside');
+            if (includeOutsideRespectCheckbox && !includeOutsideRespectCheckbox.hasAttribute('data-listener-added')) {
+                includeOutsideRespectCheckbox.addEventListener('change', function() {
+                    // Trigger recalculation when checkbox changes
+                    renderRespectPayoutTable();
+                    // Save settings
+                    saveRespectPayoutSettings();
+                });
+                includeOutsideRespectCheckbox.setAttribute('data-listener-added', 'true');
             }
         }
     }
@@ -1156,8 +1755,8 @@ function renderPayoutTable() {
     // Get payout settings (use raw value for calculations)
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
-    const cacheSales = parseInt(cacheSalesInput?.dataset.raw || cacheSalesInput?.value.replace(/[^\d]/g, '') || '1000000000');
-    const payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d]/g, '') || '1000000');
+    const cacheSales = parseInt(cacheSalesInput?.dataset.raw || cacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
+    const payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d.]/g, '') || '1000000');
 
     // Get war name and dates for summary
     let warName = '';
@@ -1185,7 +1784,7 @@ function renderPayoutTable() {
         let value = 0;
         if (input) {
             // Always parse cleaned .value (remove all non-digit chars)
-            value = parseInt(input.value.replace(/[^\d]/g, '') || '0', 10);
+            value = parseInt(input.value.replace(/[^\d.]/g, '') || '0', 10);
         }
         totalCosts += value;
     });
@@ -1200,8 +1799,6 @@ function renderPayoutTable() {
     const overseasMultiplier = parseFloat(document.getElementById('overseasMultiplier')?.value || '0.25');
     const payOtherAttacks = document.getElementById('payOtherAttacks')?.checked;
     const otherAttacksMultiplier = parseFloat(document.getElementById('otherAttacksMultiplier')?.value || '0.1');
-    const enableCombinedMin = document.getElementById('enableCombinedMin')?.checked;
-    const combinedMin = parseInt(document.getElementById('combinedMin')?.value || '0');
     const filterLowFF = document.getElementById('filterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('minFFRating')?.value || '2.0');
 
@@ -1241,15 +1838,6 @@ function renderPayoutTable() {
             lowFFPayout = Math.round(lowFFHits * payPerHit * otherAttacksMultiplier);
         }
 
-        const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
-        if (enableCombinedMin && combinedCount < combinedMin) {
-            warHitPayout = 0;
-            assistPayout = 0;
-            retalPayout = 0;
-            overseasPayout = 0;
-            otherAttacksPayout = 0;
-            lowFFPayout = 0;
-        }
         return {
             ...player,
             lowFFHits,
@@ -1263,6 +1851,94 @@ function renderPayoutTable() {
             totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout + lowFFPayout)
         };
     });
+
+    // Apply threshold-based payout adjustments if thresholds are enabled
+    const enableThresholds = document.getElementById('hitEnableThresholds')?.checked || false;
+    const minThreshold = parseFloat(document.getElementById('hitMinThreshold')?.value || '20');
+    const maxThreshold = parseFloat(document.getElementById('hitMaxThreshold')?.value || '50');
+    const payoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio';
+    
+    console.log('🎯 [HIT THRESHOLD DEBUG] ===== APPLYING HIT THRESHOLD LOGIC =====');
+    console.log('🎯 [HIT THRESHOLD DEBUG] enableThresholds:', enableThresholds);
+    console.log('🎯 [HIT THRESHOLD DEBUG] minThreshold:', minThreshold);
+    console.log('🎯 [HIT THRESHOLD DEBUG] maxThreshold:', maxThreshold);
+    console.log('🎯 [HIT THRESHOLD DEBUG] payoutMode:', payoutMode);
+    
+    if (enableThresholds) {
+        console.log('🎯 [HIT THRESHOLD DEBUG] Thresholds ENABLED - recalculating payouts...');
+        
+        // Find qualifying players (above minimum threshold)
+        const qualifyingPlayers = playersWithPayouts.filter(player => {
+            const combinedHits = (player.warHits || 0) + (player.warAssists || 0);
+            return combinedHits >= minThreshold;
+        });
+        
+        console.log('🎯 [HIT THRESHOLD DEBUG] Qualifying players:', qualifyingPlayers.length, 'out of', playersWithPayouts.length);
+        console.log('🎯 [HIT THRESHOLD DEBUG] Pay per war hit:', payPerHit);
+        
+        // Apply threshold logic to each player
+        playersWithPayouts.forEach(player => {
+            const combinedHits = (player.warHits || 0) + (player.warAssists || 0);
+            
+            if (combinedHits < minThreshold) {
+                // Below minimum threshold - no war hit payout, but cap other modifiers at minimum threshold payout
+                player.warHitPayout = 0;
+                
+                // Calculate what a player at minimum threshold would earn (for capping purposes)
+                let minThresholdPlayerPayout;
+                if (payoutMode === 'equal') {
+                    // Equal mode: treat minimum threshold as the qualifying amount
+                    minThresholdPlayerPayout = minThreshold * payPerHit;
+                } else {
+                    // Ratio mode: use adjusted hits calculation
+                    const adjustedMinHits = Math.min(minThreshold, maxThreshold);
+                    minThresholdPlayerPayout = adjustedMinHits * payPerHit;
+                }
+                
+                // Calculate total other modifiers payout
+                const otherModifiersTotal = (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+                
+                // Cap other modifiers payout at minimum threshold amount
+                if (otherModifiersTotal > minThresholdPlayerPayout) {
+                    // Scale down all other modifiers proportionally to fit within the cap
+                    const scaleFactor = minThresholdPlayerPayout / otherModifiersTotal;
+                    player.retalPayout = Math.round((player.retalPayout || 0) * scaleFactor);
+                    player.assistPayout = Math.round((player.assistPayout || 0) * scaleFactor);
+                    player.overseasPayout = Math.round((player.overseasPayout || 0) * scaleFactor);
+                    player.otherAttacksPayout = Math.round((player.otherAttacksPayout || 0) * scaleFactor);
+                    player.lowFFPayout = Math.round((player.lowFFPayout || 0) * scaleFactor);
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers capped at', minThresholdPlayerPayout, 'scaled by factor', scaleFactor);
+                } else {
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers within cap, keeping as calculated');
+                }
+            } else {
+                // Above minimum threshold - apply threshold logic using Pay Per War Hit
+                if (payoutMode === 'equal') {
+                    // Equal mode: treat all qualifying players as having minimum threshold hits
+                    player.warHitPayout = minThreshold * payPerHit;
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'equal mode - treated as', minThreshold, 'hits -> payout:', player.warHitPayout);
+                } else {
+                    // Ratio mode: use adjusted hits (capped at max threshold) with Pay Per War Hit
+                    const adjustedHits = Math.min(combinedHits, maxThreshold);
+                    player.warHitPayout = adjustedHits * payPerHit;
+                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'ratio mode - hits:', combinedHits, '-> adjusted:', adjustedHits, '-> payout:', player.warHitPayout);
+                }
+                
+                // When player reaches minimum threshold, ignore all other modifiers (assists, retals, overseas, etc.)
+                player.retalPayout = 0;
+                player.assistPayout = 0;
+                player.overseasPayout = 0;
+                player.otherAttacksPayout = 0;
+                player.lowFFPayout = 0;
+                console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'above threshold - other modifiers set to 0');
+            }
+            
+            // Recalculate total payout
+            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+        });
+    } else {
+        console.log('🎯 [HIT THRESHOLD DEBUG] Thresholds DISABLED - using original calculations');
+    }
 
     // Sort by payout sort state
     const { column: sortColumn, direction: sortDirection } = warReportData.payoutSortState;
@@ -1406,6 +2082,8 @@ function renderPayoutTable() {
                 return;
             }
             
+            // Show confirmation dialog
+            showOpenLinksConfirmation(playersWithPayouts.length, async () => {
             // Disable button during opening process
             openAllBtn.disabled = true;
             openAllBtn.textContent = `Opening ${playersWithPayouts.length} links...`;
@@ -1448,6 +2126,7 @@ function renderPayoutTable() {
                     openAllBtn.disabled = false;
                 }, 2000);
             }
+            });
         };
     }
 
@@ -1495,7 +2174,7 @@ function exportPayoutToCSV() {
     // Get payout settings
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
-    const payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d]/g, '') || '1000000');
+    const payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d.]/g, '') || '1000000');
     const headers = [
         'Member',
         'Level',
@@ -1543,6 +2222,7 @@ function exportPayoutToCSV() {
 // --- Respect Based Payout Table Rendering ---
 function renderRespectPayoutTable() {
     console.log('🔍 === RESPECT PAYOUT FUNCTION CALLED ===');
+    console.log('🚀 [THRESHOLD DEBUG] ===== renderRespectPayoutTable START =====');
     const playerStats = warReportData.playerStats;
     const warInfo = warReportData.warInfo;
     const allAttacks = warReportData.allAttacks;
@@ -1550,17 +2230,23 @@ function renderRespectPayoutTable() {
         console.log('[WAR REPORT 2.0] No player stats available for respect payout table');
         return;
     }
+    console.log('🚀 [THRESHOLD DEBUG] playerStats found, proceeding with table rendering...');
     
     console.log('[RESPECT DEBUG] Starting renderRespectPayoutTable');
     console.log('[RESPECT DEBUG] allAttacks length:', allAttacks.length);
+    console.log('🚀 [THRESHOLD DEBUG] About to get respect payout settings...');
     
     // Get respect payout settings (use raw value for calculations)
     const respectCacheSalesInput = document.getElementById('respectCacheSales');
     const respectPayPerHitInput = document.getElementById('respectPayPerHit');
-    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d]/g, '') || '1000000000');
+    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
+    
+    console.log('🚀 [THRESHOLD DEBUG] Got cache sales:', cacheSales);
     
     // Get advanced options early
     const removeModifiers = document.getElementById('respectRemoveModifiers')?.checked;
+    const includeOutsideRespect = document.getElementById('respectIncludeOutside')?.checked;
+    console.log('🚀 [THRESHOLD DEBUG] Advanced options - removeModifiers:', removeModifiers, 'includeOutsideRespect:', includeOutsideRespect);
     
     // OPTIMIZATION: Process all attacks ONCE and cache player respect data
     const factionId = parseInt(document.getElementById('factionId').value);
@@ -1571,44 +2257,89 @@ function renderRespectPayoutTable() {
     // Initialize player respect data
     Object.keys(playerStats).forEach(playerId => {
         playerRespectData[playerId] = {
-            baseRespect: 0,
-            warHits: 0
+            warRespect: 0, // Raw values for accurate totals
+            outsideRespect: 0,
+            warHits: 0,
+            outsideHits: 0,
+            chainBonuses: [] // Track chain bonuses for this player
         };
     });
     
     // Process all attacks once to calculate both total and per-player respect
     console.log('[RESPECT DEBUG] Processing attacks for respect calculation...');
+    let totalOutsideHits = 0;
+    let totalOutsideRespect = 0;
+    
     allAttacks.forEach((attack, index) => {
         const attackerFactionId = attack.attacker?.faction?.id;
-        const defenderFactionId = attack.defender?.faction?.id;
         const isAttackerFaction = attackerFactionId === factionId;
-        const isNotDefenderFaction = defenderFactionId !== factionId;
         
-        if (isAttackerFaction && isNotDefenderFaction) {
+        if (isAttackerFaction) {
+            const baseRespect = calculateBaseRespect(attack, removeModifiers, false); // Don't round individual calculations
+            const attackerId = String(attack.attacker?.id);
+            
+            // Check war modifier to determine if this is a war hit or outside hit
+            const warModifier = attack.modifiers?.war;
+            
+            if (warModifier === 2) {
+                // This is a war hit (war modifier = 2)
             totalWarHits++;
-            const baseRespect = calculateBaseRespect(attack, removeModifiers);
             totalBaseRespect += baseRespect;
             
-            // Add to player's respect data
-            const attackerId = String(attack.attacker?.id);
+                // Add to player's war respect data
             if (playerRespectData[attackerId]) {
-                playerRespectData[attackerId].baseRespect += baseRespect;
+                    playerRespectData[attackerId].warRespect += baseRespect;
                 playerRespectData[attackerId].warHits++;
-            }
-            
-            // Debug logging for first 5 attacks
+                    
+                    // Check for chain bonus
+                    const chainBonus = detectChainBonus(attack.respect_gain);
+                    if (chainBonus) {
+                        playerRespectData[attackerId].chainBonuses.push({
+                            ...chainBonus,
+                            attackerName: attack.attacker?.name
+                        });
+                    }
+                }
+                
+                // Debug logging for first 5 war hits
             if (totalWarHits <= 5) {
                 console.log('[RESPECT DEBUG] Processing war hit:', {
                     respect_gain: attack.respect_gain,
+                        war_modifier: warModifier,
+                        modifiers: attack.modifiers,
+                        baseRespect: baseRespect,
+                        attacker: attack.attacker?.name,
+                        chainBonus: detectChainBonus(attack.respect_gain)
+                    });
+                }
+            } else if (warModifier === 1 && baseRespect > 0) {
+                // This is an outside hit (war modifier = 1 and gains respect)
+                totalOutsideHits++;
+                totalOutsideRespect += baseRespect;
+                
+                // Add to player's outside respect data
+                if (playerRespectData[attackerId]) {
+                    playerRespectData[attackerId].outsideRespect += baseRespect;
+                    playerRespectData[attackerId].outsideHits++;
+                }
+                
+                // Debug logging for first 5 outside hits
+                if (totalOutsideHits <= 5) {
+                    console.log('[RESPECT DEBUG] Processing outside hit:', {
+                        respect_gain: attack.respect_gain,
+                        war_modifier: warModifier,
                     modifiers: attack.modifiers,
                     baseRespect: baseRespect,
                     attacker: attack.attacker?.name
                 });
+                }
             }
         }
     });
     console.log('[RESPECT DEBUG] Total war hits found:', totalWarHits);
-    console.log('[RESPECT DEBUG] Total base respect calculated:', totalBaseRespect);
+    console.log('[RESPECT DEBUG] Total war respect calculated:', totalBaseRespect);
+    console.log('[RESPECT DEBUG] Total outside hits found:', totalOutsideHits);
+    console.log('[RESPECT DEBUG] Total outside respect calculated:', totalOutsideRespect);
     
     // Get Other Costs (calculate this before pay per hit calculation)
     const otherCosts = [
@@ -1624,7 +2355,7 @@ function renderRespectPayoutTable() {
         let value = 0;
         if (input) {
             // Always parse cleaned .value (remove all non-digit chars)
-            value = parseInt(input.value.replace(/[^\d]/g, '') || '0', 10);
+            value = parseInt(input.value.replace(/[^\d.]/g, '') || '0', 10);
         }
         totalCosts += value;
     });
@@ -1634,12 +2365,12 @@ function renderRespectPayoutTable() {
     const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
     const remaining = cacheSales * remainingPercentage;
     const availablePayout = cacheSales - remaining - totalCosts;
-    const payPerHit = totalWarHits > 0 ? Math.round(availablePayout / totalWarHits) : 0;
+    const payPerWarHit = totalWarHits > 0 ? Math.round(availablePayout / totalWarHits) : 0;
     
     // Update the readonly input field
     if (respectPayPerHitInput) {
-        respectPayPerHitInput.value = payPerHit.toLocaleString();
-        respectPayPerHitInput.dataset.raw = payPerHit.toString();
+        respectPayPerHitInput.value = payPerWarHit.toLocaleString();
+        respectPayPerHitInput.dataset.raw = payPerWarHit.toString();
     }
 
     // Get war name and dates for summary
@@ -1668,13 +2399,23 @@ function renderRespectPayoutTable() {
     const filterLowFF = document.getElementById('respectFilterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('respectMinFFRating')?.value || '2.0');
 
+    console.log('🚀 [THRESHOLD DEBUG] About to create playersWithRespectPayouts array...');
+    console.log('🚀 [THRESHOLD DEBUG] playerStats keys:', Object.keys(playerStats).length);
+
     // Calculate respect-based payouts for each player
     const playersWithRespectPayouts = Object.values(playerStats).map(player => {
+        console.log('🚀 [THRESHOLD DEBUG] Processing player:', player.name);
+        
         // Use cached player respect data instead of processing all attacks again
         const playerIdStr = String(player.id);
-        const playerData = playerRespectData[playerIdStr] || { baseRespect: 0, warHits: 0 };
-        let playerBaseRespect = playerData.baseRespect;
+        const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
+        let playerWarRespect = playerData.warRespect;
+        let playerOutsideRespect = playerData.outsideRespect;
         let playerWarHits = playerData.warHits;
+        
+        console.log('🚀 [THRESHOLD DEBUG] Player data for', player.name, ':', playerData);
+        
+        console.log('🚀 [THRESHOLD DEBUG] About to count low FF hits for', player.name);
         
         // Count low FF hits and adjust base respect if filtering is enabled
         let lowFFHits = 0;
@@ -1708,7 +2449,7 @@ function renderRespectPayoutTable() {
                     lowFFRespect += calculateBaseRespect(attack, removeModifiers);
                 });
                 
-                playerBaseRespect -= lowFFRespect;
+                playerWarRespect -= lowFFRespect;
                 playerWarHits -= lowFFHits;
             }
         }
@@ -1719,23 +2460,26 @@ function renderRespectPayoutTable() {
                 name: player.name,
                 id: player.id,
                 playerWarHits: playerWarHits,
-                playerBaseRespect: playerBaseRespect
+                playerWarRespect: playerWarRespect,
+                playerOutsideRespect: playerOutsideRespect
             });
         }
         
         // Calculate additional payouts first (retaliations, assists, other attacks)
         // Note: Overseas hits with war modifier = 2 are already counted as war hits and get respect-based payouts
         // Overseas payouts are only for hit-based calculator, not respect-based
-        let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerHit * retalMultiplier) : 0;
-        let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerHit * assistMultiplier) : 0;
+        let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerWarHit * retalMultiplier) : 0;
+        let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerWarHit * assistMultiplier) : 0;
         let overseasPayout = 0; // Overseas hits are already counted in respect-based war hit payouts
-        let otherAttacksPayout = payOtherAttacks ? Math.round(((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier)) : 0;
+        let otherAttacksPayout = payOtherAttacks ? Math.round(((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerWarHit * otherAttacksMultiplier)) : 0;
         
         // Add low FF hits payout at "Other Attacks" rate
         let lowFFPayout = 0;
         if (filterLowFF && lowFFHits > 0) {
-            lowFFPayout = Math.round(lowFFHits * payPerHit * otherAttacksMultiplier);
+            lowFFPayout = Math.round(lowFFHits * payPerWarHit * otherAttacksMultiplier);
         }
+
+        console.log('🚀 [THRESHOLD DEBUG] Finished low FF hits calculation for', player.name, 'lowFFHits:', lowFFHits);
 
         // Check combined minimum requirement
         const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
@@ -1747,8 +2491,10 @@ function renderRespectPayoutTable() {
             lowFFPayout = 0;
         }
         
-        // Calculate respect ratio for this player
-        const respectRatio = totalBaseRespect > 0 ? playerBaseRespect / totalBaseRespect : 0;
+        // Calculate respect ratio for this player (conditionally include outside respect)
+        const totalPlayerRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
+        const totalRespect = includeOutsideRespect ? (totalBaseRespect + totalOutsideRespect) : totalBaseRespect;
+        const respectRatio = totalRespect > 0 ? totalPlayerRespect / totalRespect : 0;
         
         // Initialize war hit payout (will be calculated in next step)
         let warHitPayout = 0;
@@ -1756,7 +2502,8 @@ function renderRespectPayoutTable() {
         return {
             ...player,
             lowFFHits,
-            playerBaseRespect,
+            playerWarRespect: Math.round(playerWarRespect), // Round for display
+            playerOutsideRespect: Math.round(playerOutsideRespect), // Round for display
             respectRatio: respectRatio.toFixed(4),
             warHitPayout,
             retalPayout,
@@ -1784,13 +2531,17 @@ function renderRespectPayoutTable() {
         return true; // If no combined minimum, all players qualify
     });
     
-    // Calculate total respect of qualifying players
-    const totalQualifyingRespect = qualifyingPlayers.reduce((sum, p) => sum + p.playerBaseRespect, 0);
+    // Calculate total respect of qualifying players (conditionally include outside respect)
+    const totalQualifyingRespect = qualifyingPlayers.reduce((sum, p) => {
+        const playerTotalRespect = includeOutsideRespect ? (p.playerWarRespect + p.playerOutsideRespect) : p.playerWarRespect;
+        return sum + playerTotalRespect;
+    }, 0);
     
     // Distribute remaining money proportionally based on respect
     qualifyingPlayers.forEach(player => {
         if (totalQualifyingRespect > 0) {
-            const respectShare = player.playerBaseRespect / totalQualifyingRespect;
+            const playerTotalRespect = includeOutsideRespect ? (player.playerWarRespect + player.playerOutsideRespect) : player.playerWarRespect;
+            const respectShare = playerTotalRespect / totalQualifyingRespect;
             player.warHitPayout = Math.round(respectShare * respectDistributionPool);
         } else {
             player.warHitPayout = 0;
@@ -1800,8 +2551,126 @@ function renderRespectPayoutTable() {
         player.totalPayout = Math.round(player.warHitPayout + player.retalPayout + player.assistPayout + player.overseasPayout + player.otherAttacksPayout + player.lowFFPayout);
     });
     
+    // Apply threshold-based payout adjustments if thresholds are enabled
+    const enableThresholds = document.getElementById('respectEnableThresholds')?.checked || false;
+    const minThreshold = parseFloat(document.getElementById('respectMinThreshold')?.value || '100');
+    const maxThreshold = parseFloat(document.getElementById('respectMaxThreshold')?.value || '300');
+    const payoutMode = document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio';
+    
+    console.log('🚀 [THRESHOLD DEBUG] ===== APPLYING THRESHOLD LOGIC =====');
+    console.log('🚀 [THRESHOLD DEBUG] enableThresholds:', enableThresholds);
+    console.log('🚀 [THRESHOLD DEBUG] minThreshold:', minThreshold);
+    console.log('🚀 [THRESHOLD DEBUG] maxThreshold:', maxThreshold);
+    console.log('🚀 [THRESHOLD DEBUG] payoutMode:', payoutMode);
+    
+    if (enableThresholds) {
+        console.log('🚀 [THRESHOLD DEBUG] Thresholds ENABLED - recalculating payouts...');
+        
+        // Reset global variable for total adjusted respect calculation
+        window._totalAdjustedRespect = null;
+        
+        // Calculate available payout
+        const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
+        const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
+        const remaining = cacheSales * remainingPercentage;
+        const availablePayout = cacheSales - remaining - totalCosts;
+        
+        // Find qualifying players (above minimum threshold)
+        const qualifyingPlayers = playersWithRespectPayouts.filter(player => {
+            const playerIdStr = String(player.id);
+            const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0 };
+            const playerWarRespect = playerData.warRespect;
+            const playerOutsideRespect = playerData.outsideRespect;
+            const totalPlayerRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
+            
+            return totalPlayerRespect >= minThreshold;
+        });
+        
+        console.log('🚀 [THRESHOLD DEBUG] Qualifying players:', qualifyingPlayers.length, 'out of', playersWithRespectPayouts.length);
+        
+        // Apply threshold logic to each player
+        playersWithRespectPayouts.forEach(player => {
+            const playerIdStr = String(player.id);
+            const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0 };
+            const playerWarRespect = playerData.warRespect;
+            const playerOutsideRespect = playerData.outsideRespect;
+            const totalPlayerRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
+            
+            if (totalPlayerRespect < minThreshold) {
+                // Below minimum threshold - no war hit payout, but cap other modifiers at minimum threshold payout
+                player.warHitPayout = 0;
+                
+                // Calculate what a player at minimum threshold would earn (for capping purposes)
+                const minThresholdPlayerPayout = qualifyingPlayers.length > 0 ? 
+                    (payoutMode === 'equal' ? 
+                        Math.round(availablePayout / qualifyingPlayers.length) : 
+                        Math.round((minThreshold / (window._totalAdjustedRespect || 1)) * availablePayout)
+                    ) : 0;
+                
+                // Calculate total other modifiers payout
+                const otherModifiersTotal = (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+                
+                // Cap other modifiers payout at minimum threshold amount
+                if (otherModifiersTotal > minThresholdPlayerPayout) {
+                    // Scale down all other modifiers proportionally to fit within the cap
+                    const scaleFactor = minThresholdPlayerPayout / otherModifiersTotal;
+                    player.retalPayout = Math.round((player.retalPayout || 0) * scaleFactor);
+                    player.assistPayout = Math.round((player.assistPayout || 0) * scaleFactor);
+                    player.overseasPayout = Math.round((player.overseasPayout || 0) * scaleFactor);
+                    player.otherAttacksPayout = Math.round((player.otherAttacksPayout || 0) * scaleFactor);
+                    player.lowFFPayout = Math.round((player.lowFFPayout || 0) * scaleFactor);
+                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers capped at', minThresholdPlayerPayout, 'scaled by factor', scaleFactor);
+                } else {
+                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers within cap, keeping as calculated');
+                }
+            } else {
+                // Above minimum threshold - apply threshold logic and ignore other modifiers
+                const adjustedRespect = Math.min(totalPlayerRespect, maxThreshold);
+                
+                // When player reaches minimum threshold, ignore all other modifiers (assists, retals, overseas, etc.)
+                player.retalPayout = 0;
+                player.assistPayout = 0;
+                player.overseasPayout = 0;
+                player.otherAttacksPayout = 0;
+                player.lowFFPayout = 0;
+                
+                if (payoutMode === 'equal') {
+                    // Equal payout: all qualifying players get the same amount
+                    player.warHitPayout = qualifyingPlayers.length > 0 ? Math.round(availablePayout / qualifyingPlayers.length) : 0;
+                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'equal payout mode - war hit payout:', player.warHitPayout, 'other payouts set to 0');
+                } else {
+                    // Ratio payout: proportional to adjusted respect within the threshold range
+                    // Calculate total adjusted respect for all qualifying players ONCE (outside the loop)
+                    if (!window._totalAdjustedRespect) {
+                        window._totalAdjustedRespect = qualifyingPlayers.reduce((sum, p) => {
+                            const pIdStr = String(p.id);
+                            const pData = playerRespectData[pIdStr] || { warRespect: 0, outsideRespect: 0 };
+                            const pWarRespect = pData.warRespect;
+                            const pOutsideRespect = pData.outsideRespect;
+                            const pTotalRespect = includeOutsideRespect ? (pWarRespect + pOutsideRespect) : pWarRespect;
+                            return sum + Math.min(pTotalRespect, maxThreshold);
+                        }, 0);
+                        console.log('🚀 [THRESHOLD DEBUG] Total adjusted respect for ratio calculation:', window._totalAdjustedRespect);
+                    }
+                    
+                    const respectRatio = window._totalAdjustedRespect > 0 ? adjustedRespect / window._totalAdjustedRespect : 0;
+                    player.warHitPayout = Math.round(respectRatio * availablePayout);
+                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'ratio payout mode - respect:', totalPlayerRespect, '-> adjusted:', adjustedRespect, '-> ratio:', respectRatio, '-> payout:', player.warHitPayout, 'other payouts set to 0');
+                }
+            }
+            
+            // Recalculate total payout
+            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0);
+        });
+    } else {
+        console.log('🚀 [THRESHOLD DEBUG] Thresholds DISABLED - using original calculations');
+    }
+
     // Calculate final total payout
     let totalPayout = playersWithRespectPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
+    
+    console.log('🚀 [THRESHOLD DEBUG] Finished creating playersWithRespectPayouts array, about to sort...');
+    console.log('🚀 [THRESHOLD DEBUG] playersWithRespectPayouts length:', playersWithRespectPayouts.length);
     
     // Sort by respect payout sort state (AFTER all calculations are complete)
     const { column: sortColumn, direction: sortDirection } = warReportData.respectPayoutSortState;
@@ -1831,9 +2700,10 @@ function renderRespectPayoutTable() {
             <h3><strong>Respect Based War Payout Summary</strong>${warName ? ' <span style=\"font-weight:normal;color:#ccc;font-size:0.95em;\">' + warName + '</span>' : ''}</h3>
             <p><strong>Cache Sales:</strong> $${cacheSales.toLocaleString()}</p>
             <p><strong>Total Costs:</strong> $${totalCosts.toLocaleString()}</p>
-            <p><strong>Total Base Respect:</strong> ${totalBaseRespect.toLocaleString()}</p>
+            <p><strong>Total War ${removeModifiers ? 'Base' : 'Full'} Respect:</strong> ${Math.round(totalBaseRespect).toLocaleString()}</p>
+            <p><strong>Total Outside ${removeModifiers ? 'Base' : 'Full'} Respect:</strong> ${Math.round(totalOutsideRespect).toLocaleString()} ${includeOutsideRespect ? '(Included)' : '(Excluded)'}</p>
             <p><strong>Total War Hits:</strong> ${totalWarHits.toLocaleString()}</p>
-            <p><strong>Pay Per Hit (Auto-calculated):</strong> $${Math.round(payPerHit).toLocaleString()}</p>
+            <p><strong>Pay Per War Hit (Auto-calculated):</strong> $${Math.round(payPerWarHit).toLocaleString()}</p>
             <p><strong>Total Payout:</strong> $${totalPayout.toLocaleString()}</p>
             <p><strong>Remaining:</strong> $${remaining2.toLocaleString()} <span style=\"color:#ffd700;font-weight:normal;\">(${remainingPercent}% of cache sales)</span></p>
             <button id="exportRespectPayoutCSV" class="btn btn-secondary">Export to CSV</button>
@@ -1852,12 +2722,12 @@ function renderRespectPayoutTable() {
                     <th data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Member <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'name' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="level" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Level <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'level' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War Hits <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="lowFFHits" style="cursor: pointer; background-color: #2d2d2d; color: #ff6b6b; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Low FF Hits <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'lowFFHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="playerBaseRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Base Respect <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'playerBaseRespect' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="playerWarRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War ${removeModifiers ? 'Base' : 'Full'} Respect <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'playerWarRespect' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="playerOutsideRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Outside ${removeModifiers ? 'Base' : 'Full'} Respect <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'playerOutsideRespect' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="respectRatio" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Respect % <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'respectRatio' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warRetals" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Retaliations <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warRetals' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warRetals" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Retals <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warRetals' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warAssists" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Assists <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warAssists' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="overseasHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Overseas <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'overseasHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="overseasHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Abroad <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'overseasHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="otherAttacks" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Other Attacks <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'otherAttacks' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>Total Payout</strong> <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'totalPayout' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Pay link</th>
@@ -1872,8 +2742,8 @@ function renderRespectPayoutTable() {
                             <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.level}</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warHits || 0}</td>
-                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040; color: #ff6b6b;">${player.lowFFHits || 0}</td>
-                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerBaseRespect}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerWarRespect || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerOutsideRespect || 0}</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${(parseFloat(player.respectRatio) * 100).toFixed(2)}%</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warRetals || 0}</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warAssists || 0}</td>
@@ -1890,8 +2760,8 @@ function renderRespectPayoutTable() {
                     <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><strong>TOTALS</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalWarHits}</strong></td>
-                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong style="color: #ff6b6b;">${playersWithRespectPayouts.reduce((sum, p) => sum + (p.lowFFHits || 0), 0)}</strong></td>
-                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalBaseRespect}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalBaseRespect)}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalOutsideRespect)}</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>100.00%</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td>
@@ -1903,6 +2773,60 @@ function renderRespectPayoutTable() {
             </tfoot>
         </table>
         </div>
+        
+        <!-- Chain Bonus Section -->
+        ${(() => {
+            // Collect all chain bonuses from all players
+            const allChainBonuses = [];
+            Object.entries(playerRespectData).forEach(([playerId, playerData]) => {
+                if (playerData.chainBonuses && playerData.chainBonuses.length > 0) {
+                    // Get player name from playerStats
+                    const player = Object.values(playerStats).find(p => String(p.id) === playerId);
+                    const playerName = player ? player.name : 'Unknown';
+                    
+                    playerData.chainBonuses.forEach(chainBonus => {
+                        allChainBonuses.push({
+                            ...chainBonus,
+                            playerName: playerName
+                        });
+                    });
+                }
+            });
+            
+            if (allChainBonuses.length === 0) {
+                return '';
+            }
+            
+            // Sort by deduction amount (highest first)
+            allChainBonuses.sort((a, b) => b.deduction - a.deduction);
+            
+            const totalDeductions = allChainBonuses.reduce((sum, bonus) => sum + bonus.deduction, 0);
+            
+            return `
+                <div class="chain-bonus-section" style="margin-top: 20px; padding: 15px; background-color: #2a2a2a; border-radius: 8px; border: 1px solid #404040; border-left: 4px solid #ffd700;">
+                    <h4 style="color: #ffd700; margin: 0 0 10px 0; font-size: 16px;">🔗 Chain Bonus Deductions</h4>
+                    <p style="color: #ccc; margin: 0 0 10px 0; font-size: 14px;">
+                        <strong>Total Deductions from Full Respect:</strong> <span style="color: #ff6b6b;">${totalDeductions.toLocaleString()}</span> points
+                    </p>
+                    <table style="width: auto; border-collapse: collapse; margin: 0;">
+                        <tbody>
+                            ${allChainBonuses.map(bonus => `
+                                <tr>
+                                    <td style="padding: 6px 12px 6px 0; color: #fff; font-weight: bold; white-space: nowrap;">${bonus.playerName}</td>
+                                    <td style="padding: 6px 12px 6px 0; color: #ccc; font-size: 12px; white-space: nowrap;">${bonus.milestone} Hit (${bonus.points} points total)</td>
+                                    <td style="padding: 6px 12px 6px 0; color: #ff6b6b; font-weight: bold; text-align: right; white-space: nowrap;">-${bonus.deduction}</td>
+                                    <td style="padding: 6px 0; color: #999; font-size: 12px; white-space: nowrap;">War Hit</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                    <div style="margin-top: 10px; padding: 8px; background-color: #1a1a1a; border-radius: 4px; font-size: 12px; color: #999;">
+                        💡 <strong>Note:</strong> Chain bonuses are deducted from Full Respect scores to show Base Respect. 
+                        The deduction represents the extra respect gained beyond the base 10 points.
+                    </div>
+        </div>
+            `;
+        })()}
     `;
     respectPayoutTableDiv.innerHTML = tableHtml;
     
@@ -1941,6 +2865,8 @@ function renderRespectPayoutTable() {
                 return;
             }
             
+            // Show confirmation dialog
+            showOpenLinksConfirmation(payLinks.length, () => {
             // Check if popup blocker might be active
             const testWindow = window.open('', '_blank');
             if (!testWindow || testWindow.closed || typeof testWindow.closed === 'undefined') {
@@ -1954,7 +2880,12 @@ function renderRespectPayoutTable() {
                 window.open(link.href, '_blank');
             });
             
-            alert(`Opened ${payLinks.length} payment links in new tabs.`);
+                // Show completion message
+                openAllRespectPayLinksBtn.textContent = `Opened ${payLinks.length} links!`;
+                setTimeout(() => {
+                    openAllRespectPayLinksBtn.textContent = 'Open All Links';
+                }, 2000);
+            });
         });
     }
     
@@ -1964,6 +2895,7 @@ function renderRespectPayoutTable() {
         exportRespectPayoutBtn.addEventListener('click', exportRespectPayoutToCSV);
     }
     
+    console.log('🚀 [THRESHOLD DEBUG] ===== renderRespectPayoutTable COMPLETE =====');
 }
 
 // --- Export Respect Payout to CSV ---
@@ -1977,7 +2909,8 @@ function exportRespectPayoutToCSV() {
     
     // Get respect payout settings
     const respectCacheSalesInput = document.getElementById('respectCacheSales');
-    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d]/g, '') || '1000000000');
+    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
+    const includeOutsideRespect = document.getElementById('respectIncludeOutside')?.checked;
     
     // Calculate total base respect for all war hits
     let totalBaseRespect = 0;
@@ -1992,19 +2925,19 @@ function exportRespectPayoutToCSV() {
         }
     });
     
-    // Auto-calculate pay per hit
-    const payPerHit = totalWarHits > 0 ? Math.round((cacheSales * 0.7) / totalWarHits) : 0;
+    // Auto-calculate pay per war hit (based on war hits only)
+    const payPerWarHit = totalWarHits > 0 ? Math.round((cacheSales * 0.7) / totalWarHits) : 0;
     
     const headers = [
         'Member',
         'Level',
         'War Hits',
-        'Low FF Hits',
-        'Base Respect',
+        `War ${removeModifiers ? 'Base' : 'Full'} Respect`,
+        `Outside ${removeModifiers ? 'Base' : 'Full'} Respect`,
         'Respect %',
-        'Retaliations',
+        'Retals',
         'Assists',
-        'Overseas',
+        'Abroad',
         'Other Attacks',
         'Total Payout',
         'Pay link'
@@ -2013,20 +2946,18 @@ function exportRespectPayoutToCSV() {
     
     // Calculate respect-based payouts and sort by total payout
     const playersWithRespectPayouts = Object.values(playerStats).map(player => {
-        // Calculate base respect for this player's war hits
-        let playerBaseRespect = 0;
+        // Use cached player respect data instead of recalculating
+        const playerIdStr = String(player.id);
+        const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
+        const playerWarRespect = playerData.warRespect;
+        const playerOutsideRespect = playerData.outsideRespect;
         
-        // Find all war hits for this player
-        allAttacks.forEach(attack => {
-            if (attack.attacker_id === player.id && 
-                attack.attacker_faction === parseInt(document.getElementById('factionId').value) && 
-                attack.defender_faction !== parseInt(document.getElementById('factionId').value)) {
-                playerBaseRespect += calculateBaseRespect(attack);
-            }
-        });
+        // Calculate proportional payout based on respect ratio (conditionally include outside)
+        const totalPlayerRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
+        const totalRespect = includeOutsideRespect ? (totalBaseRespect + totalOutsideRespect) : totalBaseRespect;
         
-        // Calculate proportional payout based on base respect ratio
-        const respectRatio = totalBaseRespect > 0 ? playerBaseRespect / totalBaseRespect : 0;
+        // Calculate basic respect ratio payout (will be adjusted later if thresholds are enabled)
+        const respectRatio = totalRespect > 0 ? totalPlayerRespect / totalRespect : 0;
         const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
         const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
         const remaining = cacheSales * remainingPercentage;
@@ -2043,16 +2974,55 @@ function exportRespectPayoutToCSV() {
         const payOtherAttacks = document.getElementById('respectPayOtherAttacks')?.checked;
         const otherAttacksMultiplier = parseFloat(document.getElementById('respectOtherAttacksMultiplier')?.value || '0.1');
         
-        let retalPayout = payRetals ? (player.warRetals || 0) * payPerHit * retalMultiplier : 0;
-        let assistPayout = payAssists ? (player.warAssists || 0) * payPerHit * assistMultiplier : 0;
-        let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerHit * overseasMultiplier : 0;
-        let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier) : 0;
+        // When thresholds are enabled and payout mode is equal, cap additional payouts at the minimum threshold payout
+        let additionalPayoutCap = null;
+        if (enableThresholds && payoutMode === 'equal' && adjustedTotalRespect > 0) {
+            const qualifyingPlayers = playersWithRespectPayouts.filter(p => {
+                const playerData = playerRespectData[p.id];
+                const playerWarRespect = playerData?.warRespect || 0;
+                const playerOutsideRespect = playerData?.outsideRespect || 0;
+                const playerTotalRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
+                return playerTotalRespect >= minThreshold;
+            });
+            
+            const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
+            const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
+            const remaining = cacheSales * remainingPercentage;
+            const availablePayout = cacheSales - remaining - totalCosts;
+            const qualifyingCount = qualifyingPlayers.length;
+            additionalPayoutCap = qualifyingCount > 0 ? Math.round(availablePayout / qualifyingCount) : 0;
+        } else if (enableThresholds && payoutMode === 'ratio') {
+            // For ratio mode, cap additional payouts at the minimum threshold respect payout
+            const minThresholdPayout = minThreshold / adjustedTotalRespect * (cacheSales - remaining - totalCosts);
+            additionalPayoutCap = Math.round(minThresholdPayout);
+        }
+        
+        let retalPayout = payRetals ? (player.warRetals || 0) * payPerWarHit * retalMultiplier : 0;
+        let assistPayout = payAssists ? (player.warAssists || 0) * payPerWarHit * assistMultiplier : 0;
+        let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerWarHit * overseasMultiplier : 0;
+        let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerWarHit * otherAttacksMultiplier) : 0;
+        
+        // Apply cap to additional payouts when thresholds are enabled
+        if (additionalPayoutCap !== null) {
+            const totalAdditionalPayout = retalPayout + assistPayout + overseasPayout + otherAttacksPayout;
+            const totalPayout = warHitPayout + totalAdditionalPayout;
+            
+            if (totalPayout > additionalPayoutCap) {
+                // Cap the total payout, but maintain relative proportions of additional payouts
+                const additionalPayoutRatio = totalAdditionalPayout > 0 ? additionalPayoutCap / totalAdditionalPayout : 1;
+                retalPayout = Math.round(retalPayout * additionalPayoutRatio);
+                assistPayout = Math.round(assistPayout * additionalPayoutRatio);
+                overseasPayout = Math.round(overseasPayout * additionalPayoutRatio);
+                otherAttacksPayout = Math.round(otherAttacksPayout * additionalPayoutRatio);
+            }
+        }
         
         const totalPayout = warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout;
         
         return {
             ...player,
-            playerBaseRespect,
+            playerWarRespect: Math.round(playerWarRespect),
+            playerOutsideRespect: Math.round(playerOutsideRespect),
             respectRatio: respectRatio.toFixed(4),
             totalPayout
         };
@@ -2065,8 +3035,8 @@ function exportRespectPayoutToCSV() {
             '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
             player.warHits || 0,
-            player.lowFFHits || 0,
-            player.playerBaseRespect,
+            player.playerWarRespect || 0,
+            player.playerOutsideRespect || 0,
             (parseFloat(player.respectRatio) * 100).toFixed(2) + '%',
             player.warRetals || 0,
             player.warAssists || 0,

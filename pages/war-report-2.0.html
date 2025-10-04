@@ -97,7 +97,7 @@
                                 </div>
                             </div>
                             <div style="flex: 1;">
-                                <label for="payPerHit">Pay Per Hit (PPH):</label>
+                                <label for="payPerHit">Pay Per War Hit (PPWH):</label>
                                                                     <div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="payPerHit" value="1000000" placeholder="e.g., 1m, 500k, 100k" style="width: 100%; padding: 8px; margin-top: 5px;"></div>
                                 <h3 style="color: #fff; font-weight: normal; font-size: 1em; margin: 18px 0 8px 0;">Advanced Payout Options:</h3>
                                 <div style="margin-top: 15px; display: grid; grid-template-columns: 1.5fr 1fr; gap: 8px 12px; align-items: center;">
@@ -113,17 +113,51 @@
                                     <label style="display: flex; align-items: center;" title="Pay for non-war attacks"><input type="checkbox" id="payOtherAttacks" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Other Attacks</label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="otherAttacksMultiplier" value="0.1" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Require minimum war hits + assists to qualify">
-                                        <input type="checkbox" id="enableCombinedMin" checked style="accent-color: #ffd700; margin-right: 8px;">
-                                        Combined War Hits + Assists
-                                    </label>
-                                    <span style="justify-self: end; text-align: right;">Min: <input type="number" id="combinedMin" value="20" min="0" step="1" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
                                     <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Filter low FF hits - paid at 'Other Attacks' rate. Retaliations always count as good hits.">
-                                        <input type="checkbox" id="filterLowFF" checked style="accent-color: #ffd700; margin-right: 8px;">
+                                        <input type="checkbox" id="filterLowFF" style="accent-color: #ffd700; margin-right: 8px;">
                                         Filter Low Fair Fight Hits
                                     </label>
                                     <span style="justify-self: end; text-align: right;">Min FF: <input type="number" id="minFFRating" value="2.0" min="0" step="0.1" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+                                </div>
+
+                                <!-- Hit Threshold Controls -->
+                                <div style="grid-column: 1 / span 2; margin-top: 15px; padding: 15px; background-color: #1a1a1a; border-radius: 6px; border-left: 3px solid #ffd700;">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                                            <label style="display: flex; align-items: center; color: #ffd700; font-weight: bold;">
+                                                <input type="checkbox" id="hitEnableThresholds" style="accent-color: #ffd700; margin-right: 8px;">
+                                                Enable Hit Thresholds
+                                            </label>
+                                            <div style="display: flex; align-items: center; gap: 8px;">
+                                                <label style="color: #ccc; font-size: 0.9em;">Min Hits:</label>
+                                                <input type="number" id="hitMinThreshold" value="20" min="0" step="1" style="width: 80px; padding: 4px; background-color: #2a2a2a; border: 1px solid #404040; color: #fff; border-radius: 3px;">
+                                            </div>
+                                            <div style="display: flex; align-items: center; gap: 8px;">
+                                                <label id="hitMaxThresholdLabel" style="color: #ccc; font-size: 0.9em;">Max Hits:</label>
+                                                <input type="number" id="hitMaxThreshold" value="50" min="0" step="1" style="width: 80px; padding: 4px; background-color: #2a2a2a; border: 1px solid #404040; color: #fff; border-radius: 3px;">
+                                            </div>
+                                        </div>
+                                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                                            <label style="color: #ffd700; font-weight: bold; margin-bottom: 5px;">Payout Mode:</label>
+                                            <label style="display: flex; align-items: center; color: #ccc; cursor: pointer;">
+                                                <input type="radio" name="hitPayoutMode" value="ratio" checked style="accent-color: #ffd700; margin-right: 6px;">
+                                                Ratio Based (proportional within range)
+                                            </label>
+                                            <label style="display: flex; align-items: center; color: #ccc; cursor: pointer;">
+                                                <input type="radio" name="hitPayoutMode" value="equal" style="accent-color: #ffd700; margin-right: 6px;">
+                                                Equal Payout (same amount for all in range)
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <!-- Explanation text at bottom of card -->
+                                    <div style="padding-top: 10px; border-top: 1px solid #404040;">
+                                        <div style="font-size: 0.8em; color: #999; line-height: 1.4;">
+                                            <div>• <strong>Ratio:</strong> Pay Per War Hit × adjusted hits (capped at max threshold)</div>
+                                            <div>• <strong>Equal:</strong> Pay Per War Hit × minimum threshold (ignores max threshold)</div>
+                                            <div>• <strong>Other modifiers:</strong> Capped at minimum threshold payout when below threshold</div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -162,17 +196,25 @@
                                 </div>
                             </div>
                             <div style="flex: 1;">
-                                <label for="respectPayPerHit">Pay Per Hit (Auto-calculated):</label>
+                                <label for="respectPayPerHit">Pay Per War Hit (Auto-calculated):</label>
                                                                     <div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="respectPayPerHit" value="0" style="width: 100%; padding: 8px; margin-top: 5px;" readonly></div>
                                 <h3 style="color: #fff; font-weight: normal; font-size: 1em; margin: 18px 0 8px 0;">Advanced Payout Options:</h3>
                                 <div style="margin-top: 15px; display: grid; grid-template-columns: 1.5fr 1fr; gap: 8px 12px; align-items: center;">
                                     <label style="display: flex; align-items: center;" title="Pay for assist attacks"><input type="checkbox" id="respectPayAssists" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Assists</label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectAssistMultiplier" value="0.25" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="display: flex; align-items: center;" title="Pay for retaliation attacks"><input type="checkbox" id="respectPayRetals" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Retals</label>
+                                    <label style="display: flex; align-items: center;" title="Pay for retaliation attacks">
+                                        <input type="checkbox" id="respectPayRetals" style="accent-color: #ffd700; margin-right: 8px;"> 
+                                        Pay Retals
+                                        <button type="button" class="chain-link-btn" data-option="respectPayRetals" style="background: none; border: none; color: #ffd700; cursor: pointer; margin-left: 8px; font-size: 14px; padding: 2px;" title="Click to unlink this option">🔗</button>
+                                    </label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectRetalMultiplier" value="0.5" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="display: flex; align-items: center;" title="Pay for overseas attacks"><input type="checkbox" id="respectPayOverseas" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Overseas</label>
+                                    <label style="display: flex; align-items: center;" title="Pay for overseas attacks">
+                                        <input type="checkbox" id="respectPayOverseas" style="accent-color: #ffd700; margin-right: 8px;"> 
+                                        Pay Overseas
+                                        <button type="button" class="chain-link-btn" data-option="respectPayOverseas" style="background: none; border: none; color: #ffd700; cursor: pointer; margin-left: 8px; font-size: 14px; padding: 2px;" title="Click to unlink this option">🔗</button>
+                                    </label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectOverseasMultiplier" value="0.25" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
                                     <label style="display: flex; align-items: center;" title="Pay for non-war attacks"><input type="checkbox" id="respectPayOtherAttacks" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Other Attacks</label>
@@ -185,16 +227,62 @@
                                     <span style="justify-self: end; text-align: right;">Min: <input type="number" id="respectCombinedMin" value="20" min="0" step="1" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
                                     <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Remove chain & group bonuses from respect calculations">
-                                        <input type="checkbox" id="respectRemoveModifiers" checked style="accent-color: #ffd700; margin-right: 8px;">
+                                        <input type="checkbox" id="respectRemoveModifiers" style="accent-color: #ffd700; margin-right: 8px;">
                                         Remove Assist and Chain Modifiers
+                                        <button type="button" class="chain-link-btn" data-option="respectRemoveModifiers" style="background: none; border: none; color: #ffd700; cursor: pointer; margin-left: 8px; font-size: 14px; padding: 2px;" title="Click to unlink this option">🔗</button>
                                     </label>
-                                    <span style="justify-self: end; text-align: right; color: #ccc; font-size: 0.9em;">Advanced</span>
+                                    <span style="justify-self: end; text-align: right; color: #ccc; font-size: 0.9em;"></span>
+
+                                    <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Include outside respect (non-war hits) in payout calculations">
+                                        <input type="checkbox" id="respectIncludeOutside" style="accent-color: #ffd700; margin-right: 8px;">
+                                        Include Outside Respect
+                                    </label>
+                                    <span style="justify-self: end; text-align: right; color: #ccc; font-size: 0.9em;"></span>
 
                                     <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Filter low FF hits - excluded from respect, paid at 'Other Attacks' rate. Retaliations always count as good hits.">
-                                        <input type="checkbox" id="respectFilterLowFF" checked style="accent-color: #ffd700; margin-right: 8px;">
+                                        <input type="checkbox" id="respectFilterLowFF" style="accent-color: #ffd700; margin-right: 8px;">
                                         Filter Low Fair Fight Hits
                                     </label>
                                     <span style="justify-self: end; text-align: right;">Min FF: <input type="number" id="respectMinFFRating" value="2.0" min="0" step="0.1" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+
+                                    <!-- Respect Threshold Controls -->
+                                    <div style="grid-column: 1 / span 2; margin-top: 15px; padding: 15px; background-color: #1a1a1a; border-radius: 6px; border-left: 3px solid #ffd700;">
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                                <label style="display: flex; align-items: center; color: #ffd700; font-weight: bold;">
+                                                    <input type="checkbox" id="respectEnableThresholds" style="accent-color: #ffd700; margin-right: 8px;">
+                                                    Enable Respect Thresholds
+                                                </label>
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <label style="color: #ccc; font-size: 0.9em;">Min Respect:</label>
+                                                    <input type="number" id="respectMinThreshold" value="100" min="0" step="1" style="width: 80px; padding: 4px; background-color: #2a2a2a; border: 1px solid #404040; color: #fff; border-radius: 3px;">
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <label style="color: #ccc; font-size: 0.9em;">Max Respect:</label>
+                                                    <input type="number" id="respectMaxThreshold" value="300" min="0" step="1" style="width: 80px; padding: 4px; background-color: #2a2a2a; border: 1px solid #404040; color: #fff; border-radius: 3px;">
+                                                </div>
+                                            </div>
+                                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                                <label style="color: #ffd700; font-weight: bold; margin-bottom: 5px;">Payout Mode:</label>
+                                                <label style="display: flex; align-items: center; color: #ccc; cursor: pointer;">
+                                                    <input type="radio" name="respectPayoutMode" value="ratio" checked style="accent-color: #ffd700; margin-right: 6px;">
+                                                    Ratio Based (proportional within range)
+                                                </label>
+                                                <label style="display: flex; align-items: center; color: #ccc; cursor: pointer;">
+                                                    <input type="radio" name="respectPayoutMode" value="equal" style="accent-color: #ffd700; margin-right: 6px;">
+                                                    Equal Payout (same amount for all in range)
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <!-- Explanation text at bottom of card -->
+                                        <div style="padding-top: 10px; border-top: 1px solid #404040;">
+                                            <div style="font-size: 0.8em; color: #999; line-height: 1.4;">
+                                                <div>• <strong>Ratio:</strong> Pay proportional to respect within range</div>
+                                                <div>• <strong>Equal:</strong> All players in range get same payout</div>
+                                                <div>• <strong>Other modifiers:</strong> Capped at minimum threshold when thresholds enabled</div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

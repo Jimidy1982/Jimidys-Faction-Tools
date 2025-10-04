@@ -573,9 +573,14 @@ nav a:hover::after {
 }
 
 .tab-button.active {
-    background-color: var(--secondary-color);
-    color: var(--accent-color);
+    background-color: var(--accent-color);
+    color: var(--primary-color);
     border-bottom-color: var(--accent-color);
+    border-bottom-width: 4px;
+    font-weight: bold;
+    box-shadow: 0 2px 8px rgba(255, 215, 0, 0.3);
+    opacity: 1;
+    transform: translateY(-1px);
 }
 
 .tab-content {
