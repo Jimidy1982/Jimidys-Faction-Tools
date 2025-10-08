@@ -906,10 +906,12 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log(`FF Scouter API calls completed in ${(ffEndTime - ffStartTime).toFixed(2)}ms`);
 
             const ffScores = {};
+            const battleStatsEstimates = {};
             const lastUpdated = {};
             ffData.forEach(player => {
                 if (player.fair_fight) {
                     ffScores[player.player_id] = player.fair_fight;
+                    battleStatsEstimates[player.player_id] = player.bs_estimate; // Store FF Scouter's precise battle stats estimate
                     lastUpdated[player.player_id] = player.last_updated;
                 }
             });
@@ -957,9 +959,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const fairFightScore = ffScores[memberID] || 'Unknown';
                 const lastUpdatedTimestamp = lastUpdated[memberID];
 
-                const rawEstimatedStat = (fairFightScore !== 'Unknown' && fairFightScore > 0)
-                    ? calculateStat(myTotalStats, fairFightScore)
-                    : 'N/A';
+                // Use FF Scouter's precise battle stats estimate instead of calculating
+                const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
                 const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
                 
                 const lastUpdatedDate = lastUpdatedTimestamp 
@@ -1059,9 +1060,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const memberExportData = memberIDs.map(memberID => {
                     const member = membersObject[memberID];
                     const fairFightScore = ffScores[memberID] || 'Unknown';
-                    const rawEstimatedStat = (fairFightScore !== 'Unknown' && fairFightScore > 0)
-                        ? calculateStat(myTotalStats, fairFightScore)
-                        : 'N/A';
+                    // Use FF Scouter's precise battle stats estimate instead of calculating
+                    const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
                     
                     return {
                         memberID,
@@ -1109,7 +1109,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Add detailed stats collection functionality
             document.getElementById('collectDetailedStatsBtn').addEventListener('click', () => {
-                handleDetailedStatsCollection(memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID);
+                handleDetailedStatsCollection(memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID);
             });
         } catch (error) {
             console.error("An error occurred:", error.message);
@@ -1133,7 +1133,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let detailedStatsCacheTimestamp = 0;
     const DETAILED_STATS_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
-    const handleDetailedStatsCollection = async (memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID) => {
+    const handleDetailedStatsCollection = async (memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID) => {
         console.log("--- Starting Detailed Stats Collection ---");
         const startTime = performance.now();
 
@@ -1176,7 +1176,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (detailedStatsCache[cacheKey] && (now - detailedStatsCacheTimestamp) < DETAILED_STATS_CACHE_TTL) {
                 console.log(`Using cached detailed stats for faction ${factionID}`);
-                displayDetailedStatsTable(detailedStatsCache[cacheKey], memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID, 0, true);
+                displayDetailedStatsTable(detailedStatsCache[cacheKey], memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID, 0, true);
                 return;
             }
 
@@ -1315,7 +1315,7 @@ document.addEventListener('DOMContentLoaded', () => {
             detailedStatsCacheTimestamp = now;
 
             // Display the detailed stats table
-            displayDetailedStatsTable(detailedStats, memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID, totalTime, false);
+            displayDetailedStatsTable(detailedStats, memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID, totalTime, false);
 
         } catch (error) {
             console.error("Error collecting detailed stats:", error);
@@ -1331,16 +1331,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    const displayDetailedStatsTable = (detailedStats, memberIDs, membersObject, ffScores, myTotalStats, factionName, factionID, totalTime, wasCached = false) => {
+    const displayDetailedStatsTable = (detailedStats, memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID, totalTime, wasCached = false) => {
         const resultsContainer = document.getElementById('battle-stats-results');
         
         // Create table data
         const tableData = memberIDs.map(memberID => {
             const member = membersObject[memberID];
             const fairFightScore = ffScores[memberID] || 'Unknown';
-            const rawEstimatedStat = (fairFightScore !== 'Unknown' && fairFightScore > 0)
-                ? calculateStat(myTotalStats, fairFightScore)
-                : 'N/A';
+            // Use FF Scouter's precise battle stats estimate instead of calculating
+            const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
             
             const personalStats = detailedStats[memberID]?.personalstats;
             const stats = {
