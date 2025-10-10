@@ -11,15 +11,24 @@
         <h1>War Payout Calculator</h1>
         <p class="description">Calculate and distribute war payouts with advanced options and member statistics.</p>
         
-        <!-- Faction ID Input -->
-        <div class="input-section">
+        <!-- Faction ID Input (Hidden - auto-filled) -->
+        <div class="input-section" style="display: none;">
             <label for="factionId">Faction ID:</label>
-            <input type="text" id="factionId" placeholder="Enter your faction ID">
+            <input type="text" id="factionId" placeholder="Will auto-fill from your API key">
         </div>
 
         <!-- War Selection -->
         <div class="input-section" style="margin-bottom: 20px;">
-            <button id="fetchWarsButton" class="btn btn-primary" style="margin-bottom: 10px;" type="button">Fetch Wars</button>
+            <!-- Instruction Message (shown when no API key) -->
+            <div id="apiKeyInstructionMessage" style="padding: 15px; background-color: #2a2a2a; border-left: 4px solid #4CAF50; border-radius: 4px; margin-bottom: 15px;">
+                <p style="margin: 0; color: #e0e0e0; font-size: 14px;">
+                    <strong>👋 Welcome!</strong> Please enter your Torn API key in the sidebar to get started.
+                </p>
+                <p style="margin: 5px 0 0 0; color: #b0b0b0; font-size: 13px;">
+                    Your wars will load automatically once your API key is entered.
+                </p>
+            </div>
+            
             <div id="warSelectorContainer" style="display: none; margin-bottom: 0;">
                 <label for="warSelector" style="display: inline-block;">Select War:</label>
                 <select id="warSelector" style="margin-top: 6px; margin-bottom: 10px;">
@@ -295,6 +304,6 @@
         </div>
     </div>
     
-    <script src="../tools/war-report-2.0/war-report.js?v=fix-rounding"></script>
+    <script src="../tools/war-report-2.0/war-report.js?v=add-instruction"></script>
 </body>
 </html> 

@@ -395,7 +395,15 @@ function initWarReport2() {
         window.logToolUsage('war-report-2.0');
     }
     
-    const fetchWarsBtn = document.getElementById('fetchWarsButton');
+    // Auto-fetch wars if API key is already present
+    setTimeout(() => {
+        const apiKey = globalApiKeyInput.value.trim();
+        if (apiKey) {
+            console.log('[WAR REPORT 2.0] API key found on page load, auto-fetching faction and wars...');
+            autoFetchFactionAndWars(apiKey);
+        }
+    }, 500);
+    
     const warSelector = document.getElementById('warSelector');
     const warSelectorContainer = document.getElementById('warSelectorContainer');
     const fetchDataContainer = document.getElementById('fetchDataContainer');
@@ -405,7 +413,6 @@ function initWarReport2() {
     const exportPayoutBtn = document.getElementById('exportPayoutCSV');
 
     console.log('[WAR REPORT 2.0] DOM elements found:', {
-        fetchWarsBtn: !!fetchWarsBtn,
         warSelector: !!warSelector,
         warSelectorContainer: !!warSelectorContainer,
         fetchDataContainer: !!fetchDataContainer,
@@ -423,65 +430,119 @@ function initWarReport2() {
         exportPayoutBtn.addEventListener('click', exportPayoutToCSV);
     }
 
-    // Fetch Wars button logic
-    if (fetchWarsBtn && factionIdInput && warSelector && warSelectorContainer) {
-        console.log('[WAR REPORT 2.0] Adding click listener to fetch wars button');
-        fetchWarsBtn.addEventListener('click', async () => {
-            console.log('[WAR REPORT 2.0] Fetch Wars button clicked.');
-            warSelectorContainer.style.display = 'none';
-            if (fetchDataContainer) fetchDataContainer.style.display = 'none';
-            warSelector.innerHTML = '';
-            const factionId = factionIdInput.value.trim();
-            if (!factionId) {
-                alert('Please enter your Faction ID.');
-                return;
-            }
-            
-            // Get API key from global input
-            const globalApiKeyInput = document.getElementById('globalApiKey');
-            const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
-            if (!apiKey) {
-                alert('Please enter your API key in the sidebar.');
-                return;
-            }
-            
+    // Auto-fetch faction ID and wars when API key is available
+    const autoFetchFactionAndWars = async () => {
+        const globalApiKeyInput = document.getElementById('globalApiKey');
+        const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
+        
+        console.log('[WAR REPORT 2.0] autoFetchFactionAndWars called, API key length:', apiKey.length);
+        
+        if (apiKey && factionIdInput) {
             try {
-                warSelector.innerHTML = '<option>Loading...</option>';
-                const url = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
-                console.log('[WAR REPORT 2.0] Fetching wars from:', url);
-                const response = await fetch(url);
+                console.log('[WAR REPORT 2.0] Auto-fetching faction ID and wars...');
+                const response = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
                 const data = await response.json();
                 
+                console.log('[WAR REPORT 2.0] API response:', data);
+                
                 if (data.error) {
-                    alert('Error fetching wars: ' + data.error.error);
-                    warSelector.innerHTML = '';
+                    console.error('API Error fetching user data:', data.error);
                     return;
                 }
-                const wars = data.rankedwars || [];
-                if (!wars.length) {
-                    alert('No wars found for this faction.');
-                    warSelector.innerHTML = '';
-                    return;
+                
+                // Extract faction ID from nested faction object
+                const factionId = data.faction?.faction_id || data.faction_id;
+                if (factionId) {
+                    factionIdInput.value = factionId;
+                    console.log(`[WAR REPORT 2.0] Auto-filled faction ID: ${factionId}`);
+                    
+                    // Now auto-fetch the wars
+                    await autoFetchWars(factionId, apiKey);
+                } else {
+                    console.log('[WAR REPORT 2.0] No faction_id found in response');
                 }
-                warSelector.innerHTML = wars.map(war => {
-                    const start = new Date(war.start * 1000).toLocaleDateString();
-                    const enemy = war.factions?.find(f => f.id != factionId)?.name || 'Unknown';
-                    return `<option value="${war.id}">${enemy} (${start})</option>`;
-                }).join('');
-                warSelectorContainer.style.display = '';
-                // Show Fetch War Data button immediately when wars are loaded
-                if (fetchDataContainer) {
-                    fetchDataContainer.style.display = '';
-                }
-                console.log('[WAR REPORT 2.0] Wars loaded and selector shown.');
-            } catch (e) {
-                alert('Failed to fetch wars: ' + e.message);
-                warSelector.innerHTML = '';
+            } catch (error) {
+                console.error('Error auto-fetching faction ID:', error);
             }
+        } else {
+            console.log('[WAR REPORT 2.0] Skipping auto-fetch - API key:', !!apiKey, 'factionIdInput:', !!factionIdInput);
+        }
+    };
+
+    // Auto-fetch wars when faction ID is available
+    const autoFetchWars = async (factionId, apiKey) => {
+        try {
+            console.log(`[WAR REPORT 2.0] Auto-fetching wars for faction ${factionId}...`);
+            warSelector.innerHTML = '<option>Loading wars...</option>';
+            warSelectorContainer.style.display = 'block';
+            
+            const url = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
+            const warsResponse = await fetch(url);
+            const warsData = await warsResponse.json();
+            
+            if (warsData.error) {
+                console.error('API Error fetching wars:', warsData.error);
+                warSelector.innerHTML = '<option>Error loading wars</option>';
+                return;
+            }
+            
+            const wars = warsData.rankedwars || [];
+            if (wars.length === 0) {
+                warSelector.innerHTML = '<option>No wars found</option>';
+                return;
+            }
+            
+            // Populate war selector - use the OLD working code
+            warSelector.innerHTML = wars.map(war => {
+                const start = new Date(war.start * 1000).toLocaleDateString();
+                const enemy = war.factions?.find(f => f.id != factionId)?.name || 'Unknown';
+                return `<option value="${war.id}">${enemy} (${start})</option>`;
+            }).join('');
+            
+            // Show Fetch War Data button immediately when wars are loaded
+            if (fetchDataContainer) {
+                fetchDataContainer.style.display = '';
+            }
+            
+            console.log(`[WAR REPORT 2.0] Loaded ${wars.length} wars`);
+        } catch (error) {
+            console.error('Error auto-fetching wars:', error);
+            warSelector.innerHTML = '<option>Error loading wars</option>';
+        }
+    };
+
+    // Auto-fetch when API key changes (with debouncing)
+    let autoFetchTimeout;
+    const globalApiKeyInput = document.getElementById('globalApiKey');
+    const apiKeyInstructionMessage = document.getElementById('apiKeyInstructionMessage');
+    
+    if (globalApiKeyInput) {
+        globalApiKeyInput.addEventListener('input', () => {
+            clearTimeout(autoFetchTimeout);
+            autoFetchTimeout = setTimeout(autoFetchFactionAndWars, 1000); // Wait 1 second after user stops typing
         });
-    } else {
-        console.error('[WAR REPORT 2.0] Missing required DOM elements for fetch wars functionality');
+        globalApiKeyInput.addEventListener('blur', autoFetchFactionAndWars);
     }
+    
+    // Hide instruction message when API key is entered
+    if (globalApiKeyInput && apiKeyInstructionMessage) {
+        const checkApiKeyAndToggleMessage = () => {
+            const apiKey = globalApiKeyInput.value.trim();
+            if (apiKey) {
+                apiKeyInstructionMessage.style.display = 'none';
+            } else {
+                apiKeyInstructionMessage.style.display = 'block';
+            }
+        };
+        
+        // Check on page load
+        checkApiKeyAndToggleMessage();
+        
+        // Check when API key changes
+        globalApiKeyInput.addEventListener('input', checkApiKeyAndToggleMessage);
+    }
+
+    // Manual fetch wars button removed - now handled by auto-fetch on page load
 
     // Show Fetch War Data button when a war is selected
     if (warSelector && fetchDataContainer) {
