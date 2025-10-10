@@ -626,15 +626,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Save API key to localStorage on input change
         globalApiKeyInput.addEventListener('input', () => {
-            localStorage.setItem('tornApiKey', globalApiKeyInput.value);
-            console.log('API Key updated in localStorage.');
+            const apiKeyValue = globalApiKeyInput.value || '';
+            localStorage.setItem('tornApiKey', apiKeyValue);
+            console.log('API Key updated in localStorage:', apiKeyValue.length, 'characters');
             
             // Dispatch custom event for War Report 2.0 to listen to
             const event = new CustomEvent('apiKeyUpdated', {
-                detail: { apiKey: globalApiKeyInput.value }
+                detail: { apiKey: apiKeyValue }
             });
             window.dispatchEvent(event);
-            console.log('Dispatched apiKeyUpdated event with:', globalApiKeyInput.value.substring(0, 8) + '...');
+            console.log('Dispatched apiKeyUpdated event with:', apiKeyValue.substring(0, Math.min(8, apiKeyValue.length)) + '... (length:', apiKeyValue.length + ')');
         });
     }
 
