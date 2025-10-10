@@ -557,28 +557,24 @@ function initWarReport2() {
         }
     }, 1000);
     
-    // Listen for typing in the sidebar API key input (with debouncing)
+    // Listen for API key updates from the main app (with debouncing)
     let typingTimeout;
-    const sidebarApiKeyInput = document.getElementById('globalApiKey');
-    if (sidebarApiKeyInput) {
-        sidebarApiKeyInput.addEventListener('input', () => {
-            // Clear any existing timeout
-            clearTimeout(typingTimeout);
-            
-            // Wait 1 second after user stops typing before checking
-            typingTimeout = setTimeout(() => {
-                const apiKey = sidebarApiKeyInput.value.trim();
-                if (apiKey) {
-                    // Save to localStorage (like the main app does)
-                    localStorage.setItem('tornApiKey', apiKey);
-                    
-                    // Hide welcome message and fetch wars
-                    checkApiKeyAndToggleMessage();
-                    autoFetchFactionAndWars(apiKey);
-                }
-            }, 1000);
-        });
-    }
+    window.addEventListener('apiKeyUpdated', (event) => {
+        // Clear any existing timeout
+        clearTimeout(typingTimeout);
+        
+        // Wait 1 second after user stops typing before checking
+        typingTimeout = setTimeout(() => {
+            const apiKey = event.detail.apiKey.trim();
+            if (apiKey) {
+                console.log('[WAR REPORT 2.0] API key updated via custom event:', apiKey.substring(0, 8) + '...');
+                
+                // Hide welcome message and fetch wars
+                checkApiKeyAndToggleMessage();
+                autoFetchFactionAndWars(apiKey);
+            }
+        }, 1000);
+    });
 
     // Manual fetch wars button removed - now handled by auto-fetch on page load
 

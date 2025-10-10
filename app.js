@@ -628,6 +628,11 @@ document.addEventListener('DOMContentLoaded', () => {
         globalApiKeyInput.addEventListener('input', () => {
             localStorage.setItem('tornApiKey', globalApiKeyInput.value);
             console.log('API Key updated in localStorage.');
+            
+            // Dispatch custom event for War Report 2.0 to listen to
+            window.dispatchEvent(new CustomEvent('apiKeyUpdated', {
+                detail: { apiKey: globalApiKeyInput.value }
+            }));
         });
     }
 
