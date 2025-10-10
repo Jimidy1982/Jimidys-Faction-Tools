@@ -395,9 +395,14 @@ function initWarReport2() {
         window.logToolUsage('war-report-2.0');
     }
     
+    // Function to get API key from localStorage (like the main app does)
+    const getApiKeyFromStorage = () => {
+        return localStorage.getItem('tornApiKey');
+    };
+    
     // Auto-fetch wars if API key is already present
     setTimeout(() => {
-        const apiKey = globalApiKeyInput.value.trim();
+        const apiKey = getApiKeyFromStorage();
         if (apiKey) {
             console.log('[WAR REPORT 2.0] API key found on page load, auto-fetching faction and wars...');
             autoFetchFactionAndWars(apiKey);
@@ -513,34 +518,44 @@ function initWarReport2() {
 
     // Auto-fetch when API key changes (with debouncing)
     let autoFetchTimeout;
-    const globalApiKeyInput = document.getElementById('globalApiKey');
     const apiKeyInstructionMessage = document.getElementById('apiKeyInstructionMessage');
     
-    if (globalApiKeyInput) {
-        globalApiKeyInput.addEventListener('input', () => {
-            clearTimeout(autoFetchTimeout);
-            autoFetchTimeout = setTimeout(autoFetchFactionAndWars, 1000); // Wait 1 second after user stops typing
-        });
-        globalApiKeyInput.addEventListener('blur', autoFetchFactionAndWars);
-    }
-    
-    // Hide instruction message when API key is entered
-    if (globalApiKeyInput && apiKeyInstructionMessage) {
-        const checkApiKeyAndToggleMessage = () => {
-            const apiKey = globalApiKeyInput.value.trim();
+    // Function to check API key and toggle message
+    const checkApiKeyAndToggleMessage = () => {
+        const apiKey = getApiKeyFromStorage();
+        if (apiKeyInstructionMessage) {
             if (apiKey) {
                 apiKeyInstructionMessage.style.display = 'none';
             } else {
                 apiKeyInstructionMessage.style.display = 'block';
             }
-        };
-        
-        // Check on page load
-        checkApiKeyAndToggleMessage();
-        
-        // Check when API key changes
-        globalApiKeyInput.addEventListener('input', checkApiKeyAndToggleMessage);
-    }
+        }
+    };
+    
+    // Check on page load
+    checkApiKeyAndToggleMessage();
+    
+    // Monitor localStorage changes for API key updates
+    window.addEventListener('storage', (e) => {
+        if (e.key === 'tornApiKey') {
+            checkApiKeyAndToggleMessage();
+            clearTimeout(autoFetchTimeout);
+            autoFetchTimeout = setTimeout(() => {
+                const apiKey = getApiKeyFromStorage();
+                if (apiKey) {
+                    autoFetchFactionAndWars(apiKey);
+                }
+            }, 500);
+        }
+    });
+    
+    // Also check periodically in case localStorage was updated from same tab
+    setInterval(() => {
+        const apiKey = getApiKeyFromStorage();
+        if (apiKey) {
+            checkApiKeyAndToggleMessage();
+        }
+    }, 1000);
 
     // Manual fetch wars button removed - now handled by auto-fetch on page load
 
