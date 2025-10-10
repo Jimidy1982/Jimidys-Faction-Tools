@@ -1187,7 +1187,7 @@ function addThousandSeparatorInput(input) {
             
             // Format with commas as they type (but don't round decimals yet)
             let numericValue = parseFloat(raw);
-            input.dataset.raw = Math.round(numericValue).toString();
+            input.dataset.raw = Math.round(numericValue * 100) / 100; // Preserve 2 decimal places
             
             // Format with thousand separators but preserve decimals while typing
             const parts = raw.split('.');
@@ -1217,9 +1217,10 @@ function addThousandSeparatorInput(input) {
         // Apply multiplier
         let numericValue = parseFloat(raw) * multiplier;
         
-        // Format with thousand separators (round for display)
-        input.value = Math.round(numericValue).toLocaleString();
-        input.dataset.raw = Math.round(numericValue).toString();
+        // Format with thousand separators (round for display but preserve precision)
+        let roundedValue = Math.round(numericValue * 100) / 100; // Preserve 2 decimal places
+        input.value = Math.round(roundedValue).toLocaleString();
+        input.dataset.raw = Math.round(roundedValue).toString();
     };
     
     input.addEventListener('input', processInput);
