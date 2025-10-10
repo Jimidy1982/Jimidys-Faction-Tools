@@ -1175,9 +1175,26 @@ function addThousandSeparatorInput(input) {
         // Check if user typed a letter (k, m, b) - if so, format immediately
         const hasLetter = value.includes('k') || value.includes('m') || value.includes('b');
         
-        // Only process if user typed a letter or on blur
+        // If it's an input event (not blur) and no letter shortcuts
         if (e.type === 'input' && !hasLetter) {
-            return; // Allow free typing of numbers and decimals, don't format yet
+            // Still update dataset.raw so calculations use the current value
+            let raw = value.replace(/[^\d.]/g, '');
+            if (raw === '') {
+                input.value = '';
+                input.dataset.raw = '0';
+                return;
+            }
+            
+            // Format with commas as they type (but don't round decimals yet)
+            let numericValue = parseFloat(raw);
+            input.dataset.raw = Math.round(numericValue).toString();
+            
+            // Format with thousand separators but preserve decimals while typing
+            const parts = raw.split('.');
+            const integerPart = parseInt(parts[0] || '0').toLocaleString();
+            const decimalPart = parts[1] !== undefined ? '.' + parts[1] : '';
+            input.value = integerPart + decimalPart;
+            return;
         }
         
         // Handle shortcuts (k, m, b)
@@ -2665,7 +2682,7 @@ function renderRespectPayoutTable() {
     } else {
         console.log('🚀 [THRESHOLD DEBUG] Thresholds DISABLED - using original calculations');
     }
-
+    
     // Calculate final total payout
     let totalPayout = playersWithRespectPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
     
