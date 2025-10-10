@@ -437,8 +437,8 @@ function initWarReport2() {
 
     // Auto-fetch faction ID and wars when API key is available
     const autoFetchFactionAndWars = async () => {
-        const globalApiKeyInput = document.getElementById('globalApiKey');
-        const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
+            const globalApiKeyInput = document.getElementById('globalApiKey');
+            const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
         
         console.log('[WAR REPORT 2.0] autoFetchFactionAndWars called, API key length:', apiKey.length);
         
@@ -452,9 +452,9 @@ function initWarReport2() {
                 
                 if (data.error) {
                     console.error('API Error fetching user data:', data.error);
-                    return;
-                }
-                
+                return;
+            }
+            
                 // Extract faction ID from nested faction object
                 const factionId = data.faction?.faction_id || data.faction_id;
                 if (factionId) {
@@ -481,33 +481,33 @@ function initWarReport2() {
             warSelector.innerHTML = '<option>Loading wars...</option>';
             warSelectorContainer.style.display = 'block';
             
-            const url = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
+                const url = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
             const warsResponse = await fetch(url);
             const warsData = await warsResponse.json();
             
             if (warsData.error) {
                 console.error('API Error fetching wars:', warsData.error);
                 warSelector.innerHTML = '<option>Error loading wars</option>';
-                return;
-            }
+                    return;
+                }
             
             const wars = warsData.rankedwars || [];
             if (wars.length === 0) {
                 warSelector.innerHTML = '<option>No wars found</option>';
-                return;
-            }
+                    return;
+                }
             
             // Populate war selector - use the OLD working code
-            warSelector.innerHTML = wars.map(war => {
-                const start = new Date(war.start * 1000).toLocaleDateString();
-                const enemy = war.factions?.find(f => f.id != factionId)?.name || 'Unknown';
-                return `<option value="${war.id}">${enemy} (${start})</option>`;
-            }).join('');
+                warSelector.innerHTML = wars.map(war => {
+                    const start = new Date(war.start * 1000).toLocaleDateString();
+                    const enemy = war.factions?.find(f => f.id != factionId)?.name || 'Unknown';
+                    return `<option value="${war.id}">${enemy} (${start})</option>`;
+                }).join('');
             
-            // Show Fetch War Data button immediately when wars are loaded
-            if (fetchDataContainer) {
-                fetchDataContainer.style.display = '';
-            }
+                // Show Fetch War Data button immediately when wars are loaded
+                if (fetchDataContainer) {
+                    fetchDataContainer.style.display = '';
+                }
             
             console.log(`[WAR REPORT 2.0] Loaded ${wars.length} wars`);
         } catch (error) {
@@ -526,7 +526,7 @@ function initWarReport2() {
         if (apiKeyInstructionMessage) {
             if (apiKey) {
                 apiKeyInstructionMessage.style.display = 'none';
-            } else {
+    } else {
                 apiKeyInstructionMessage.style.display = 'block';
             }
         }
@@ -560,6 +560,8 @@ function initWarReport2() {
     // Listen for API key updates from the main app (with debouncing)
     let typingTimeout;
     window.addEventListener('apiKeyUpdated', (event) => {
+        console.log('[WAR REPORT 2.0] Received apiKeyUpdated event:', event.detail);
+        
         // Clear any existing timeout
         clearTimeout(typingTimeout);
         
@@ -575,6 +577,8 @@ function initWarReport2() {
             }
         }, 1000);
     });
+    
+    console.log('[WAR REPORT 2.0] Event listener attached for apiKeyUpdated');
 
     // Manual fetch wars button removed - now handled by auto-fetch on page load
 
