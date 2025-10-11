@@ -435,6 +435,28 @@ function initWarReport2() {
         exportPayoutBtn.addEventListener('click', exportPayoutToCSV);
     }
 
+    // Get message elements early
+    const apiKeyInstructionMessage = document.getElementById('apiKeyInstructionMessage');
+    const apiKeyErrorMessage = document.getElementById('apiKeyErrorMessage');
+    
+    // Function to show API key error
+    const showApiKeyError = (errorText) => {
+        if (apiKeyInstructionMessage) {
+            apiKeyInstructionMessage.style.display = 'none';
+        }
+        if (apiKeyErrorMessage) {
+            apiKeyErrorMessage.style.display = 'block';
+            console.log('[WAR REPORT 2.0] Showing API key error:', errorText);
+        }
+    };
+    
+    // Function to hide API key error
+    const hideApiKeyError = () => {
+        if (apiKeyErrorMessage) {
+            apiKeyErrorMessage.style.display = 'none';
+        }
+    };
+
     // Auto-fetch faction ID and wars when API key is available
     const autoFetchFactionAndWars = async () => {
             const globalApiKeyInput = document.getElementById('globalApiKey');
@@ -453,8 +475,8 @@ function initWarReport2() {
                 if (data.error) {
                     console.error('API Error fetching user data:', data.error);
                     showApiKeyError(data.error.error || 'Unknown error');
-                    return;
-                }
+                return;
+            }
             
                 // Extract faction ID from nested faction object
                 const factionId = data.faction?.faction_id || data.faction_id;
@@ -522,26 +544,6 @@ function initWarReport2() {
 
     // Auto-fetch when API key changes (with debouncing)
     let autoFetchTimeout;
-    const apiKeyInstructionMessage = document.getElementById('apiKeyInstructionMessage');
-    const apiKeyErrorMessage = document.getElementById('apiKeyErrorMessage');
-    
-    // Function to show API key error
-    const showApiKeyError = (errorText) => {
-        if (apiKeyInstructionMessage) {
-            apiKeyInstructionMessage.style.display = 'none';
-        }
-        if (apiKeyErrorMessage) {
-            apiKeyErrorMessage.style.display = 'block';
-            console.log('[WAR REPORT 2.0] Showing API key error:', errorText);
-        }
-    };
-    
-    // Function to hide API key error
-    const hideApiKeyError = () => {
-        if (apiKeyErrorMessage) {
-            apiKeyErrorMessage.style.display = 'none';
-        }
-    };
     
     // Function to check API key and toggle message
     const checkApiKeyAndToggleMessage = () => {
@@ -549,7 +551,7 @@ function initWarReport2() {
         if (apiKeyInstructionMessage) {
             if (apiKey) {
                 apiKeyInstructionMessage.style.display = 'none';
-            } else {
+    } else {
                 apiKeyInstructionMessage.style.display = 'block';
                 hideApiKeyError(); // Hide error when no key present
             }
