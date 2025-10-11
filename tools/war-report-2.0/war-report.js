@@ -535,50 +535,32 @@ function initWarReport2() {
     // Check on page load
     checkApiKeyAndToggleMessage();
     
-    // Monitor localStorage changes for API key updates
-    window.addEventListener('storage', (e) => {
-        if (e.key === 'tornApiKey') {
-            checkApiKeyAndToggleMessage();
-            clearTimeout(autoFetchTimeout);
-            autoFetchTimeout = setTimeout(() => {
-                const apiKey = getApiKeyFromStorage();
+    // Listen for API key updates from the main app (with debouncing)
+    // Only attach event listener once to prevent duplicates
+    if (!window._warReportApiKeyListenerAttached) {
+        let typingTimeout;
+        window.addEventListener('apiKeyUpdated', (event) => {
+            console.log('[WAR REPORT 2.0] Received apiKeyUpdated event:', event.detail);
+            
+            // Clear any existing timeout
+            clearTimeout(typingTimeout);
+            
+            // Wait 1 second after user stops typing before checking
+            typingTimeout = setTimeout(() => {
+                const apiKey = event.detail.apiKey.trim();
                 if (apiKey) {
+                    console.log('[WAR REPORT 2.0] API key updated via custom event:', apiKey.substring(0, 8) + '...');
+                    
+                    // Hide welcome message and fetch wars
+                    checkApiKeyAndToggleMessage();
                     autoFetchFactionAndWars(apiKey);
                 }
-            }, 500);
-        }
-    });
-    
-    // Also check periodically in case localStorage was updated from same tab
-    setInterval(() => {
-        const apiKey = getApiKeyFromStorage();
-        if (apiKey) {
-            checkApiKeyAndToggleMessage();
-        }
-    }, 1000);
-    
-    // Listen for API key updates from the main app (with debouncing)
-    let typingTimeout;
-    window.addEventListener('apiKeyUpdated', (event) => {
-        console.log('[WAR REPORT 2.0] Received apiKeyUpdated event:', event.detail);
+            }, 1000);
+        });
         
-        // Clear any existing timeout
-        clearTimeout(typingTimeout);
-        
-        // Wait 1 second after user stops typing before checking
-        typingTimeout = setTimeout(() => {
-            const apiKey = event.detail.apiKey.trim();
-            if (apiKey) {
-                console.log('[WAR REPORT 2.0] API key updated via custom event:', apiKey.substring(0, 8) + '...');
-                
-                // Hide welcome message and fetch wars
-                checkApiKeyAndToggleMessage();
-                autoFetchFactionAndWars(apiKey);
-            }
-        }, 1000);
-    });
-    
-    console.log('[WAR REPORT 2.0] Event listener attached for apiKeyUpdated');
+        window._warReportApiKeyListenerAttached = true;
+        console.log('[WAR REPORT 2.0] Event listener attached for apiKeyUpdated');
+    }
 
     // Manual fetch wars button removed - now handled by auto-fetch on page load
 
