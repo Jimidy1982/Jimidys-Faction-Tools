@@ -29,6 +29,16 @@
                 </p>
             </div>
             
+            <!-- Error Message (shown when API key is invalid) -->
+            <div id="apiKeyErrorMessage" style="display: none; padding: 15px; background-color: #2a2a2a; border-left: 4px solid #f44336; border-radius: 4px; margin-bottom: 15px;">
+                <p style="margin: 0; color: #e0e0e0; font-size: 14px;">
+                    <strong>❌ Invalid API Key</strong>
+                </p>
+                <p style="margin: 5px 0 0 0; color: #b0b0b0; font-size: 13px;">
+                    The API key you entered is incorrect. Please check your API key in the sidebar and try again.
+                </p>
+            </div>
+            
             <div id="warSelectorContainer" style="display: none; margin-bottom: 0;">
                 <label for="warSelector" style="display: inline-block;">Select War:</label>
                 <select id="warSelector" style="margin-top: 6px; margin-bottom: 10px;">
@@ -304,6 +314,6 @@
         </div>
     </div>
     
-    <script src="../tools/war-report-2.0/war-report.js?v=fix-duplicates"></script>
+    <script src="../tools/war-report-2.0/war-report.js?v=add-error-msg"></script>
 </body>
 </html> 
