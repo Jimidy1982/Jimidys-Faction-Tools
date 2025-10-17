@@ -39,15 +39,15 @@
                 </p>
             </div>
             
-            <div id="warSelectorContainer" style="display: none; margin-bottom: 0;">
-                <label for="warSelector" style="display: inline-block;">Select War:</label>
-                <select id="warSelector" style="margin-top: 6px; margin-bottom: 10px;">
-                    <option value="">Choose a war...</option>
-                </select>
-                <div id="fetchDataContainer" style="display: none;">
-                    <button id="fetchData" class="btn btn-success" type="button">Fetch War Data</button>
-                    <span id="loadingWarData" class="loading-text" style="display: none; margin-top: 8px;">Fetching war data<span class="loading-dots">...</span></span>
+            <!-- War List Container -->
+            <div id="warListContainer" style="display: none;">
+                <h3 style="color: #e0e0e0; margin-bottom: 15px;">Select a War:</h3>
+                <div id="warList" style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 15px;">
+                    <!-- War cards will be inserted here dynamically -->
                 </div>
+                <button id="loadMoreWars" class="btn btn-secondary" type="button" style="width: 100%; display: none;">
+                    Load 10 More Wars
+                </button>
             </div>
         </div>
 

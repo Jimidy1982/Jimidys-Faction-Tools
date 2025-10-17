@@ -1,6 +1,4 @@
-console.log('[WAR REPORT 2.0] war-report.js LOADED');
 // War Report 2.0 - Full Version
-console.log('[WAR REPORT 2.0] Script loaded');
 
 // Helper to sleep for ms milliseconds
 function sleep(ms) {
@@ -228,7 +226,7 @@ function saveRespectPayoutSettings() {
         payoutMode: document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio'
     };
     localStorage.setItem('respectPayoutSettings', JSON.stringify(settings));
-    console.log('Saved respect payout settings:', settings);
+
 }
 
 // Functions to save and load hit payout settings
@@ -250,7 +248,7 @@ function saveHitPayoutSettings() {
         payoutMode: document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio'
     };
     localStorage.setItem('hitPayoutSettings', JSON.stringify(settings));
-    console.log('Saved hit payout settings:', settings);
+
 }
 
 function loadHitPayoutSettings() {
@@ -276,7 +274,7 @@ function loadHitPayoutSettings() {
                 const payoutModeRadio = document.querySelector(`input[name="hitPayoutMode"][value="${settings.payoutMode}"]`);
                 if (payoutModeRadio) payoutModeRadio.checked = true;
             }
-            console.log('Loaded saved hit payout settings:', settings);
+
         } catch (error) {
             console.error('Error loading hit payout settings:', error);
         }
@@ -293,9 +291,9 @@ function toggleChainGroup() {
     });
     
     if (chainGroupLinked) {
-        console.log('Chain group linked - all options will sync together');
+
     } else {
-        console.log('Chain group unlinked - options can be edited individually');
+
     }
     
     // Save settings and update table
@@ -312,8 +310,7 @@ function handleLinkedOptionChange(changedCheckboxId) {
         chainGroupOptions.forEach(optionId => {
             document.getElementById(optionId).checked = isChecked;
         });
-        
-        console.log('Linked group changed - all options set to:', isChecked);
+
     }
 }
 
@@ -370,8 +367,7 @@ function loadRespectPayoutSettings() {
                     updateChainButtonState(optionId);
                 });
             }
-            
-            console.log('Loaded saved respect payout settings:', settings);
+
         } catch (error) {
             console.error('Error loading respect payout settings:', error);
         }
@@ -381,9 +377,6 @@ function loadRespectPayoutSettings() {
 let tabsInitialized = false;
 
 function initWarReport2() {
-    console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
-    console.log('[WAR REPORT 2.0] Initialized');
-    
     // Load saved respect payout settings
     loadRespectPayoutSettings();
     
@@ -404,28 +397,29 @@ function initWarReport2() {
     setTimeout(() => {
         const apiKey = getApiKeyFromStorage();
         if (apiKey) {
-            console.log('[WAR REPORT 2.0] API key found on page load, auto-fetching faction and wars...');
             autoFetchFactionAndWars(apiKey);
         }
     }, 500);
     
-    const warSelector = document.getElementById('warSelector');
-    const warSelectorContainer = document.getElementById('warSelectorContainer');
-    const fetchDataContainer = document.getElementById('fetchDataContainer');
-    const fetchDataBtn = document.getElementById('fetchData');
+    const warListContainer = document.getElementById('warListContainer');
+    const warList = document.getElementById('warList');
+    const loadMoreBtn = document.getElementById('loadMoreWars');
     const factionIdInput = document.getElementById('factionId');
     const exportBtn = document.getElementById('exportCSV');
     const exportPayoutBtn = document.getElementById('exportPayoutCSV');
 
-    console.log('[WAR REPORT 2.0] DOM elements found:', {
-        warSelector: !!warSelector,
-        warSelectorContainer: !!warSelectorContainer,
-        fetchDataContainer: !!fetchDataContainer,
-        fetchDataBtn: !!fetchDataBtn,
-        factionIdInput: !!factionIdInput,
-        exportBtn: !!exportBtn,
-        exportPayoutBtn: !!exportPayoutBtn
-    });
+    // Global state for war list management
+    let allWars = [];
+    let displayedWarCount = 0;
+    const INITIAL_WAR_COUNT = 5;
+    const LOAD_MORE_COUNT = 10;
+    
+    // Global state for chain data
+    let allChains = [];
+    let warChainMatches = new Map(); // Maps war ID to matching chain data
+    
+    // Make warChainMatches globally accessible
+    window.warChainMatches = warChainMatches;
 
     // Export button event listeners
     if (exportBtn) {
@@ -446,7 +440,7 @@ function initWarReport2() {
         }
         if (apiKeyErrorMessage) {
             apiKeyErrorMessage.style.display = 'block';
-            console.log('[WAR REPORT 2.0] Showing API key error:', errorText);
+
         }
     };
     
@@ -462,15 +456,10 @@ function initWarReport2() {
             const globalApiKeyInput = document.getElementById('globalApiKey');
             const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
         
-        console.log('[WAR REPORT 2.0] autoFetchFactionAndWars called, API key length:', apiKey.length);
-        
         if (apiKey && factionIdInput) {
             try {
-                console.log('[WAR REPORT 2.0] Auto-fetching faction ID and wars...');
                 const response = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
                 const data = await response.json();
-                
-                console.log('[WAR REPORT 2.0] API response:', data);
                 
                 if (data.error) {
                     console.error('API Error fetching user data:', data.error);
@@ -482,63 +471,219 @@ function initWarReport2() {
                 const factionId = data.faction?.faction_id || data.faction_id;
                 if (factionId) {
                     factionIdInput.value = factionId;
-                    console.log(`[WAR REPORT 2.0] Auto-filled faction ID: ${factionId}`);
                     
                     // Hide error message on successful fetch
                     hideApiKeyError();
                     
                     // Now auto-fetch the wars
                     await autoFetchWars(factionId, apiKey);
-                } else {
-                    console.log('[WAR REPORT 2.0] No faction_id found in response');
                 }
             } catch (error) {
                 console.error('Error auto-fetching faction ID:', error);
             }
-        } else {
-            console.log('[WAR REPORT 2.0] Skipping auto-fetch - API key:', !!apiKey, 'factionIdInput:', !!factionIdInput);
         }
+    };
+
+    // Helper function to format war dates
+    const formatWarDate = (timestamp) => {
+        const date = new Date(timestamp * 1000);
+        return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric', 
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    };
+
+    // Helper function to determine war status
+    const getWarStatus = (war) => {
+        const now = Date.now() / 1000;
+        if (now < war.start) return 'Upcoming';
+        if (now > war.end) return 'Ended';
+        return 'Ongoing';
+    };
+
+    // Function to create a war card element
+    const createWarCard = (war, factionId) => {
+        const enemy = war.factions?.find(f => String(f.id) !== String(factionId));
+        const enemyName = enemy?.name || 'Unknown';
+        const status = getWarStatus(war);
+        const startDate = formatWarDate(war.start);
+        const endDate = formatWarDate(war.end);
+        
+        const statusColor = status === 'Ongoing' ? '#4CAF50' : status === 'Ended' ? '#999' : '#ffd700';
+        
+        // Check if this war has a matching chain
+        const matchingChain = warChainMatches.get(war.id);
+        
+        const card = document.createElement('div');
+        card.style.cssText = `
+            padding: 15px;
+            background-color: #2a2a2a;
+            border-left: 4px solid ${statusColor};
+            border-radius: 4px;
+            display: grid;
+            grid-template-columns: 1fr 250px auto;
+            align-items: center;
+            gap: 15px;
+            transition: background-color 0.2s;
+        `;
+        card.onmouseover = () => card.style.backgroundColor = '#333';
+        card.onmouseout = () => card.style.backgroundColor = '#2a2a2a';
+        
+        // Check if war is ended (only ended wars can be fetched)
+        const isWarEnded = status === 'Ended';
+        const buttonDisabled = !isWarEnded;
+        const buttonClass = isWarEnded ? 'btn btn-success' : 'btn btn-secondary';
+        const buttonText = isWarEnded ? 'Fetch War Data' : `${status} War`;
+        const buttonStyle = isWarEnded ? 'white-space: nowrap;' : 'white-space: nowrap; cursor: not-allowed; opacity: 0.6;';
+        
+        card.innerHTML = `
+            <div>
+                <div style="color: #ffd700; font-size: 17px; font-weight: bold; margin-bottom: 8px;">
+                    vs ${enemyName}
+                </div>
+                <div style="color: #b0b0b0; font-size: 14px;">
+                    <strong>Start:</strong> ${startDate} | <strong>End:</strong> ${endDate} | <span style="color: ${statusColor}; font-weight: bold;">${status}</span>
+                </div>
+            </div>
+            ${matchingChain && isWarEnded ? `
+                <div style="display: flex; align-items: center; justify-content: flex-start; text-align: left;">
+                    <label style="display: flex; align-items: center; color: #ffd700; font-size: 16px; cursor: pointer; white-space: nowrap;">
+                        <input type="checkbox" class="chain-checkbox" data-war-id="${war.id}" style="accent-color: #ffd700; margin-right: 8px; transform: scale(1.2);">
+                        Include ${matchingChain.chain} Chain
+                    </label>
+                </div>
+            ` : '<div></div>'}
+            <button class="${buttonClass} fetch-war-btn" data-war-id="${war.id}" type="button" style="${buttonStyle}" ${buttonDisabled ? 'disabled' : ''}>
+                ${buttonText}
+            </button>
+        `;
+        
+        return card;
+    };
+
+    // Function to render wars to the list
+    const renderWars = (startIndex, count) => {
+        const warsToShow = allWars.slice(startIndex, startIndex + count);
+        const factionId = factionIdInput.value;
+        
+        warsToShow.forEach(war => {
+            const card = createWarCard(war, factionId);
+            warList.appendChild(card);
+        });
+        
+        displayedWarCount = startIndex + warsToShow.length;
+        
+        // Show/hide "Load More" button
+        if (displayedWarCount < allWars.length) {
+            loadMoreBtn.style.display = 'block';
+        } else {
+            loadMoreBtn.style.display = 'none';
+        }
+        
+    };
+
+    // Function to fetch chain data
+    const fetchChainData = async (factionId, apiKey) => {
+        try {
+            const url = `https://api.torn.com/faction/?selections=chains&key=${apiKey}`;
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data.error) {
+                console.error('API Error fetching chains:', data.error);
+                return [];
+            }
+            
+            // Convert chains object to array
+            const chains = Object.values(data.chains || {});
+            return chains;
+        } catch (error) {
+            console.error('Error fetching chain data:', error);
+            return [];
+        }
+    };
+
+    // Function to match chains to wars
+    const matchChainsToWars = (wars, chains) => {
+        const matches = new Map();
+        
+        wars.forEach(war => {
+            const warStart = war.start;
+            const warEnd = war.end || Math.floor(Date.now() / 1000);
+            
+            // Find chains that:
+            // 1. Started during the war (chain.start >= war.start && chain.start <= war.end)
+            // 2. Ended after the war (chain.end > war.end)
+            const matchingChains = chains.filter(chain => {
+                return chain.start >= warStart && 
+                       chain.start <= warEnd && 
+                       chain.end > warEnd;
+            });
+            
+            if (matchingChains.length > 0) {
+                // If multiple chains match, pick the longest one
+                const longestChain = matchingChains.reduce((longest, current) => 
+                    current.chain > longest.chain ? current : longest
+                );
+                const extension = longestChain.end - warEnd;
+                matches.set(war.id, {
+                    chain: longestChain.chain,
+                    start: longestChain.start,
+                    end: longestChain.end,
+                    extension: extension
+                });
+            }
+        });
+        
+        return matches;
     };
 
     // Auto-fetch wars when faction ID is available
     const autoFetchWars = async (factionId, apiKey) => {
         try {
-            console.log(`[WAR REPORT 2.0] Auto-fetching wars for faction ${factionId}...`);
-            warSelector.innerHTML = '<option>Loading wars...</option>';
-            warSelectorContainer.style.display = 'block';
+
+            warList.innerHTML = '<div style="padding: 15px; color: #b0b0b0;">Loading wars and chains...</div>';
+            warListContainer.style.display = 'block';
             
-                const url = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
-            const warsResponse = await fetch(url);
+            // Fetch both wars and chains in parallel
+            const [warsResponse, chainsData] = await Promise.all([
+                fetch(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`),
+                fetchChainData(factionId, apiKey)
+            ]);
+            
             const warsData = await warsResponse.json();
             
             if (warsData.error) {
                 console.error('API Error fetching wars:', warsData.error);
-                warSelector.innerHTML = '<option>Error loading wars</option>';
-                    return;
-                }
+                warList.innerHTML = '<div style="padding: 15px; color: #f44336;">Error loading wars</div>';
+                return;
+            }
             
             const wars = warsData.rankedwars || [];
             if (wars.length === 0) {
-                warSelector.innerHTML = '<option>No wars found</option>';
-                    return;
-                }
+                warList.innerHTML = '<div style="padding: 15px; color: #b0b0b0;">No wars found</div>';
+                return;
+            }
             
-            // Populate war selector - use the OLD working code
-                warSelector.innerHTML = wars.map(war => {
-                    const start = new Date(war.start * 1000).toLocaleDateString();
-                    const enemy = war.factions?.find(f => f.id != factionId)?.name || 'Unknown';
-                    return `<option value="${war.id}">${enemy} (${start})</option>`;
-                }).join('');
+            // Sort wars by start date (most recent first)
+            allWars = wars.sort((a, b) => b.start - a.start);
+            allChains = chainsData;
             
-                // Show Fetch War Data button immediately when wars are loaded
-                if (fetchDataContainer) {
-                    fetchDataContainer.style.display = '';
-                }
+            // Match chains to wars
+            warChainMatches = matchChainsToWars(allWars, allChains);
+            window.warChainMatches = warChainMatches; // Update global reference
             
-            console.log(`[WAR REPORT 2.0] Loaded ${wars.length} wars`);
+            // Clear the list and render initial wars
+            warList.innerHTML = '';
+            displayedWarCount = 0;
+            renderWars(0, INITIAL_WAR_COUNT);
+
         } catch (error) {
             console.error('Error auto-fetching wars:', error);
-            warSelector.innerHTML = '<option>Error loading wars</option>';
+            warList.innerHTML = '<div style="padding: 15px; color: #f44336;">Error loading wars</div>';
         }
     };
 
@@ -566,8 +711,7 @@ function initWarReport2() {
     if (!window._warReportApiKeyListenerAttached) {
         let typingTimeout;
         window.addEventListener('apiKeyUpdated', (event) => {
-            console.log('[WAR REPORT 2.0] Received apiKeyUpdated event:', event.detail);
-            
+
             // Clear any existing timeout
             clearTimeout(typingTimeout);
             
@@ -575,7 +719,6 @@ function initWarReport2() {
             typingTimeout = setTimeout(() => {
                 const apiKey = event.detail.apiKey.trim();
                 if (apiKey) {
-                    console.log('[WAR REPORT 2.0] API key updated via custom event:', apiKey.substring(0, 8) + '...');
                     
                     // Hide welcome message and fetch wars
                     checkApiKeyAndToggleMessage();
@@ -585,38 +728,44 @@ function initWarReport2() {
         });
         
         window._warReportApiKeyListenerAttached = true;
-        console.log('[WAR REPORT 2.0] Event listener attached for apiKeyUpdated');
+
     }
 
-    // Manual fetch wars button removed - now handled by auto-fetch on page load
+    // Load More Wars button event listener
+    if (loadMoreBtn) {
+        loadMoreBtn.addEventListener('click', () => {
 
-    // Show Fetch War Data button when a war is selected
-    if (warSelector && fetchDataContainer) {
-        warSelector.addEventListener('change', () => {
-            // Only hide the button if the user explicitly clears the selection
-            // (i.e., if there are options available but none selected)
-            if (warSelector.options.length > 1 && !warSelector.value) {
-                fetchDataContainer.style.display = 'none';
-            }
+            renderWars(displayedWarCount, LOAD_MORE_COUNT);
         });
     }
 
-    // Fetch war data button event listener
-    if (fetchDataBtn) {
-        fetchDataBtn.addEventListener('click', handleWarReportFetch);
+    // Event delegation for Fetch War Data buttons on war cards
+    if (warList) {
+        warList.addEventListener('click', (event) => {
+            const fetchBtn = event.target.closest('.fetch-war-btn');
+            if (fetchBtn) {
+                const warId = parseInt(fetchBtn.dataset.warId, 10); // Convert to number!
+
+                // Check if chain extension is selected
+                const chainCheckbox = document.querySelector(`.chain-checkbox[data-war-id="${warId}"]`);
+                const includeChain = chainCheckbox ? chainCheckbox.checked : false;
+
+                handleWarReportFetch(warId, includeChain);
+            }
+        });
     }
 }
 
 // Main function to fetch and process war data
-async function handleWarReportFetch() {
+async function handleWarReportFetch(warId = null, includeChain = false) {
     const startTime = performance.now();
     
     const spinner = document.getElementById('loadingSpinner');
     const resultsSection = document.querySelector('.results-section');
-    const warSelector = document.getElementById('warSelector');
+    const warListContainer = document.getElementById('warListContainer');
     const factionIdInput = document.getElementById('factionId');
 
-    if (!warSelector || !factionIdInput || !spinner || !resultsSection) {
+    if (!factionIdInput || !spinner || !resultsSection) {
         console.error("One or more required elements are missing from the page.");
         return;
     }
@@ -625,7 +774,6 @@ async function handleWarReportFetch() {
     const globalApiKeyInput = document.getElementById('globalApiKey');
     const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
 
-    const warId = warSelector.value;
     const factionId = factionIdInput.value.trim();
 
     if (!apiKey || !warId || !factionId) {
@@ -633,7 +781,10 @@ async function handleWarReportFetch() {
         return;
     }
 
-    console.log(`[WAR REPORT 2.0] Starting war report generation for War ID: ${warId}, Faction ID: ${factionId}`);
+    // Hide the war list when fetching a specific war
+    if (warListContainer) {
+        warListContainer.style.display = 'none';
+    }
 
     // Show progress bar
     const progressContainer = document.getElementById('progressContainer');
@@ -655,8 +806,7 @@ async function handleWarReportFetch() {
 
     try {
         // Step 1: Get ranked war information to determine start/end timestamps
-        console.log('[WAR REPORT 2.0] Fetching ranked war information...');
-        
+
         if (progressContainer) {
             progressMessage.textContent = 'Fetching war information...';
             progressPercentage.textContent = '0%';
@@ -674,8 +824,7 @@ async function handleWarReportFetch() {
 
         // Find the specific war by its ID in the 'rankedwars' array
         const rankedWarsArray = warInfoData.rankedwars || [];
-        console.log(`[WAR REPORT 2.0] Available Ranked Wars from API: ${rankedWarsArray.length} wars`);
-        
+
         const targetWar = rankedWarsArray.find(war => war.id == warId);
         
         if (!targetWar) {
@@ -684,13 +833,15 @@ async function handleWarReportFetch() {
             throw new Error(errorMessage);
         }
 
-        console.log(`[WAR REPORT 2.0] Found war:`, targetWar);
-        const warStartTime = targetWar.start;
-        const warEndTime = targetWar.end || Math.floor(Date.now() / 1000);
+        let warStartTime = targetWar.start;
+        let warEndTime = targetWar.end || Math.floor(Date.now() / 1000);
+        
+        // Check if chain extension is requested
+        if (includeChain && window.warChainMatches && window.warChainMatches.has(warId)) {
+            const chainData = window.warChainMatches.get(warId);
+            warEndTime = chainData.end;
 
-        // Debug: Log the exact timestamps we're using
-        console.log(`🔍 [TIMESTAMP DEBUG] War start: ${warStartTime} (${new Date(warStartTime * 1000).toISOString()})`);
-        console.log(`🔍 [TIMESTAMP DEBUG] War end: ${warEndTime} (${new Date(warEndTime * 1000).toISOString()})`);
+        }
         
         // Calculate war duration and show appropriate message
         const warDuration = warEndTime - warStartTime;
@@ -711,24 +862,12 @@ async function handleWarReportFetch() {
         
         // Ensure war end time is after war start time
         if (warEndTime <= warStartTime) {
-            console.log(`🔍 [TIMESTAMP DEBUG] War end time (${warEndTime}) is before or equal to start time (${warStartTime}), using current time`);
             const currentTime = Math.floor(Date.now() / 1000);
-            console.log(`🔍 [TIMESTAMP DEBUG] Using current time: ${currentTime} (${new Date(currentTime * 1000).toISOString()})`);
         }
         
-        // Debug: Log all wars to see if we have the right one
-        console.log(`🔍 [WAR DEBUG] All wars found:`, rankedWarsArray.map(w => ({
-            id: w.id,
-            start: w.start,
-            start_readable: new Date(w.start * 1000).toISOString(),
-            end: w.end,
-            end_readable: w.end ? new Date(w.end * 1000).toISOString() : 'ongoing',
-            opponent: w.opponent
-        })));
 
         // Step 2: Fetch faction attacks during the war period
-        console.log('[WAR REPORT 2.0] Fetching faction attacks during war period...');
-        
+
         if (progressContainer) {
             progressMessage.textContent = 'Fetching war attacks...';
             progressPercentage.textContent = '0%';
@@ -746,20 +885,17 @@ async function handleWarReportFetch() {
         
         // Add 1-hour buffer to start time to catch attacks initiated just before war start
         let batchFrom = warStartTime - 3600;
-        console.log(`🔍 [TIMESTAMP DEBUG] Fetching attacks from: ${batchFrom} (${new Date(batchFrom * 1000).toISOString()}) to: ${batchTo} (${new Date(batchTo * 1000).toISOString()})`);
         
         // Debug: Log the raw API response structure
-        console.log(`🔍 [API DEBUG] Faction ID being used: ${factionId}`);
+
         let batchCount = 0;
         let keepFetching = true;
         const maxBatches = 1000; // Arbitrary high limit for safety
         
         // Use v2 API with Omanpx's approach: only 'from' timestamp, stop at war end time
-        console.log('[WAR REPORT 2.0] Using v2 API with Omanpx approach (from timestamp only)...');
         
         // Start from war start time
         let currentBatchFrom = warStartTime;
-        console.log(`🔍 [OMANPX APPROACH] Fetching from: ${currentBatchFrom} (${new Date(currentBatchFrom * 1000).toISOString()}), stopping at war end: ${warEndTime} (${new Date(warEndTime * 1000).toISOString()})`);
         
         const attackIds = new Set(); // Track unique attack IDs to avoid duplicates
         
@@ -773,8 +909,7 @@ async function handleWarReportFetch() {
             }
             
             if (batchCount === 50) {
-                console.log('[WAR REPORT 2.0] Hit 5000 attacks. Waiting 30 seconds before continuing at 1.5 requests/sec...');
-                
+
                 // Show countdown for API limit wait
                 if (progressContainer) {
                     progressMessage.textContent = 'Waiting for API Limit...';
@@ -799,8 +934,7 @@ async function handleWarReportFetch() {
             
             // Use v2 API endpoint with ASCENDING sort to get oldest attacks first
             const attacksUrl = `https://api.torn.com/v2/faction/attacks?limit=100&sort=ASC&from=${currentBatchFrom}&key=${apiKey}`;
-            console.log(`[WAR REPORT 2.0] Batch ${batchCount + 1}: ${attacksUrl}`);
-            
+
             const attacksResponse = await fetch(attacksUrl);
             const attacksData = await attacksResponse.json();
             
@@ -827,7 +961,6 @@ async function handleWarReportFetch() {
             });
             
             allAttacks = allAttacks.concat(validAttacks);
-            console.log(`[WAR REPORT 2.0] Batch ${batchCount + 1}: Fetched ${attacks.length} attacks, ${validAttacks.length} valid (${allAttacks.length} total unique)`);
             
 
             
@@ -853,8 +986,6 @@ async function handleWarReportFetch() {
             }
             batchCount++;
         }
-        
-        console.log(`[WAR REPORT 2.0] Total attacks fetched: ${allAttacks.length}`);
 
         // Processing phase - no progress update needed since we're already at 100%
 
@@ -873,9 +1004,6 @@ async function handleWarReportFetch() {
         // Step 3: Process attacks and create player report
         const playerStats = {};
         const factionIdStr = String(factionId);
-
-        console.log(`[WAR REPORT 2.0] Processing ${allAttacks.length} attacks for faction ${factionIdStr}`);
-        console.log(`[DEBUG TEST] Debug logging is working`);
 
         let processedCount = 0;
         allAttacks.forEach((attack) => {
@@ -965,7 +1093,6 @@ async function handleWarReportFetch() {
                 playerStats[attackerId].warAssists++;
             }
 
-
         });
 
         // Debug: Overall attack counting
@@ -975,8 +1102,6 @@ async function handleWarReportFetch() {
             attack.modifiers && attack.modifiers.war && attack.modifiers.war > 0
         ).length;
         const rankedWarHits = allAttacks.filter(attack => attack.is_ranked_war === true).length;
-        
-        console.log(`🔍 [OVERALL STATS] Total attacks: ${totalAttacks}, War hits counted: ${totalWarHits}, Attacks with war modifiers: ${warHitsWithModifiers}, Ranked war hits: ${rankedWarHits}`);
 
         // Calculate averages
         Object.values(playerStats).forEach(player => {
@@ -990,7 +1115,6 @@ async function handleWarReportFetch() {
         warReportData.allAttacks = allAttacks;
 
         const totalTime = performance.now() - startTime;
-        console.log(`[WAR REPORT 2.0] War report generation completed in ${totalTime.toFixed(2)}ms`);
 
         // Hide progress bar
         if (progressContainer) {
@@ -1010,25 +1134,21 @@ async function handleWarReportFetch() {
 
 // Update the UI with war report data
 function updateWarReportUI(playerStats, warInfo, allAttacks, totalTime) {
-    console.log('[WAR REPORT 2.0] Updating UI with data');
-    console.log('[WAR REPORT 2.0] Player stats count:', Object.keys(playerStats).length);
+
     // Store data in global state
     warReportData.playerStats = playerStats;
     warReportData.warInfo = warInfo;
     warReportData.allAttacks = allAttacks;
     const spinner = document.getElementById('loadingSpinner');
     const resultsSection = document.querySelector('.results-section');
-    console.log('[WAR REPORT 2.0] Found elements:', {
-        spinner: !!spinner,
-        resultsSection: !!resultsSection
-    });
+
     if (spinner) spinner.style.display = 'none';
     if (resultsSection) {
         resultsSection.style.display = 'block';
-        console.log('[WAR REPORT 2.0] Results section shown, re-initializing tabs');
+
         // Defer tab initialization until DOM is updated
         setTimeout(() => {
-            console.log('[WAR REPORT 2.0] Calling initializeTabs after DOM update');
+
             initializeTabs();
         }, 0);
     } else {
@@ -1068,26 +1188,18 @@ function updateWarReportUI(playerStats, warInfo, allAttacks, totalTime) {
         `;
     }
     // Render the war report table
-    console.log('[WAR REPORT 2.0] Calling renderWarReportTable');
+
     renderWarReportTable();
 }
 
 // Render the war report table with sorting
 function renderWarReportTable() {
-    console.log('[WAR REPORT 2.0] Starting renderWarReportTable');
-    
+
     const playerStats = warReportData.playerStats;
     const warInfo = warReportData.warInfo;
     const allAttacks = warReportData.allAttacks;
     const sortState = warReportData.sortState;
-    
-    console.log('[WAR REPORT 2.0] Data available:', {
-        playerStats: !!playerStats,
-        warInfo: !!warInfo,
-        allAttacks: !!allAttacks,
-        sortState: !!sortState
-    });
-    
+
     // Convert to array and sort
     const sorted = Object.values(playerStats).sort((a, b) => {
         let aValue = a[sortState.column];
@@ -1103,8 +1215,7 @@ function renderWarReportTable() {
     });
 
     const membersTableDiv = document.getElementById('membersTable');
-    console.log('[WAR REPORT 2.0] Members table div found:', !!membersTableDiv);
-    
+
     if (!membersTableDiv) {
         console.error('[WAR REPORT 2.0] Members table div not found!');
         return;
@@ -1205,8 +1316,7 @@ function renderWarReportTable() {
             });
         });
     }
-    
-    console.log('[WAR REPORT 2.0] renderWarReportTable completed successfully');
+
 }
 
 // Export war report to CSV
@@ -1343,7 +1453,7 @@ function addThousandSeparatorInput(input) {
 // --- Patch initializeTabs to add input formatting ---
 function initializeTabs() {
     if (tabsInitialized) {
-        console.log('[WAR REPORT 2.0] Tab event listener already attached.');
+
         return;
     }
     
@@ -1366,7 +1476,6 @@ function initializeTabs() {
     newTabButtonsContainer.addEventListener('click', function(e) {
         const btn = e.target.closest('.tab-button');
         if (!btn) return;
-        console.log('[WAR REPORT 2.0] Tab button clicked (direct):', btn.textContent, 'data-tab:', btn.getAttribute('data-tab'));
         
         // Get fresh references to all tab buttons and panes
         const allTabButtons = document.querySelectorAll('.tab-button');
@@ -1375,58 +1484,56 @@ function initializeTabs() {
         // Remove active class from all buttons and panes
         allTabButtons.forEach(b => {
             b.classList.remove('active');
-            console.log('[WAR REPORT 2.0] Removed active from button:', b.textContent);
+
         });
         allTabPanes.forEach(p => {
             p.classList.remove('active');
             p.style.display = 'none';
-            console.log('[WAR REPORT 2.0] Removed active from pane:', p.id);
+
         });
         
         // Add active class to clicked button
         btn.classList.add('active');
-        console.log('[WAR REPORT 2.0] Added active to button:', btn.textContent);
-        
+
         // Show the corresponding pane
         const tabId = btn.getAttribute('data-tab');
         const pane = document.getElementById(tabId);
-        console.log('[WAR REPORT 2.0] Looking for pane with ID:', tabId, 'Found:', !!pane);
+
         if (pane) {
             pane.classList.add('active');
             pane.style.display = 'block';
-            console.log('[WAR REPORT 2.0] Pane displayed:', tabId);
+
             // If switching to payout tab and we have data, render payout table
             if (tabId === 'payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
-                console.log('[WAR REPORT 2.0] Rendering payout table...');
+
                 renderPayoutTable();
             } else if (tabId === 'payout-tab') {
-                console.log('[WAR REPORT 2.0] No player stats available for payout table');
+
             }
             // If switching to respect payout tab and we have data, render respect payout table
             else if (tabId === 'respect-payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
-                console.log('[WAR REPORT 2.0] Rendering respect payout table...');
+
                 renderRespectPayoutTable();
             } else if (tabId === 'respect-payout-tab') {
-                console.log('[WAR REPORT 2.0] No player stats available for respect payout table');
+
             }
         } else {
             console.error('[WAR REPORT 2.0] Pane not found for tab ID:', tabId);
         }
     });
-    
-    console.log('[WAR REPORT 2.0] Tab event listener attached.');
+
     // Initialize payout input listeners and formatting
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
     
     if (cacheSalesInput && payPerHitInput) {
-        console.log('[WAR REPORT 2.0] Adding payout input listeners');
+
         addThousandSeparatorInput(cacheSalesInput);
         addThousandSeparatorInput(payPerHitInput);
         // Define updatePayoutTable before using it
         const updatePayoutTable = () => {
             if (warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
-                console.log('[WAR REPORT 2.0] Updating payout table due to input change');
+
                 renderPayoutTable();
             }
         };
@@ -1502,69 +1609,51 @@ function initializeTabs() {
             const hitMinThresholdInput = document.getElementById('hitMinThreshold');
             const hitMaxThresholdInput = document.getElementById('hitMaxThreshold');
             const hitPayoutModeRadios = document.querySelectorAll('input[name="hitPayoutMode"]');
-            
-            console.log('🎯 [HIT THRESHOLD DEBUG] Setting up event listeners...');
-            console.log('🎯 [HIT THRESHOLD DEBUG] Found elements:', {
-                checkbox: !!hitEnableThresholdsCheckbox,
-                minInput: !!hitMinThresholdInput,
-                maxInput: !!hitMaxThresholdInput,
-                radios: hitPayoutModeRadios.length
-            });
-            
+
             if (hitEnableThresholdsCheckbox && !hitEnableThresholdsCheckbox.hasAttribute('data-listener-added')) {
-                console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for hitEnableThresholdsCheckbox');
+
                 hitEnableThresholdsCheckbox.addEventListener('change', (e) => {
-                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== CHECKBOX CHANGED =====');
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Checkbox value:', e.target.checked);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Current min threshold:', document.getElementById('hitMinThreshold')?.value);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Current max threshold:', document.getElementById('hitMaxThreshold')?.value);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Current payout mode:', document.querySelector('input[name="hitPayoutMode"]:checked')?.value);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+
+
                     updatePayoutTable();
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+
                     saveHitPayoutSettings();
-                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== CHECKBOX CHANGE COMPLETE =====');
+
                 });
                 hitEnableThresholdsCheckbox.setAttribute('data-listener-added', 'true');
             }
             
             if (hitMinThresholdInput && !hitMinThresholdInput.hasAttribute('data-listener-added')) {
-                console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for hitMinThresholdInput');
+
                 hitMinThresholdInput.addEventListener('input', (e) => {
-                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGED =====');
-                    console.log('🎯 [HIT THRESHOLD DEBUG] New min threshold:', e.target.value);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Current checkbox state:', document.getElementById('hitEnableThresholds')?.checked);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+
+
                     updatePayoutTable();
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+
                     saveHitPayoutSettings();
-                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGE COMPLETE =====');
+
                 });
                 hitMinThresholdInput.setAttribute('data-listener-added', 'true');
             }
             
             if (hitMaxThresholdInput && !hitMaxThresholdInput.hasAttribute('data-listener-added')) {
-                console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for hitMaxThresholdInput');
+
                 hitMaxThresholdInput.addEventListener('input', (e) => {
-                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGED =====');
-                    console.log('🎯 [HIT THRESHOLD DEBUG] New max threshold:', e.target.value);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Current checkbox state:', document.getElementById('hitEnableThresholds')?.checked);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+
+
                     updatePayoutTable();
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+
                     saveHitPayoutSettings();
-                    console.log('🎯 [HIT THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGE COMPLETE =====');
+
                 });
                 hitMaxThresholdInput.setAttribute('data-listener-added', 'true');
             }
             
             hitPayoutModeRadios.forEach(radio => {
                 if (!radio.hasAttribute('data-listener-added')) {
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Adding event listener for payout mode radio:', radio.value);
+
                     radio.addEventListener('change', (e) => {
-                        console.log('🎯 [HIT THRESHOLD DEBUG] ===== PAYOUT MODE CHANGED =====');
-                        console.log('🎯 [HIT THRESHOLD DEBUG] New payout mode:', e.target.value);
-                        console.log('🎯 [HIT THRESHOLD DEBUG] Current checkbox state:', document.getElementById('hitEnableThresholds')?.checked);
+
                         
                         // Enable/disable max threshold input based on payout mode
                         const maxThresholdInput = document.getElementById('hitMaxThreshold');
@@ -1578,7 +1667,7 @@ function initializeTabs() {
                                 if (maxThresholdLabel) {
                                     maxThresholdLabel.style.color = '#666';
                                 }
-                                console.log('🎯 [HIT THRESHOLD DEBUG] Max threshold input disabled for equal mode');
+
                             } else {
                                 maxThresholdInput.disabled = false;
                                 maxThresholdInput.style.backgroundColor = '#2a2a2a';
@@ -1587,15 +1676,14 @@ function initializeTabs() {
                                 if (maxThresholdLabel) {
                                     maxThresholdLabel.style.color = '#ccc';
                                 }
-                                console.log('🎯 [HIT THRESHOLD DEBUG] Max threshold input enabled for ratio mode');
+
                             }
                         }
-                        
-                        console.log('🎯 [HIT THRESHOLD DEBUG] Calling updatePayoutTable...');
+
                         updatePayoutTable();
-                        console.log('🎯 [HIT THRESHOLD DEBUG] Calling saveHitPayoutSettings...');
+
                         saveHitPayoutSettings();
-                        console.log('🎯 [HIT THRESHOLD DEBUG] ===== PAYOUT MODE CHANGE COMPLETE =====');
+
                     });
                     radio.setAttribute('data-listener-added', 'true');
                 }
@@ -1615,7 +1703,6 @@ function initializeTabs() {
                 if (maxThresholdLabel) {
                     maxThresholdLabel.style.color = '#666';
                 }
-                console.log('🎯 [HIT THRESHOLD DEBUG] Initialized max threshold input as disabled (equal mode default)');
             }
         }, 150);
 
@@ -1624,25 +1711,22 @@ function initializeTabs() {
         const respectPayPerHitInput = document.getElementById('respectPayPerHit');
         
         if (respectCacheSalesInput && respectPayPerHitInput) {
-            console.log('[WAR REPORT 2.0] Adding respect payout input listeners');
+
             addThousandSeparatorInput(respectCacheSalesInput);
             // respectPayPerHitInput is readonly, so no need to add formatting
             
             // Define updateRespectPayoutTable before using it
             const updateRespectPayoutTable = () => {
-                console.log('🚀 [THRESHOLD DEBUG] ===== updateRespectPayoutTable CALLED =====');
-                console.log('🚀 [THRESHOLD DEBUG] warReportData.playerStats exists:', !!warReportData.playerStats);
-                console.log('🚀 [THRESHOLD DEBUG] playerStats keys length:', warReportData.playerStats ? Object.keys(warReportData.playerStats).length : 0);
+
                 
                 if (warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
-                    console.log('[WAR REPORT 2.0] Updating respect payout table due to input change');
-                    console.log('🚀 [THRESHOLD DEBUG] Calling renderRespectPayoutTable...');
+
                     renderRespectPayoutTable();
-                    console.log('🚀 [THRESHOLD DEBUG] renderRespectPayoutTable completed');
+
                 } else {
-                    console.log('🚀 [THRESHOLD DEBUG] No player stats available, skipping table update');
+
                 }
-                console.log('🚀 [THRESHOLD DEBUG] ===== updateRespectPayoutTable COMPLETE =====');
+
             };
             
             // Apply to Respect Other Costs boxes as well
@@ -1755,74 +1839,56 @@ function initializeTabs() {
                 const respectMinThresholdInput = document.getElementById('respectMinThreshold');
                 const respectMaxThresholdInput = document.getElementById('respectMaxThreshold');
                 const respectPayoutModeRadios = document.querySelectorAll('input[name="respectPayoutMode"]');
-                
-                console.log('🔍 [THRESHOLD DEBUG] Setting up event listeners...');
-                console.log('🔍 [THRESHOLD DEBUG] Found elements:', {
-                    checkbox: !!respectEnableThresholdsCheckbox,
-                    minInput: !!respectMinThresholdInput,
-                    maxInput: !!respectMaxThresholdInput,
-                    radios: respectPayoutModeRadios.length
-                });
-                
+
                 if (respectEnableThresholdsCheckbox && !respectEnableThresholdsCheckbox.hasAttribute('data-listener-added')) {
-                    console.log('🔍 [THRESHOLD DEBUG] Adding event listener for respectEnableThresholdsCheckbox');
+
                     respectEnableThresholdsCheckbox.addEventListener('change', (e) => {
-                        console.log('🚀 [THRESHOLD DEBUG] ===== CHECKBOX CHANGED =====');
-                        console.log('🚀 [THRESHOLD DEBUG] Checkbox value:', e.target.checked);
-                        console.log('🚀 [THRESHOLD DEBUG] Current min threshold:', document.getElementById('respectMinThreshold')?.value);
-                        console.log('🚀 [THRESHOLD DEBUG] Current max threshold:', document.getElementById('respectMaxThreshold')?.value);
-                        console.log('🚀 [THRESHOLD DEBUG] Current payout mode:', document.querySelector('input[name="respectPayoutMode"]:checked')?.value);
-                        console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+
+
                         updateRespectPayoutTable();
-                        console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+
                         saveRespectPayoutSettings();
-                        console.log('🚀 [THRESHOLD DEBUG] ===== CHECKBOX CHANGE COMPLETE =====');
+
                     });
                     respectEnableThresholdsCheckbox.setAttribute('data-listener-added', 'true');
                 }
                 
                 if (respectMinThresholdInput && !respectMinThresholdInput.hasAttribute('data-listener-added')) {
-                    console.log('🔍 [THRESHOLD DEBUG] Adding event listener for respectMinThresholdInput');
+
                     respectMinThresholdInput.addEventListener('input', (e) => {
-                        console.log('🚀 [THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGED =====');
-                        console.log('🚀 [THRESHOLD DEBUG] New min threshold:', e.target.value);
-                        console.log('🚀 [THRESHOLD DEBUG] Current checkbox state:', document.getElementById('respectEnableThresholds')?.checked);
-                        console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+
+
                         updateRespectPayoutTable();
-                        console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+
                         saveRespectPayoutSettings();
-                        console.log('🚀 [THRESHOLD DEBUG] ===== MIN THRESHOLD CHANGE COMPLETE =====');
+
                     });
                     respectMinThresholdInput.setAttribute('data-listener-added', 'true');
                 }
                 
                 if (respectMaxThresholdInput && !respectMaxThresholdInput.hasAttribute('data-listener-added')) {
-                    console.log('🔍 [THRESHOLD DEBUG] Adding event listener for respectMaxThresholdInput');
+
                     respectMaxThresholdInput.addEventListener('input', (e) => {
-                        console.log('🚀 [THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGED =====');
-                        console.log('🚀 [THRESHOLD DEBUG] New max threshold:', e.target.value);
-                        console.log('🚀 [THRESHOLD DEBUG] Current checkbox state:', document.getElementById('respectEnableThresholds')?.checked);
-                        console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+
+
                         updateRespectPayoutTable();
-                        console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+
                         saveRespectPayoutSettings();
-                        console.log('🚀 [THRESHOLD DEBUG] ===== MAX THRESHOLD CHANGE COMPLETE =====');
+
                     });
                     respectMaxThresholdInput.setAttribute('data-listener-added', 'true');
                 }
                 
                 respectPayoutModeRadios.forEach(radio => {
                     if (!radio.hasAttribute('data-listener-added')) {
-                        console.log('🔍 [THRESHOLD DEBUG] Adding event listener for payout mode radio:', radio.value);
+
                         radio.addEventListener('change', (e) => {
-                            console.log('🚀 [THRESHOLD DEBUG] ===== PAYOUT MODE CHANGED =====');
-                            console.log('🚀 [THRESHOLD DEBUG] New payout mode:', e.target.value);
-                            console.log('🚀 [THRESHOLD DEBUG] Current checkbox state:', document.getElementById('respectEnableThresholds')?.checked);
-                            console.log('🚀 [THRESHOLD DEBUG] Calling updateRespectPayoutTable...');
+
+
                             updateRespectPayoutTable();
-                            console.log('🚀 [THRESHOLD DEBUG] Calling saveRespectPayoutSettings...');
+
                             saveRespectPayoutSettings();
-                            console.log('🚀 [THRESHOLD DEBUG] ===== PAYOUT MODE CHANGE COMPLETE =====');
+
                         });
                         radio.setAttribute('data-listener-added', 'true');
                     }
@@ -1874,7 +1940,7 @@ function renderPayoutTable() {
     const warInfo = warReportData.warInfo;
     const allAttacks = warReportData.allAttacks;
     if (!playerStats || Object.keys(playerStats).length === 0) {
-        console.log('[WAR REPORT 2.0] No player stats available for payout table');
+
         return;
     }
     // Get payout settings (use raw value for calculations)
@@ -1913,7 +1979,6 @@ function renderPayoutTable() {
         }
         totalCosts += value;
     });
-
 
     // Advanced payout options
     const payAssists = document.getElementById('payAssists')?.checked;
@@ -1982,25 +2047,15 @@ function renderPayoutTable() {
     const minThreshold = parseFloat(document.getElementById('hitMinThreshold')?.value || '20');
     const maxThreshold = parseFloat(document.getElementById('hitMaxThreshold')?.value || '50');
     const payoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio';
-    
-    console.log('🎯 [HIT THRESHOLD DEBUG] ===== APPLYING HIT THRESHOLD LOGIC =====');
-    console.log('🎯 [HIT THRESHOLD DEBUG] enableThresholds:', enableThresholds);
-    console.log('🎯 [HIT THRESHOLD DEBUG] minThreshold:', minThreshold);
-    console.log('🎯 [HIT THRESHOLD DEBUG] maxThreshold:', maxThreshold);
-    console.log('🎯 [HIT THRESHOLD DEBUG] payoutMode:', payoutMode);
-    
+
     if (enableThresholds) {
-        console.log('🎯 [HIT THRESHOLD DEBUG] Thresholds ENABLED - recalculating payouts...');
-        
+
         // Find qualifying players (above minimum threshold)
         const qualifyingPlayers = playersWithPayouts.filter(player => {
             const combinedHits = (player.warHits || 0) + (player.warAssists || 0);
             return combinedHits >= minThreshold;
         });
-        
-        console.log('🎯 [HIT THRESHOLD DEBUG] Qualifying players:', qualifyingPlayers.length, 'out of', playersWithPayouts.length);
-        console.log('🎯 [HIT THRESHOLD DEBUG] Pay per war hit:', payPerHit);
-        
+
         // Apply threshold logic to each player
         playersWithPayouts.forEach(player => {
             const combinedHits = (player.warHits || 0) + (player.warAssists || 0);
@@ -2032,21 +2087,21 @@ function renderPayoutTable() {
                     player.overseasPayout = Math.round((player.overseasPayout || 0) * scaleFactor);
                     player.otherAttacksPayout = Math.round((player.otherAttacksPayout || 0) * scaleFactor);
                     player.lowFFPayout = Math.round((player.lowFFPayout || 0) * scaleFactor);
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers capped at', minThresholdPlayerPayout, 'scaled by factor', scaleFactor);
+
                 } else {
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers within cap, keeping as calculated');
+
                 }
             } else {
                 // Above minimum threshold - apply threshold logic using Pay Per War Hit
                 if (payoutMode === 'equal') {
                     // Equal mode: treat all qualifying players as having minimum threshold hits
                     player.warHitPayout = minThreshold * payPerHit;
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'equal mode - treated as', minThreshold, 'hits -> payout:', player.warHitPayout);
+
                 } else {
                     // Ratio mode: use adjusted hits (capped at max threshold) with Pay Per War Hit
                     const adjustedHits = Math.min(combinedHits, maxThreshold);
                     player.warHitPayout = adjustedHits * payPerHit;
-                    console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'ratio mode - hits:', combinedHits, '-> adjusted:', adjustedHits, '-> payout:', player.warHitPayout);
+
                 }
                 
                 // When player reaches minimum threshold, ignore all other modifiers (assists, retals, overseas, etc.)
@@ -2055,14 +2110,14 @@ function renderPayoutTable() {
                 player.overseasPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
-                console.log('🎯 [HIT THRESHOLD DEBUG] Player', player.name, 'above threshold - other modifiers set to 0');
+
             }
             
             // Recalculate total payout
             player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
         });
     } else {
-        console.log('🎯 [HIT THRESHOLD DEBUG] Thresholds DISABLED - using original calculations');
+
     }
 
     // Sort by payout sort state
@@ -2161,25 +2216,21 @@ function renderPayoutTable() {
     
     // Add click event listeners for sorting
     const table = document.getElementById('payoutTable');
-    console.log('[WAR REPORT 2.0] Payout table found:', !!table);
+
     if (table) {
         const headers = table.querySelectorAll('th[data-column]');
-        console.log('[WAR REPORT 2.0] Found payout table headers:', headers.length);
+
         headers.forEach(header => {
             header.addEventListener('click', () => {
                 const column = header.getAttribute('data-column');
-                console.log('[WAR REPORT 2.0] Payout header clicked:', column);
-                console.log('[WAR REPORT 2.0] Current payout sort state:', warReportData.payoutSortState);
-                
+
                 if (warReportData.payoutSortState.column === column) {
                     warReportData.payoutSortState.direction = warReportData.payoutSortState.direction === 'asc' ? 'desc' : 'asc';
                 } else {
                     warReportData.payoutSortState.column = column;
                     warReportData.payoutSortState.direction = column === 'name' ? 'asc' : 'desc';
                 }
-                
-                console.log('[WAR REPORT 2.0] New payout sort state:', warReportData.payoutSortState);
-                console.log('[WAR REPORT 2.0] Re-rendering payout table...');
+
                 renderPayoutTable();
             });
         });
@@ -2346,38 +2397,34 @@ function exportPayoutToCSV() {
 
 // --- Respect Based Payout Table Rendering ---
 function renderRespectPayoutTable() {
-    console.log('🔍 === RESPECT PAYOUT FUNCTION CALLED ===');
-    console.log('🚀 [THRESHOLD DEBUG] ===== renderRespectPayoutTable START =====');
+
     const playerStats = warReportData.playerStats;
     const warInfo = warReportData.warInfo;
     const allAttacks = warReportData.allAttacks;
     if (!playerStats || Object.keys(playerStats).length === 0) {
-        console.log('[WAR REPORT 2.0] No player stats available for respect payout table');
+
         return;
     }
-    console.log('🚀 [THRESHOLD DEBUG] playerStats found, proceeding with table rendering...');
-    
-    console.log('[RESPECT DEBUG] Starting renderRespectPayoutTable');
-    console.log('[RESPECT DEBUG] allAttacks length:', allAttacks.length);
-    console.log('🚀 [THRESHOLD DEBUG] About to get respect payout settings...');
-    
+
     // Get respect payout settings (use raw value for calculations)
     const respectCacheSalesInput = document.getElementById('respectCacheSales');
     const respectPayPerHitInput = document.getElementById('respectPayPerHit');
     const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
-    
-    console.log('🚀 [THRESHOLD DEBUG] Got cache sales:', cacheSales);
-    
+
     // Get advanced options early
     const removeModifiers = document.getElementById('respectRemoveModifiers')?.checked;
     const includeOutsideRespect = document.getElementById('respectIncludeOutside')?.checked;
-    console.log('🚀 [THRESHOLD DEBUG] Advanced options - removeModifiers:', removeModifiers, 'includeOutsideRespect:', includeOutsideRespect);
-    
+
     // OPTIMIZATION: Process all attacks ONCE and cache player respect data
     const factionId = parseInt(document.getElementById('factionId').value);
     const playerRespectData = {};
     let totalBaseRespect = 0;
     let totalWarHits = 0;
+    
+    // Debug counters for chain bonus detection
+    let debugChainBonuses = [];
+    let debugRespectHits = 0;
+    let debugWarHitsWithRespect = 0;
     
     // Initialize player respect data
     Object.keys(playerStats).forEach(playerId => {
@@ -2391,7 +2438,7 @@ function renderRespectPayoutTable() {
     });
     
     // Process all attacks once to calculate both total and per-player respect
-    console.log('[RESPECT DEBUG] Processing attacks for respect calculation...');
+
     let totalOutsideHits = 0;
     let totalOutsideRespect = 0;
     
@@ -2403,40 +2450,54 @@ function renderRespectPayoutTable() {
             const baseRespect = calculateBaseRespect(attack, removeModifiers, false); // Don't round individual calculations
             const attackerId = String(attack.attacker?.id);
             
+            // Debug: Count all respect-gaining hits
+            if (attack.respect_gain && attack.respect_gain > 0) {
+                debugRespectHits++;
+            }
+            
             // Check war modifier to determine if this is a war hit or outside hit
             const warModifier = attack.modifiers?.war;
+            
+            // Check for chain bonus regardless of war modifier (chain hits can be war or outside)
+            const chainBonus = detectChainBonus(attack.respect_gain);
+            if (chainBonus) {
+                // Debug: Track all chain bonuses found
+                debugChainBonuses.push({
+                    ...chainBonus,
+                    attackerName: attack.attacker?.name,
+                    respect_gain: attack.respect_gain,
+                    timestamp: attack.timestamp || 0,
+                    warModifier: warModifier,
+                    hitType: warModifier === 2 ? 'War Hit' : warModifier === 1 ? 'Outside Hit' : 'Other Hit'
+                });
+            }
             
             if (warModifier === 2) {
                 // This is a war hit (war modifier = 2)
             totalWarHits++;
             totalBaseRespect += baseRespect;
             
+            // Debug: Count war hits with respect
+            if (attack.respect_gain && attack.respect_gain > 0) {
+                debugWarHitsWithRespect++;
+            }
+            
                 // Add to player's war respect data
             if (playerRespectData[attackerId]) {
                     playerRespectData[attackerId].warRespect += baseRespect;
                 playerRespectData[attackerId].warHits++;
                     
-                    // Check for chain bonus
-                    const chainBonus = detectChainBonus(attack.respect_gain);
+                    // Add chain bonus to player data (if it exists)
                     if (chainBonus) {
                         playerRespectData[attackerId].chainBonuses.push({
                             ...chainBonus,
-                            attackerName: attack.attacker?.name
+                            attackerName: attack.attacker?.name,
+                            deduction: chainBonus.points, // Add deduction property for display
+                            hitType: 'War Hit' // Mark as war hit
                         });
                     }
                 }
                 
-                // Debug logging for first 5 war hits
-            if (totalWarHits <= 5) {
-                console.log('[RESPECT DEBUG] Processing war hit:', {
-                    respect_gain: attack.respect_gain,
-                        war_modifier: warModifier,
-                        modifiers: attack.modifiers,
-                        baseRespect: baseRespect,
-                        attacker: attack.attacker?.name,
-                        chainBonus: detectChainBonus(attack.respect_gain)
-                    });
-                }
             } else if (warModifier === 1 && baseRespect > 0) {
                 // This is an outside hit (war modifier = 1 and gains respect)
                 totalOutsideHits++;
@@ -2446,25 +2507,22 @@ function renderRespectPayoutTable() {
                 if (playerRespectData[attackerId]) {
                     playerRespectData[attackerId].outsideRespect += baseRespect;
                     playerRespectData[attackerId].outsideHits++;
+                    
+                    // Add chain bonus to player data (if it exists) for outside hits too
+                    if (chainBonus) {
+                        playerRespectData[attackerId].chainBonuses.push({
+                            ...chainBonus,
+                            attackerName: attack.attacker?.name,
+                            deduction: chainBonus.points, // Add deduction property for display
+                            hitType: 'Outside Hit' // Mark as outside hit
+                        });
+                    }
                 }
                 
-                // Debug logging for first 5 outside hits
-                if (totalOutsideHits <= 5) {
-                    console.log('[RESPECT DEBUG] Processing outside hit:', {
-                        respect_gain: attack.respect_gain,
-                        war_modifier: warModifier,
-                    modifiers: attack.modifiers,
-                    baseRespect: baseRespect,
-                    attacker: attack.attacker?.name
-                });
-                }
             }
         }
     });
-    console.log('[RESPECT DEBUG] Total war hits found:', totalWarHits);
-    console.log('[RESPECT DEBUG] Total war respect calculated:', totalBaseRespect);
-    console.log('[RESPECT DEBUG] Total outside hits found:', totalOutsideHits);
-    console.log('[RESPECT DEBUG] Total outside respect calculated:', totalOutsideRespect);
+
     
     // Get Other Costs (calculate this before pay per hit calculation)
     const otherCosts = [
@@ -2524,24 +2582,17 @@ function renderRespectPayoutTable() {
     const filterLowFF = document.getElementById('respectFilterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('respectMinFFRating')?.value || '2.0');
 
-    console.log('🚀 [THRESHOLD DEBUG] About to create playersWithRespectPayouts array...');
-    console.log('🚀 [THRESHOLD DEBUG] playerStats keys:', Object.keys(playerStats).length);
 
     // Calculate respect-based payouts for each player
     const playersWithRespectPayouts = Object.values(playerStats).map(player => {
-        console.log('🚀 [THRESHOLD DEBUG] Processing player:', player.name);
-        
+
         // Use cached player respect data instead of processing all attacks again
         const playerIdStr = String(player.id);
         const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
         let playerWarRespect = playerData.warRespect;
         let playerOutsideRespect = playerData.outsideRespect;
         let playerWarHits = playerData.warHits;
-        
-        console.log('🚀 [THRESHOLD DEBUG] Player data for', player.name, ':', playerData);
-        
-        console.log('🚀 [THRESHOLD DEBUG] About to count low FF hits for', player.name);
-        
+
         // Count low FF hits and adjust base respect if filtering is enabled
         let lowFFHits = 0;
         if (filterLowFF) {
@@ -2581,13 +2632,7 @@ function renderRespectPayoutTable() {
         
         // Debug first few players
         if (player.name === 'iNico' || player.name === 'Jimidy' || player.name === 'Joe21') {
-            console.log('[RESPECT DEBUG] Player calculation:', {
-                name: player.name,
-                id: player.id,
-                playerWarHits: playerWarHits,
-                playerWarRespect: playerWarRespect,
-                playerOutsideRespect: playerOutsideRespect
-            });
+
         }
         
         // Calculate additional payouts first (retaliations, assists, other attacks)
@@ -2603,8 +2648,6 @@ function renderRespectPayoutTable() {
         if (filterLowFF && lowFFHits > 0) {
             lowFFPayout = Math.round(lowFFHits * payPerWarHit * otherAttacksMultiplier);
         }
-
-        console.log('🚀 [THRESHOLD DEBUG] Finished low FF hits calculation for', player.name, 'lowFFHits:', lowFFHits);
 
         // Check combined minimum requirement
         const combinedCount = (player.warHits || 0) + (player.warAssists || 0);
@@ -2681,16 +2724,9 @@ function renderRespectPayoutTable() {
     const minThreshold = parseFloat(document.getElementById('respectMinThreshold')?.value || '100');
     const maxThreshold = parseFloat(document.getElementById('respectMaxThreshold')?.value || '300');
     const payoutMode = document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio';
-    
-    console.log('🚀 [THRESHOLD DEBUG] ===== APPLYING THRESHOLD LOGIC =====');
-    console.log('🚀 [THRESHOLD DEBUG] enableThresholds:', enableThresholds);
-    console.log('🚀 [THRESHOLD DEBUG] minThreshold:', minThreshold);
-    console.log('🚀 [THRESHOLD DEBUG] maxThreshold:', maxThreshold);
-    console.log('🚀 [THRESHOLD DEBUG] payoutMode:', payoutMode);
-    
+
     if (enableThresholds) {
-        console.log('🚀 [THRESHOLD DEBUG] Thresholds ENABLED - recalculating payouts...');
-        
+
         // Reset global variable for total adjusted respect calculation
         window._totalAdjustedRespect = null;
         
@@ -2710,9 +2746,7 @@ function renderRespectPayoutTable() {
             
             return totalPlayerRespect >= minThreshold;
         });
-        
-        console.log('🚀 [THRESHOLD DEBUG] Qualifying players:', qualifyingPlayers.length, 'out of', playersWithRespectPayouts.length);
-        
+
         // Apply threshold logic to each player
         playersWithRespectPayouts.forEach(player => {
             const playerIdStr = String(player.id);
@@ -2744,9 +2778,9 @@ function renderRespectPayoutTable() {
                     player.overseasPayout = Math.round((player.overseasPayout || 0) * scaleFactor);
                     player.otherAttacksPayout = Math.round((player.otherAttacksPayout || 0) * scaleFactor);
                     player.lowFFPayout = Math.round((player.lowFFPayout || 0) * scaleFactor);
-                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers capped at', minThresholdPlayerPayout, 'scaled by factor', scaleFactor);
+
                 } else {
-                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'below threshold - other modifiers within cap, keeping as calculated');
+
                 }
             } else {
                 // Above minimum threshold - apply threshold logic and ignore other modifiers
@@ -2762,7 +2796,7 @@ function renderRespectPayoutTable() {
                 if (payoutMode === 'equal') {
                     // Equal payout: all qualifying players get the same amount
                     player.warHitPayout = qualifyingPlayers.length > 0 ? Math.round(availablePayout / qualifyingPlayers.length) : 0;
-                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'equal payout mode - war hit payout:', player.warHitPayout, 'other payouts set to 0');
+
                 } else {
                     // Ratio payout: proportional to adjusted respect within the threshold range
                     // Calculate total adjusted respect for all qualifying players ONCE (outside the loop)
@@ -2775,12 +2809,12 @@ function renderRespectPayoutTable() {
                             const pTotalRespect = includeOutsideRespect ? (pWarRespect + pOutsideRespect) : pWarRespect;
                             return sum + Math.min(pTotalRespect, maxThreshold);
                         }, 0);
-                        console.log('🚀 [THRESHOLD DEBUG] Total adjusted respect for ratio calculation:', window._totalAdjustedRespect);
+
                     }
                     
                     const respectRatio = window._totalAdjustedRespect > 0 ? adjustedRespect / window._totalAdjustedRespect : 0;
                     player.warHitPayout = Math.round(respectRatio * availablePayout);
-                    console.log('🚀 [THRESHOLD DEBUG] Player', player.name, 'ratio payout mode - respect:', totalPlayerRespect, '-> adjusted:', adjustedRespect, '-> ratio:', respectRatio, '-> payout:', player.warHitPayout, 'other payouts set to 0');
+
                 }
             }
             
@@ -2788,15 +2822,12 @@ function renderRespectPayoutTable() {
             player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0);
         });
     } else {
-        console.log('🚀 [THRESHOLD DEBUG] Thresholds DISABLED - using original calculations');
+
     }
     
     // Calculate final total payout
     let totalPayout = playersWithRespectPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
-    
-    console.log('🚀 [THRESHOLD DEBUG] Finished creating playersWithRespectPayouts array, about to sort...');
-    console.log('🚀 [THRESHOLD DEBUG] playersWithRespectPayouts length:', playersWithRespectPayouts.length);
-    
+
     // Sort by respect payout sort state (AFTER all calculations are complete)
     const { column: sortColumn, direction: sortDirection } = warReportData.respectPayoutSortState;
     playersWithRespectPayouts.sort((a, b) => {
@@ -2940,7 +2971,7 @@ function renderRespectPayoutTable() {
                                     <td style="padding: 6px 12px 6px 0; color: #fff; font-weight: bold; white-space: nowrap;">${bonus.playerName}</td>
                                     <td style="padding: 6px 12px 6px 0; color: #ccc; font-size: 12px; white-space: nowrap;">${bonus.milestone} Hit (${bonus.points} points total)</td>
                                     <td style="padding: 6px 12px 6px 0; color: #ff6b6b; font-weight: bold; text-align: right; white-space: nowrap;">-${bonus.deduction}</td>
-                                    <td style="padding: 6px 0; color: #999; font-size: 12px; white-space: nowrap;">War Hit</td>
+                                    <td style="padding: 6px 0; color: #999; font-size: 12px; white-space: nowrap;">${bonus.hitType || 'War Hit'}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -2957,24 +2988,21 @@ function renderRespectPayoutTable() {
     
     // Add click event listeners for respect payout table sorting
     const respectTable = document.getElementById('respectPayoutTable');
-    console.log('[WAR REPORT 2.0] Respect payout table found:', !!respectTable);
+
     if (respectTable) {
         const headers = respectTable.querySelectorAll('th[data-column]');
-        console.log('[WAR REPORT 2.0] Found respect payout table headers:', headers.length);
+
         headers.forEach(header => {
             header.addEventListener('click', () => {
                 const column = header.getAttribute('data-column');
-                console.log('[WAR REPORT 2.0] Respect payout header clicked:', column);
-                console.log('[WAR REPORT 2.0] Current respect payout sort state:', warReportData.respectPayoutSortState);
-                
+
                 if (warReportData.respectPayoutSortState.column === column) {
                     warReportData.respectPayoutSortState.direction = warReportData.respectPayoutSortState.direction === 'asc' ? 'desc' : 'asc';
                 } else {
                     warReportData.respectPayoutSortState.column = column;
                     warReportData.respectPayoutSortState.direction = column === 'name' ? 'asc' : 'desc';
                 }
-                
-                console.log('[WAR REPORT 2.0] New respect payout sort state:', warReportData.respectPayoutSortState);
+
                 renderRespectPayoutTable();
             });
         });
@@ -3019,8 +3047,7 @@ function renderRespectPayoutTable() {
     if (exportRespectPayoutBtn) {
         exportRespectPayoutBtn.addEventListener('click', exportRespectPayoutToCSV);
     }
-    
-    console.log('🚀 [THRESHOLD DEBUG] ===== renderRespectPayoutTable COMPLETE =====');
+
 }
 
 // --- Export Respect Payout to CSV ---
