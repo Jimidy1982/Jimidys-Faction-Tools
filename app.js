@@ -675,6 +675,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 };
                 document.head.appendChild(script);
+            } else if (page.includes('organised-crime-stats')) {
+                // Remove any previous script for this tool
+                const oldScript = document.getElementById('organised-crime-stats-script');
+                if (oldScript) oldScript.remove();
+                // Dynamically load the script
+                const script = document.createElement('script');
+                script.src = 'tools/organised-crime-stats/organised-crime-stats.js';
+                script.id = 'organised-crime-stats-script';
+                script.onload = () => {
+                    console.log('[APP] organised-crime-stats/organised-crime-stats.js loaded, calling initOrganisedCrimeStats');
+                    if (typeof initOrganisedCrimeStats === 'function') {
+                        initOrganisedCrimeStats();
+                    } else if (window.initOrganisedCrimeStats) {
+                        window.initOrganisedCrimeStats();
+                    }
+                };
+                document.head.appendChild(script);
             } else if (page.includes('faction-battle-stats')) {
                 initBattleStats();
             } else if (page.includes('war-chain-reporter')) {
