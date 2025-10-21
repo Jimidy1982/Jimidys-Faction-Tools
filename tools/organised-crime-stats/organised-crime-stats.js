@@ -8,6 +8,10 @@ let ocStatsData = {
     sortState: {
         difficulty: { column: 'difficulty', direction: 'asc' },
         player: { column: 'totalScore', direction: 'desc' }
+    },
+    activeFilters: {
+        difficulty: 'all',
+        player: 'all'
     }
 };
 
@@ -573,8 +577,11 @@ function sortDifficultyTable(column) {
         currentSort.direction = column === 'difficulty' ? 'asc' : 'desc';
     }
     
+    // Get the currently filtered data
+    const dataToSort = getCurrentFilteredData('difficulty');
+    
     // Sort the data
-    ocStatsData.difficultyStats.sort((a, b) => {
+    dataToSort.sort((a, b) => {
         let aVal = a[column];
         let bVal = b[column];
         
@@ -585,8 +592,9 @@ function sortDifficultyTable(column) {
         }
     });
     
-    // Re-render just the difficulty table
-    updateOCStatsUI(ocStatsData.difficultyStats, ocStatsData.playerStats, ocStatsData.totalCrimes);
+    // Update UI with sorted, filtered data
+    updateDifficultyStatsUI(dataToSort);
+    updateDifficultySortIndicators();
 }
 
 function updateDifficultySortIndicators() {
@@ -621,8 +629,11 @@ function sortPlayerTable(column) {
         currentSort.direction = column === 'name' ? 'asc' : 'desc';
     }
     
+    // Get the currently filtered data
+    const dataToSort = getCurrentFilteredData('player');
+    
     // Sort the data
-    ocStatsData.playerStats.sort((a, b) => {
+    dataToSort.sort((a, b) => {
         let aVal = a[column];
         let bVal = b[column];
         
@@ -645,8 +656,9 @@ function sortPlayerTable(column) {
         }
     });
     
-    // Re-render just the player table
-    updateOCStatsUI(ocStatsData.difficultyStats, ocStatsData.playerStats, ocStatsData.totalCrimes);
+    // Update UI with sorted, filtered data
+    updatePlayerStatsUI(dataToSort);
+    updatePlayerSortIndicators();
 }
 
 function updatePlayerSortIndicators() {
@@ -725,6 +737,9 @@ function handleDateFilterChange(section) {
     const dateRangeSelect = document.getElementById(filterId);
     const selectedDays = dateRangeSelect.value;
     
+    // Store the active filter
+    ocStatsData.activeFilters[section] = selectedDays;
+    
     if (selectedDays === 'all') {
         // Show all data for this section
         if (section === 'difficulty') {
@@ -776,6 +791,22 @@ function filterDataByDateRange(cutoffDate) {
     const totalCrimes = totalSuccessful + totalFailed;
     
     return { difficultyStats, playerStats, totalCrimes };
+}
+
+// Helper function to get the current filtered data for a section
+function getCurrentFilteredData(section) {
+    const activeFilter = ocStatsData.activeFilters[section];
+    
+    if (activeFilter === 'all') {
+        return section === 'difficulty' ? ocStatsData.difficultyStats : ocStatsData.playerStats;
+    } else {
+        const days = parseInt(activeFilter);
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - days);
+        
+        const filteredData = filterDataByDateRange(cutoffDate);
+        return section === 'difficulty' ? filteredData.difficultyStats : filteredData.playerStats;
+    }
 }
 
 // Separate UI update functions for each section
