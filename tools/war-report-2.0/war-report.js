@@ -1144,7 +1144,27 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
 
     } catch (error) {
         console.error('Failed to fetch war report:', error);
-        resultsSection.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+        
+        // Check if it's an access level error
+        if (error.message && error.message.includes('Access level of this key is not high enough')) {
+            resultsSection.innerHTML = `
+                <div class="error">
+                    <h3>⚠️ Insufficient API Key Permissions</h3>
+                    <p><strong>Your API key doesn't have the required access level.</strong></p>
+                    <p>This tool requires a <strong>Limited</strong> or <strong>Full</strong> access API key to access faction war data.</p>
+                    <p><strong>To fix this:</strong></p>
+                    <ol style="text-align: left; margin: 10px auto; max-width: 500px;">
+                        <li>Go to <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener noreferrer">Torn Preferences → API</a></li>
+                        <li>Create a new API key or edit your existing key</li>
+                        <li>Set the access level to <strong>Limited</strong> or <strong>Full</strong></li>
+                        <li>Copy the new key and paste it in the API Key field above</li>
+                    </ol>
+                </div>
+            `;
+        } else {
+            // Generic error message
+            resultsSection.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+        }
     } finally {
         stopLoadingDots();
     }

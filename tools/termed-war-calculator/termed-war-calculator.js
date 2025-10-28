@@ -520,7 +520,20 @@ async function handleFetchWarData() {
         
     } catch (error) {
         console.error('Error fetching war data:', error);
-        alert('Error fetching war data: ' + error.message);
+        
+        // Check if it's an access level error
+        if (error.message && error.message.includes('Access level of this key is not high enough')) {
+            alert('⚠️ Insufficient API Key Permissions\n\n' +
+                  'Your API key doesn\'t have the required access level.\n\n' +
+                  'This tool requires a Limited or Full access API key to access faction war data.\n\n' +
+                  'To fix this:\n' +
+                  '1. Go to Torn Preferences → API\n' +
+                  '2. Create a new API key or edit your existing key\n' +
+                  '3. Set the access level to Limited or Full\n' +
+                  '4. Copy the new key and enter it in the API Key field');
+        } else {
+            alert('Error fetching war data: ' + error.message);
+        }
     } finally {
         fetchButton.disabled = false;
         fetchButton.textContent = 'Fetch War Data';
