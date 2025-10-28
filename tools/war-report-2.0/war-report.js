@@ -376,7 +376,19 @@ function loadRespectPayoutSettings() {
 
 let tabsInitialized = false;
 
+// Guard to prevent double initialization
+let warReportInitialized = false;
+
 function initWarReport2() {
+    console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
+    console.trace('[WAR REPORT 2.0] Call stack:');
+    
+    if (warReportInitialized) {
+        console.warn('[WAR REPORT 2.0] Already initialized, skipping duplicate initialization');
+        return;
+    }
+    warReportInitialized = true;
+    
     // Load saved respect payout settings
     loadRespectPayoutSettings();
     
@@ -397,7 +409,10 @@ function initWarReport2() {
     setTimeout(() => {
         const apiKey = getApiKeyFromStorage();
         if (apiKey) {
+            console.log('[WAR REPORT 2.0] Auto-fetching faction and wars...');
             autoFetchFactionAndWars(apiKey);
+        } else {
+            console.log('[WAR REPORT 2.0] No API key found, skipping auto-fetch');
         }
     }, 500);
     
@@ -453,11 +468,13 @@ function initWarReport2() {
 
     // Auto-fetch faction ID and wars when API key is available
     const autoFetchFactionAndWars = async () => {
-            const globalApiKeyInput = document.getElementById('globalApiKey');
-            const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
+        console.log('[WAR REPORT 2.0] autoFetchFactionAndWars called');
+        const globalApiKeyInput = document.getElementById('globalApiKey');
+        const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
         
         if (apiKey && factionIdInput) {
             try {
+                console.log('[WAR REPORT 2.0] Fetching user profile...');
                 const response = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
                 const data = await response.json();
                 
@@ -644,10 +661,11 @@ function initWarReport2() {
     // Auto-fetch wars when faction ID is available
     const autoFetchWars = async (factionId, apiKey) => {
         try {
-
+            console.log('[WAR REPORT 2.0] autoFetchWars called for faction:', factionId);
             warList.innerHTML = '<div style="padding: 15px; color: #b0b0b0;">Loading wars and chains...</div>';
             warListContainer.style.display = 'block';
             
+            console.log('[WAR REPORT 2.0] Fetching wars and chains in parallel...');
             // Fetch both wars and chains in parallel
             const [warsResponse, chainsData] = await Promise.all([
                 fetch(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`),
@@ -3232,12 +3250,8 @@ function stopLoadingDots() {
     if (loadingText) loadingText.style.display = 'none';
 }
 
-// Auto-initialize when script loads
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initWarReport2);
-} else {
-    initWarReport2();
-}
+// Note: initWarReport2 is called by app.js when the page loads
+// Removing auto-initialization to prevent double-initialization
 
 document.addEventListener('DOMContentLoaded', function() {
     [

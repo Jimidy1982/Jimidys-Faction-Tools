@@ -12,7 +12,8 @@ let ocStatsData = {
     activeFilters: {
         difficulty: 'all',
         player: 'all'
-    }
+    },
+    isFetching: false // Guard to prevent multiple simultaneous fetches
 };
 
 function initOrganisedCrimeStats() {
@@ -23,34 +24,68 @@ function initOrganisedCrimeStats() {
         window.logToolUsage('organised-crime-stats');
     }
 
+    // Remove any existing event listeners by cloning and replacing elements
     const fetchBtn = document.getElementById('fetchOCData');
     if (fetchBtn) {
-        fetchBtn.addEventListener('click', handleOCDataFetch);
+        const newFetchBtn = fetchBtn.cloneNode(true);
+        fetchBtn.parentNode.replaceChild(newFetchBtn, fetchBtn);
+        newFetchBtn.addEventListener('click', () => {
+            console.log('[ORGANISED CRIME STATS] Fetch button clicked by user');
+            handleOCDataFetch();
+        });
     }
 
     const exportBtn = document.getElementById('exportStats');
     if (exportBtn) {
-        exportBtn.addEventListener('click', exportOCStatsToCSV);
+        const newExportBtn = exportBtn.cloneNode(true);
+        exportBtn.parentNode.replaceChild(newExportBtn, exportBtn);
+        newExportBtn.addEventListener('click', () => {
+            console.log('[ORGANISED CRIME STATS] Export button clicked');
+            exportOCStatsToCSV();
+        });
     }
     
     // Add date filter handlers for both sections
     const difficultyDateFilter = document.getElementById('difficultyDateFilter');
     if (difficultyDateFilter) {
-        difficultyDateFilter.addEventListener('change', () => handleDateFilterChange('difficulty'));
+        const newDifficultyFilter = difficultyDateFilter.cloneNode(true);
+        difficultyDateFilter.parentNode.replaceChild(newDifficultyFilter, difficultyDateFilter);
+        newDifficultyFilter.addEventListener('change', () => {
+            console.log('[ORGANISED CRIME STATS] Difficulty filter changed to:', newDifficultyFilter.value);
+            handleDateFilterChange('difficulty');
+        });
     }
     
     const playerDateFilter = document.getElementById('playerDateFilter');
     if (playerDateFilter) {
-        playerDateFilter.addEventListener('change', () => handleDateFilterChange('player'));
+        const newPlayerFilter = playerDateFilter.cloneNode(true);
+        playerDateFilter.parentNode.replaceChild(newPlayerFilter, playerDateFilter);
+        newPlayerFilter.addEventListener('change', () => {
+            console.log('[ORGANISED CRIME STATS] Player filter changed to:', newPlayerFilter.value);
+            handleDateFilterChange('player');
+        });
     }
+    
+    console.log('[ORGANISED CRIME STATS] Initialization complete - waiting for user interaction');
 }
 
 const handleOCDataFetch = async () => {
+    console.log('[ORGANISED CRIME STATS] handleOCDataFetch called');
+    console.trace('[ORGANISED CRIME STATS] Call stack:');
+    
+    // Guard against multiple simultaneous fetches
+    if (ocStatsData.isFetching) {
+        console.warn('[ORGANISED CRIME STATS] Fetch already in progress, ignoring duplicate call');
+        return;
+    }
+    
     const apiKey = localStorage.getItem('tornApiKey');
     if (!apiKey) {
         alert('Please enter your API key in the sidebar first');
         return;
     }
+    
+    ocStatsData.isFetching = true; // Set guard flag
     
     const loadingSpinner = document.getElementById('loadingSpinner');
     const fetchBtn = document.getElementById('fetchOCData');
@@ -66,7 +101,7 @@ const handleOCDataFetch = async () => {
         if (fetchBtn) fetchBtn.disabled = true;
         if (progressContainer) progressContainer.style.display = 'block';
 
-        console.log('Fetching organised crime data...');
+        console.log('[ORGANISED CRIME STATS] Fetching organised crime data...');
         
         // Fetch completed crimes with pagination
         let allCrimes = [];
@@ -80,7 +115,7 @@ const handleOCDataFetch = async () => {
             if (progressDetails) progressDetails.textContent = `Fetching page ${pageCount}...`;
             
             const url = `https://api.torn.com/v2/faction/crimes?cat=completed&offset=${currentOffset}&limit=${limit}&sort=DESC&key=${apiKey}`;
-            console.log(`Fetching page ${pageCount} from offset ${currentOffset}...`);
+            console.log(`[ORGANISED CRIME STATS] Fetching page ${pageCount} from offset ${currentOffset}...`);
             
             const response = await fetch(url);
             const data = await response.json();
@@ -90,7 +125,7 @@ const handleOCDataFetch = async () => {
             }
             
             const crimes = data.crimes || [];
-            console.log(`Page ${pageCount}: Found ${crimes.length} crimes`);
+            console.log(`[ORGANISED CRIME STATS] Page ${pageCount}: Found ${crimes.length} crimes`);
             
             if (crimes.length === 0) {
                 hasMore = false;
@@ -118,7 +153,7 @@ const handleOCDataFetch = async () => {
             }
         }
         
-        console.log(`Total crimes fetched: ${allCrimes.length}`);
+        console.log(`[ORGANISED CRIME STATS] Total crimes fetched: ${allCrimes.length}`);
         
         if (progressMessage) progressMessage.textContent = 'Fetching current faction members...';
         if (progressDetails) progressDetails.textContent = 'Loading member list...';
@@ -136,7 +171,7 @@ const handleOCDataFetch = async () => {
         const playerNames = {};
         const membersArray = membersData.members || [];
         
-        console.log(`Found ${membersArray.length} current faction members`);
+        console.log(`[ORGANISED CRIME STATS] Found ${membersArray.length} current faction members`);
         membersArray.forEach(member => {
             currentMemberIds.add(member.id.toString());
             playerNames[member.id.toString()] = member.name;
@@ -172,18 +207,20 @@ const handleOCDataFetch = async () => {
         if (progressContainer) progressContainer.style.display = 'none';
 
     } catch (error) {
-        console.error('Error fetching OC data:', error);
+        console.error('[ORGANISED CRIME STATS] Error fetching OC data:', error);
         alert('Error fetching crime data: ' + error.message);
     } finally {
         if (loadingSpinner) loadingSpinner.style.display = 'none';
         if (fetchBtn) fetchBtn.disabled = false;
         if (progressContainer) progressContainer.style.display = 'none';
+        ocStatsData.isFetching = false; // Reset guard flag
+        console.log('[ORGANISED CRIME STATS] Fetch complete');
     }
 };
 
 function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()) {
-    console.log('Processing crime data...');
-    console.log(`Filtering by ${currentMemberIds.size} current members`);
+    console.log('[ORGANISED CRIME STATS] Processing crime data...');
+    console.log(`[ORGANISED CRIME STATS] Filtering by ${currentMemberIds.size} current members`);
     
     // Initialize difficulty stats (1-10)
     const difficultyMap = {};
@@ -319,14 +356,14 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
     const difficultyStats = Object.values(difficultyMap).filter(stat => stat.total > 0);
     const playerStats = Object.values(playerMap).sort((a, b) => b.totalScore - a.totalScore); // Sort by highest score first
     
-    console.log('Difficulty stats:', difficultyStats);
-    console.log('Player stats (top 10):', playerStats.slice(0, 10));
+    console.log('[ORGANISED CRIME STATS] Difficulty stats:', difficultyStats);
+    console.log('[ORGANISED CRIME STATS] Player stats (top 10):', playerStats.slice(0, 10));
     
     return { difficultyStats, playerStats };
 }
 
 function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
-    console.log('Updating OC Stats UI...');
+    console.log('[ORGANISED CRIME STATS] Updating OC Stats UI...');
     
     // Calculate summary stats
     const totalSuccessful = difficultyStats.reduce((sum, stat) => sum + stat.successful, 0);
@@ -562,7 +599,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         });
     }
     
-    console.log('UI updated successfully');
+    console.log('[ORGANISED CRIME STATS] UI updated successfully');
 }
 
 // Sorting functions for difficulty table
