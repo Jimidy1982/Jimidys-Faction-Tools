@@ -540,6 +540,36 @@ nav a:hover::after {
     border-color: var(--accent-color);
 }
 
+/* Page footer styles */
+.page-footer {
+    background-color: var(--secondary-color);
+    border-top: 2px solid var(--border-color);
+    padding: 15px 20px;
+    text-align: center;
+    color: #b0b0b0;
+    font-size: 0.9em;
+}
+
+.page-footer p {
+    margin: 5px 0;
+    line-height: 1.6;
+}
+
+.page-footer a {
+    color: var(--accent-color);
+    text-decoration: none;
+}
+
+.page-footer a:hover {
+    text-decoration: underline;
+}
+
+.page-footer .disclaimer {
+    color: #888;
+    font-size: 0.85em;
+    margin-top: 5px;
+}
+
 /* Tab styles */
 .war-tabs {
     background-color: var(--secondary-color);
