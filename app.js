@@ -952,6 +952,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // toolContainer.style.display = 'none'; // Don't hide the input fields
 
             let tableHtml = `
+                <!-- Summary Section (NOT scrollable) -->
                 <div style="margin-bottom: 20px;">
                     <button id="exportCsvBtn" class="btn" style="background-color: #FFD700; color: #333; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
                         Export to CSV
@@ -960,23 +961,21 @@ document.addEventListener('DOMContentLoaded', () => {
                         Collect Detailed Stats
                     </button>
                 </div>
-                <div style="text-align: center; margin-bottom: 10px; color: #00ff00; font-size: 0.9em;">
-                    ⚡ Fetched in ${totalTime.toFixed(0)}ms using optimized batching
-                    <br>
-                    💾 Cache: ${cacheStats.hits} hits, ${cacheStats.misses} misses (${cacheStats.hitRate}% hit rate)
-                </div>
                 <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName}</h2>
-                <table id="membersTable">
-                    <thead>
-                        <tr>
-                            <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
-                            <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
-                            <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
-                            <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
-                            <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">Last Updated <span class="sort-indicator"></span></th>
-                        </tr>
-                    </thead>
-                    <tbody>`;
+                
+                <!-- Table Wrapper (SCROLLABLE) -->
+                <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                    <table id="membersTable" style="min-width: 600px;">
+                        <thead>
+                            <tr>
+                                <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
+                                <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
+                                <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
+                                <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
+                                <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">Last Updated <span class="sort-indicator"></span></th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
             for (const memberID of memberIDs) {
                 const member = membersObject[memberID];
                 const fairFightScore = ffScores[memberID] || 'Unknown';
@@ -994,12 +993,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     <tr>
                         <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${memberID}]</a></td>
                         <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
-                        <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
                         <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
+                        <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
                         <td data-column="lastupdated" data-value="${lastUpdatedTimestamp || 0}">${lastUpdatedDate}</td>
                     </tr>`;
             }
-            tableHtml += `</tbody></table>`;
+            tableHtml += `
+                        </tbody>
+                    </table>
+                </div>`;
             resultsContainer.innerHTML = tableHtml;
             resultsContainer.style.display = 'block';
 
@@ -1225,107 +1227,103 @@ document.addEventListener('DOMContentLoaded', () => {
             const firstBatch = memberIDs.slice(0, firstBatchSize);
             const remainingBatch = memberIDs.slice(firstBatchSize);
 
-            console.log(`Processing first batch of ${firstBatch.length} members immediately...`);
-            updateProgress(0, totalMembers, 'Starting first batch...');
+            console.log(`Processing first batch of ${firstBatch.length} members immediately (90 instant calls)...`);
+            updateProgress(0, totalMembers, 'Fetching first 90 members instantly...');
             
-            // Process first batch
-            for (let i = 0; i < firstBatch.length; i += 5) { // Process 5 at a time
-                const batch = firstBatch.slice(i, i + 5);
-                const batchPromises = batch.map(async (memberID) => {
-                    const cacheKey = `personalstats_${memberID}`;
-                    const cached = getCachedData(cacheKey);
-                    if (cached) {
-                        console.log(`Using cached data for member ${memberID}`);
-                        return { memberID, data: cached };
-                    }
-
-                    const url = `https://api.torn.com/user/${memberID}?selections=personalstats&key=${apiKey}`;
-                    const response = await fetch(url);
-                    const data = await response.json();
-                    
-                    if (data.error) {
-                        console.error(`Error fetching stats for ${memberID}:`, data.error);
-                        return { memberID, data: null };
-                    }
-                    
-                    setCachedData(cacheKey, data);
-                    return { memberID, data };
-                });
-
-                const batchResults = await Promise.all(batchPromises);
-                batchResults.forEach(result => {
-                    if (result.data) {
-                        detailedStats[result.memberID] = result.data;
-                    }
-                });
-
-                // Update progress
-                processedCount += batch.length;
-                updateProgress(processedCount, totalMembers, `Processed ${processedCount} of ${totalMembers} players...`);
-
-                // Rate limiting delay between batches
-                if (i + 5 < firstBatch.length) {
-                    await new Promise(resolve => setTimeout(resolve, 667)); // ~3 calls every 2 seconds
+            // Process first batch - ALL AT ONCE (90 calls instantly)
+            const firstBatchPromises = firstBatch.map(async (memberID) => {
+                const cacheKey = `personalstats_${memberID}`;
+                const cached = getCachedData(cacheKey);
+                if (cached) {
+                    console.log(`Using cached data for member ${memberID}`);
+                    return { memberID, data: cached };
                 }
-            }
+
+                const url = `https://api.torn.com/user/${memberID}?selections=personalstats&key=${apiKey}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.error) {
+                    console.error(`Error fetching stats for ${memberID}:`, data.error);
+                    return { memberID, data: null };
+                }
+                
+                setCachedData(cacheKey, data);
+                return { memberID, data };
+            });
+
+            const firstBatchResults = await Promise.all(firstBatchPromises);
+            firstBatchResults.forEach(result => {
+                if (result.data) {
+                    detailedStats[result.memberID] = result.data;
+                }
+            });
+
+            processedCount = firstBatch.length;
+            updateProgress(processedCount, totalMembers, `First ${firstBatch.length} members fetched!`);
 
             // Process remaining batch after 1 minute delay if needed
             if (remainingBatch.length > 0) {
                 console.log(`Waiting 60 seconds before processing remaining ${remainingBatch.length} members...`);
                 updateProgress(processedCount, totalMembers, `First batch completed. Waiting 60 seconds before processing remaining ${remainingBatch.length} members...`);
                 
-                // Update the loading message
+                // Update the loading message with countdown
                 const progressDetails = document.querySelector('.progress-details');
                 if (progressDetails) {
+                    let secondsLeft = 60;
                     progressDetails.innerHTML = `
-                        First batch completed. Waiting 60 seconds before processing remaining ${remainingBatch.length} members...
+                        First batch completed. Waiting <span id="countdown">${secondsLeft}</span> seconds before processing remaining ${remainingBatch.length} members...
                         <br>
                         <small>This is required to respect Torn API rate limits.</small>
                     `;
+                    
+                    // Start countdown
+                    const countdownInterval = setInterval(() => {
+                        secondsLeft--;
+                        const countdownEl = document.getElementById('countdown');
+                        if (countdownEl) {
+                            countdownEl.textContent = secondsLeft;
+                        }
+                        if (secondsLeft <= 0) {
+                            clearInterval(countdownInterval);
+                        }
+                    }, 1000);
                 }
 
                 await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 60 seconds
 
-                console.log(`Processing remaining batch of ${remainingBatch.length} members...`);
+                console.log(`Processing remaining batch of ${remainingBatch.length} members (1 per second)...`);
                 updateProgress(processedCount, totalMembers, `Processing remaining ${remainingBatch.length} members...`);
 
-                for (let i = 0; i < remainingBatch.length; i += 5) {
-                    const batch = remainingBatch.slice(i, i + 5);
-                    const batchPromises = batch.map(async (memberID) => {
-                        const cacheKey = `personalstats_${memberID}`;
-                        const cached = getCachedData(cacheKey);
-                        if (cached) {
-                            console.log(`Using cached data for member ${memberID}`);
-                            return { memberID, data: cached };
-                        }
-
+                // Process remaining members ONE AT A TIME with 1 second delay
+                for (let i = 0; i < remainingBatch.length; i++) {
+                    const memberID = remainingBatch[i];
+                    const cacheKey = `personalstats_${memberID}`;
+                    const cached = getCachedData(cacheKey);
+                    
+                    if (cached) {
+                        console.log(`Using cached data for member ${memberID}`);
+                        detailedStats[memberID] = cached;
+                    } else {
                         const url = `https://api.torn.com/user/${memberID}?selections=personalstats&key=${apiKey}`;
                         const response = await fetch(url);
                         const data = await response.json();
                         
                         if (data.error) {
                             console.error(`Error fetching stats for ${memberID}:`, data.error);
-                            return { memberID, data: null };
+                        } else {
+                            setCachedData(cacheKey, data);
+                            detailedStats[memberID] = data;
                         }
-                        
-                        setCachedData(cacheKey, data);
-                        return { memberID, data };
-                    });
-
-                    const batchResults = await Promise.all(batchPromises);
-                    batchResults.forEach(result => {
-                        if (result.data) {
-                            detailedStats[result.memberID] = result.data;
-                        }
-                    });
+                    }
 
                     // Update progress
-                    processedCount += batch.length;
+                    processedCount++;
                     updateProgress(processedCount, totalMembers, `Processed ${processedCount} of ${totalMembers} players...`);
 
-                    // Rate limiting delay between batches
-                    if (i + 5 < remainingBatch.length) {
-                        await new Promise(resolve => setTimeout(resolve, 667));
+                    // Wait 1 second before next call (unless it's the last one)
+                    if (i < remainingBatch.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                     }
                 }
             }
@@ -1389,6 +1387,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         let tableHtml = `
+            <!-- Summary Section (NOT scrollable) -->
             <div style="margin-bottom: 20px;">
                 <button id="exportDetailedCsvBtn" class="btn" style="background-color: #FFD700; color: #333; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
                     Export Detailed Stats to CSV
@@ -1397,27 +1396,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     Back to Original View
                 </button>
             </div>
-            <div style="text-align: center; margin-bottom: 10px; color: #00ff00; font-size: 0.9em;">
-                ${wasCached ? '💾' : '⚡'} ${wasCached ? 'Using cached detailed stats' : `Detailed stats collected in ${totalTime.toFixed(0)}ms`}
-                <br>
-                📊 Showing ${tableData.length} members with personal stats
-            </div>
             <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName} - Detailed Stats</h2>
-            <table id="detailedStatsTable" style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr>
-                        <th data-column="member" style="min-width: 220px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Member <span class="sort-indicator"></span></th>
-                        <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Level <span class="sort-indicator"></span></th>
-                        <th data-column="estimatedStats" style="min-width: 140px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Estimated Stats <span class="sort-indicator">↓</span></th>
-                        <th data-column="warHits" style="min-width: 110px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">War Hits <span class="sort-indicator"></span></th>
-                        <th data-column="cansUsed" style="min-width: 110px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Cans Used <span class="sort-indicator"></span></th>
-                        <th data-column="xanaxUsed" style="min-width: 110px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Xanax Used <span class="sort-indicator"></span></th>
-                        <th data-column="networth" style="min-width: 140px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Networth <span class="sort-indicator"></span></th>
-                        <th data-column="biggestHit" style="min-width: 120px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Biggest Hit <span class="sort-indicator"></span></th>
-                        <th data-column="refills" style="min-width: 90px; cursor: pointer; text-align: left; padding: 10px; text-align: center; position: relative; padding-right: 25px; background-color: var(--secondary-color); color: var(--accent-color);">Refills <span class="sort-indicator"></span></th>
-                    </tr>
-                </thead>
-                <tbody>`;
+            
+            <!-- Table Wrapper (SCROLLABLE) -->
+            <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                <table id="detailedStatsTable" style="min-width: 900px;">
+                    <thead>
+                        <tr>
+                            <th data-column="member" style="min-width: 220px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
+                            <th data-column="estimatedStats" style="min-width: 140px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator">↓</span></th>
+                            <th data-column="warHits" style="min-width: 110px; cursor: pointer; text-align: left;">War Hits <span class="sort-indicator"></span></th>
+                            <th data-column="cansUsed" style="min-width: 110px; cursor: pointer; text-align: left;">Cans Used <span class="sort-indicator"></span></th>
+                            <th data-column="xanaxUsed" style="min-width: 110px; cursor: pointer; text-align: left;">Xanax Used <span class="sort-indicator"></span></th>
+                            <th data-column="networth" style="min-width: 140px; cursor: pointer; text-align: left;">Networth <span class="sort-indicator"></span></th>
+                            <th data-column="biggestHit" style="min-width: 120px; cursor: pointer; text-align: left;">Biggest Hit <span class="sort-indicator"></span></th>
+                            <th data-column="refills" style="min-width: 90px; cursor: pointer; text-align: left;">Refills <span class="sort-indicator"></span></th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
 
         tableData.forEach(stats => {
             const displayEstimatedStat = (stats.estimatedStats !== 'N/A') ? stats.estimatedStats.toLocaleString() : 'N/A';
@@ -1426,19 +1423,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             tableHtml += `
                 <tr>
-                    <td data-column="member" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);"><a href="https://www.torn.com/profiles.php?XID=${stats.memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${stats.name} [${stats.memberID}]</a></td>
-                    <td data-column="level" data-value="${stats.level === 'Unknown' ? -1 : stats.level}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.level}</td>
-                    <td data-column="estimatedStats" data-value="${stats.estimatedStats === 'N/A' ? -1 : stats.estimatedStats}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${displayEstimatedStat}</td>
-                    <td data-column="warHits" data-value="${stats.warHits}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.warHits.toLocaleString()}</td>
-                    <td data-column="cansUsed" data-value="${stats.cansUsed}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.cansUsed.toLocaleString()}</td>
-                    <td data-column="xanaxUsed" data-value="${stats.xanaxUsed}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.xanaxUsed.toLocaleString()}</td>
-                    <td data-column="networth" data-value="${stats.networth}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">$${displayNetworth}</td>
-                    <td data-column="biggestHit" data-value="${stats.biggestHit}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${displayBiggestHit}</td>
-                    <td data-column="refills" data-value="${stats.refills}" style="padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color);">${stats.refills.toLocaleString()}</td>
+                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${stats.memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${stats.name} [${stats.memberID}]</a></td>
+                    <td data-column="level" data-value="${stats.level === 'Unknown' ? -1 : stats.level}">${stats.level}</td>
+                    <td data-column="estimatedStats" data-value="${stats.estimatedStats === 'N/A' ? -1 : stats.estimatedStats}">${displayEstimatedStat}</td>
+                    <td data-column="warHits" data-value="${stats.warHits}">${stats.warHits.toLocaleString()}</td>
+                    <td data-column="cansUsed" data-value="${stats.cansUsed}">${stats.cansUsed.toLocaleString()}</td>
+                    <td data-column="xanaxUsed" data-value="${stats.xanaxUsed}">${stats.xanaxUsed.toLocaleString()}</td>
+                    <td data-column="networth" data-value="${stats.networth}">$${displayNetworth}</td>
+                    <td data-column="biggestHit" data-value="${stats.biggestHit}">${displayBiggestHit}</td>
+                    <td data-column="refills" data-value="${stats.refills}">${stats.refills.toLocaleString()}</td>
                 </tr>`;
         });
 
-        tableHtml += `</tbody></table>`;
+        tableHtml += `
+                    </tbody>
+                </table>
+            </div>`;
 
         resultsContainer.innerHTML = tableHtml;
 
@@ -2524,7 +2524,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     <div class="tab-content">
                         <div class="tab-pane" id="total-summary">
-                            <table id="membersTable">
+                            <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                                <table id="membersTable" style="min-width: 700px;">
                                 <thead>
                                     <tr>
                                         <th rowspan="3">Member</th>
@@ -2583,7 +2584,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                         <td style="border-left: 2px solid var(--accent-color);"><strong>${totals.wars.total}</strong></td><td><strong>${Math.round(totals.wars.points)}</strong></td>
                                     </tr>
                                 </tfoot>
-                            </table>
+                                </table>
+                            </div>
                         </div>
                         ${individualWars.map(war => {
                             const tableId = `war-${war.id}`;
@@ -2608,7 +2610,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <p>Date: ${new Date(war.timestamp * 1000).toLocaleString()}</p>
                                     ${Object.values(war.factions || {}).map(f => `<p>${f.name}: ${f.score} points</p>`).join('')}
                                 </div>
-                                <table class="war-table">
+                                <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                                    <table class="war-table" style="min-width: 600px;">
                                     <thead>
                                         <tr>
                                             <th data-column="name" data-table-id="${tableId}">Member <span class="sort-indicator">${warSort.column === 'name' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -2631,7 +2634,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                             `;
                                         }).join('')}
                                     </tbody>
-                                </table>
+                                    </table>
+                                </div>
                             </div>
                         `}).join('')}
                     </div>
@@ -2640,7 +2644,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             // Fallback to single table if no individual wars
             html += `
-                <table id="membersTable">
+                <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                    <table id="membersTable" style="min-width: 700px;">
                     <thead>
                         <tr>
                             <th rowspan="3">Member</th>
@@ -2699,7 +2704,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             <td style="border-left: 2px solid var(--accent-color);"><strong>${totals.wars.total}</strong></td><td><strong>${Math.round(totals.wars.points)}</strong></td>
                         </tr>
                     </tfoot>
-                </table>
+                    </table>
+                </div>
             `;
         }
 
@@ -2761,5 +2767,45 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         
         console.log('updateWarReportUI completed');
+    }
+    
+    // ==================== MOBILE NAVIGATION TOGGLE ====================
+    const mobileNavToggle = document.getElementById('mobileNavToggle');
+    const mainNav = document.getElementById('mainNav');
+    
+    if (mobileNavToggle && mainNav) {
+        // Toggle navigation menu
+        mobileNavToggle.addEventListener('click', () => {
+            mainNav.classList.toggle('mobile-active');
+            
+            // Update button text
+            if (mainNav.classList.contains('mobile-active')) {
+                mobileNavToggle.textContent = '✕';
+            } else {
+                mobileNavToggle.textContent = '☰';
+            }
+        });
+        
+        // Close navigation when clicking on a nav link (on mobile)
+        const navLinks = mainNav.querySelectorAll('.nav-link');
+        navLinks.forEach(link => {
+            link.addEventListener('click', () => {
+                if (window.innerWidth <= 768) {
+                    mainNav.classList.remove('mobile-active');
+                    mobileNavToggle.textContent = '☰';
+                }
+            });
+        });
+        
+        // Close navigation when clicking outside (on mobile)
+        document.addEventListener('click', (e) => {
+            if (window.innerWidth <= 768 && 
+                mainNav.classList.contains('mobile-active') &&
+                !mainNav.contains(e.target) && 
+                !mobileNavToggle.contains(e.target)) {
+                mainNav.classList.remove('mobile-active');
+                mobileNavToggle.textContent = '☰';
+            }
+        });
     }
 });

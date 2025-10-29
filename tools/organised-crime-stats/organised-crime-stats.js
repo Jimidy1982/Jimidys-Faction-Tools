@@ -385,9 +385,10 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
     const totalPlayers = playerStats.length;
     
     // Update difficulty stats table with summary
-    const difficultyTable = document.getElementById('difficultyStatsTable');
-    if (difficultyTable) {
+    const difficultyTableContainer = document.getElementById('difficultyStatsTable');
+    if (difficultyTableContainer) {
         let html = `
+            <!-- Summary Section (NOT scrollable) -->
             <div class="summary-section" style="margin-bottom: 20px;">
                 <div class="summary-grid">
                     <div class="summary-item">
@@ -411,17 +412,20 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     Only counting crimes where at least one current member participated.
                 </p>
             </div>
-            <table id="difficultyTable" style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr>
-                        <th data-column="difficulty" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Difficulty <span class="sort-indicator"></span></th>
-                        <th data-column="total" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Total Crimes <span class="sort-indicator"></span></th>
-                        <th data-column="successful" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
-                        <th data-column="failed" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
-                        <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
-                    </tr>
-                </thead>
-                <tbody>
+            
+            <!-- Table Wrapper (SCROLLABLE) -->
+            <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                <table id="difficultyTable" style="width: 100%; min-width: 500px; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th data-column="difficulty" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Difficulty <span class="sort-indicator"></span></th>
+                            <th data-column="total" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Total Crimes <span class="sort-indicator"></span></th>
+                            <th data-column="successful" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
+                            <th data-column="failed" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
+                            <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
         `;
         
         difficultyStats.forEach(stat => {
@@ -439,14 +443,15 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         });
         
         html += `
-                </tbody>
-            </table>
+                    </tbody>
+                </table>
+            </div>
         `;
         
-        difficultyTable.innerHTML = html;
+        difficultyTableContainer.innerHTML = html;
         
         // Add sort handlers for difficulty table
-        const difficultyHeaders = difficultyTable.querySelectorAll('th[data-column]');
+        const difficultyHeaders = difficultyTableContainer.querySelectorAll('th[data-column]');
         difficultyHeaders.forEach(header => {
             header.addEventListener('click', () => {
                 const column = header.dataset.column;
@@ -459,12 +464,14 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
     }
     
     // Update player stats table
-    const playerTable = document.getElementById('playerStatsTable');
-    if (playerTable) {
+    const playerTableContainer = document.getElementById('playerStatsTable');
+    if (playerTableContainer) {
         // Count how many current members have participated
         const participatingMembers = playerStats.filter(p => p.totalParticipations > 0).length;
         
+        // Build complete HTML with summary and table wrapper
         let html = `
+            <!-- Summary Section (NOT scrollable) -->
             <div class="summary-section" style="margin-bottom: 20px;">
                 <div class="summary-grid">
                     <div class="summary-item">
@@ -480,19 +487,22 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     Showing current faction members only. Stats include crimes where at least one current member participated.
                 </p>
             </div>
-            <table id="playerTable" style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr>
-                        <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Player Name <span class="sort-indicator"></span></th>
-                        <th data-column="totalParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Total Participations <span class="sort-indicator"></span></th>
-                        <th data-column="totalScore" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Score = Difficulty × (Participants ÷ 6). Full team (6 people) = 100% of difficulty points. Partial team gets proportional points.">Score <span class="sort-indicator"></span></th>
-                        <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
-                        <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
-                        <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
-                        <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
-                    </tr>
-                </thead>
-                <tbody>
+            
+            <!-- Table Wrapper (SCROLLABLE) -->
+            <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                <table id="playerTable" style="width: 100%; min-width: 700px; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Player Name <span class="sort-indicator"></span></th>
+                            <th data-column="totalParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Total Participations <span class="sort-indicator"></span></th>
+                            <th data-column="totalScore" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Score = Difficulty × (Participants ÷ 6). Full team (6 people) = 100% of difficulty points. Partial team gets proportional points.">Score <span class="sort-indicator"></span></th>
+                            <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
+                            <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
+                            <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
+                            <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
         `;
         
         playerStats.forEach((player, index) => {
@@ -572,14 +582,15 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         });
         
         html += `
-                </tbody>
-            </table>
+                    </tbody>
+                </table>
+            </div>
         `;
         
-        playerTable.innerHTML = html;
+        playerTableContainer.innerHTML = html;
         
         // Add sort handlers for player table
-        const playerHeaders = playerTable.querySelectorAll('th[data-column]');
+        const playerHeaders = playerTableContainer.querySelectorAll('th[data-column]');
         playerHeaders.forEach(header => {
             header.addEventListener('click', () => {
                 const column = header.dataset.column;
@@ -591,12 +602,12 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         updatePlayerSortIndicators();
         
         // Add click handlers for detail toggle buttons
-        const detailButtons = playerTable.querySelectorAll('.details-toggle');
+        const detailButtons = playerTableContainer.querySelectorAll('.details-toggle');
         detailButtons.forEach(button => {
             button.addEventListener('click', (e) => {
                 e.preventDefault();
                 const playerId = button.dataset.playerId;
-                const detailsRow = playerTable.querySelector(`.details-row[data-player-id="${playerId}"]`);
+                const detailsRow = playerTableContainer.querySelector(`.details-row[data-player-id="${playerId}"]`);
                 
                 if (detailsRow) {
                     const isExpanded = detailsRow.style.display !== 'none';
@@ -953,7 +964,15 @@ function updatePlayerStatsUI(playerStats) {
         const participatingMembers = playerStats.filter(p => p.totalParticipations > 0).length;
         const totalPlayers = playerStats.length;
         
-        let html = `
+        // Insert summary BEFORE the table container
+        let summaryDiv = document.getElementById('playerStatsSummary');
+        if (!summaryDiv) {
+            summaryDiv = document.createElement('div');
+            summaryDiv.id = 'playerStatsSummary';
+            playerTable.parentNode.insertBefore(summaryDiv, playerTable);
+        }
+        
+        summaryDiv.innerHTML = `
             <div class="summary-section" style="margin-bottom: 20px;">
                 <div class="summary-grid">
                     <div class="summary-item">
@@ -969,6 +988,10 @@ function updatePlayerStatsUI(playerStats) {
                     Showing current faction members only. Stats include crimes where at least one current member participated.
                 </p>
             </div>
+        `;
+        
+        // Now just build the table
+        let html = `
             <table id="playerTable" style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr>

@@ -1260,7 +1260,8 @@ function renderWarReportTable() {
     }
 
     const tableHtml = `
-        <table id="membersTable" style="width:100%;border-collapse:collapse;margin-top:20px;">
+        <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+            <table id="membersTable" style="min-width:900px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
                     <th data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${sortState.column === 'name' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -1309,7 +1310,8 @@ function renderWarReportTable() {
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.avgDefLevel || 0), 0) / sorted.length > 0 ? (sorted.reduce((sum, p) => sum + (p.avgDefLevel || 0), 0) / sorted.length).toFixed(1) : '0.0'}</strong></td>
                 </tr>
             </tfoot>
-        </table>
+            </table>
+        </div>
     `;
 
     membersTableDiv.innerHTML = tableHtml;
@@ -2198,7 +2200,8 @@ function renderPayoutTable() {
         <div style="margin-bottom: 10px; font-size: 12px; color: #666; font-style: italic;">
             💡 <strong>Note:</strong> If links don't open, please allow popups for this site in your browser settings.
         </div>
-        <table id="payoutTable" style="width:100%;border-collapse:collapse;margin-top:20px;">
+        <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+            <table id="payoutTable" style="min-width:1000px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
                     <th data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${warReportData.payoutSortState.column === 'name' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -2247,7 +2250,8 @@ function renderPayoutTable() {
                     <td></td>
                 </tr>
             </tfoot>
-        </table>
+            </table>
+        </div>
         </div>
     `;
     payoutTableDiv.innerHTML = tableHtml;
@@ -2910,7 +2914,8 @@ function renderRespectPayoutTable() {
         <div style="margin-bottom: 10px; font-size: 12px; color: #666; font-style: italic;">
             💡 <strong>Note:</strong> If links don't open, please allow popups for this site in your browser settings.
         </div>
-        <table id="respectPayoutTable" style="width:100%;border-collapse:collapse;margin-top:20px;">
+        <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+            <table id="respectPayoutTable" style="min-width:1100px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
                     <th data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Member <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'name' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -2965,7 +2970,8 @@ function renderRespectPayoutTable() {
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
                 </tr>
             </tfoot>
-        </table>
+            </table>
+        </div>
         </div>
         
         <!-- Chain Bonus Section -->
