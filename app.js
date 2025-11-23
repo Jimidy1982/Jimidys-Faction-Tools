@@ -664,7 +664,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (oldScript) oldScript.remove();
                 // Dynamically load the script
                 const script = document.createElement('script');
-                script.src = 'tools/consumption-tracker/consumption-tracker.js';
+                // Add cache-busting query parameter to ensure latest version is loaded
+                script.src = 'tools/consumption-tracker/consumption-tracker.js?v=' + Date.now();
                 script.id = 'consumption-tracker-script';
                 script.onload = () => {
                     console.log('[APP] consumption-tracker/consumption-tracker.js loaded, calling initConsumptionTracker');
