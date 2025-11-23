@@ -1,10 +1,14 @@
 console.log('[CONSUMPTION TRACKER] consumption-tracker.js LOADED');
 
-// Global state for consumption tracker
-let consumptionTrackerData = {
-    fetchedMembers: [],
-    sortState: { column: 'xanax', direction: 'desc' }
-};
+// Global state for consumption tracker (use window to avoid redeclaration errors when script is reloaded)
+if (!window.consumptionTrackerData) {
+    window.consumptionTrackerData = {
+        fetchedMembers: [],
+        sortState: { column: 'xanax', direction: 'desc' }
+    };
+}
+// Create local reference for convenience (use var to allow redeclaration on script reload)
+var consumptionTrackerData = window.consumptionTrackerData;
 
 function initConsumptionTracker() {
     console.log('[CONSUMPTION TRACKER] initConsumptionTracker CALLED');

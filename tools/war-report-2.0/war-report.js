@@ -83,8 +83,8 @@ if (!window.warReportData) {
         respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
     };
 }
-// Create local reference for convenience
-const warReportData = window.warReportData;
+// Create local reference for convenience (use var to allow redeclaration on script reload)
+var warData = window.warReportData;
 
 // Global state for linked options group
 if (typeof window.chainGroupLinked === 'undefined') {
@@ -93,7 +93,8 @@ if (typeof window.chainGroupLinked === 'undefined') {
 // Use getter function to access the value
 function getChainGroupLinked() { return window.chainGroupLinked; }
 function setChainGroupLinked(value) { window.chainGroupLinked = value; }
-const chainGroupOptions = ['respectPayRetals', 'respectPayOverseas', 'respectRemoveModifiers'];
+// Use var to allow redeclaration on script reload
+var chainGroupOptions = ['respectPayRetals', 'respectPayOverseas', 'respectRemoveModifiers'];
 
 // Function to show confirmation dialog for opening multiple links
 function showOpenLinksConfirmation(linkCount, callback) {
@@ -384,10 +385,10 @@ function loadRespectPayoutSettings() {
     }
 }
 
-let tabsInitialized = false;
+var tabsInitialized = false;
 
 // Guard to prevent double initialization
-let warReportInitialized = false;
+var warReportInitialized = false;
 
 function initWarReport2() {
     console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
@@ -1138,9 +1139,9 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
         });
 
         // Store data globally for this module
-        warReportData.playerStats = playerStats;
-        warReportData.warInfo = targetWar;
-        warReportData.allAttacks = allAttacks;
+        warData.playerStats = playerStats;
+        warData.warInfo = targetWar;
+        warData.allAttacks = allAttacks;
 
         const totalTime = performance.now() - startTime;
 
@@ -1184,9 +1185,9 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
 function updateWarReportUI(playerStats, warInfo, allAttacks, totalTime) {
 
     // Store data in global state
-    warReportData.playerStats = playerStats;
-    warReportData.warInfo = warInfo;
-    warReportData.allAttacks = allAttacks;
+    warData.playerStats = playerStats;
+    warData.warInfo = warInfo;
+    warData.allAttacks = allAttacks;
     const spinner = document.getElementById('loadingSpinner');
     const resultsSection = document.querySelector('.results-section');
 
@@ -1243,10 +1244,10 @@ function updateWarReportUI(playerStats, warInfo, allAttacks, totalTime) {
 // Render the war report table with sorting
 function renderWarReportTable() {
 
-    const playerStats = warReportData.playerStats;
-    const warInfo = warReportData.warInfo;
-    const allAttacks = warReportData.allAttacks;
-    const sortState = warReportData.sortState;
+    const playerStats = warData.playerStats;
+    const warInfo = warData.warInfo;
+    const allAttacks = warData.allAttacks;
+    const sortState = warData.sortState;
 
     // Convert to array and sort
     const sorted = Object.values(playerStats).sort((a, b) => {
@@ -1356,11 +1357,11 @@ function renderWarReportTable() {
         headers.forEach(header => {
             header.addEventListener('click', () => {
                 const column = header.getAttribute('data-column');
-                if (warReportData.sortState.column === column) {
-                    warReportData.sortState.direction = warReportData.sortState.direction === 'asc' ? 'desc' : 'asc';
+                if (warData.sortState.column === column) {
+                    warData.sortState.direction = warData.sortState.direction === 'asc' ? 'desc' : 'asc';
                 } else {
-                    warReportData.sortState.column = column;
-                    warReportData.sortState.direction = column === 'name' ? 'asc' : 'desc';
+                    warData.sortState.column = column;
+                    warData.sortState.direction = column === 'name' ? 'asc' : 'desc';
                 }
                 renderWarReportTable();
             });
@@ -1371,7 +1372,7 @@ function renderWarReportTable() {
 
 // Export war report to CSV
 function exportWarReportToCSV() {
-    const playerStats = warReportData.playerStats;
+    const playerStats = warData.playerStats;
     if (!playerStats || Object.keys(playerStats).length === 0) {
         alert('No war report data to export. Please fetch war data first.');
         return;
@@ -1554,14 +1555,14 @@ function initializeTabs() {
             pane.style.display = 'block';
 
             // If switching to payout tab and we have data, render payout table
-            if (tabId === 'payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+            if (tabId === 'payout-tab' && warData.playerStats && Object.keys(warData.playerStats).length > 0) {
 
                 renderPayoutTable();
             } else if (tabId === 'payout-tab') {
 
             }
             // If switching to respect payout tab and we have data, render respect payout table
-            else if (tabId === 'respect-payout-tab' && warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+            else if (tabId === 'respect-payout-tab' && warData.playerStats && Object.keys(warData.playerStats).length > 0) {
 
                 renderRespectPayoutTable();
             } else if (tabId === 'respect-payout-tab') {
@@ -1582,7 +1583,7 @@ function initializeTabs() {
         addThousandSeparatorInput(payPerHitInput);
         // Define updatePayoutTable before using it
         const updatePayoutTable = () => {
-            if (warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+            if (warData.playerStats && Object.keys(warData.playerStats).length > 0) {
 
                 renderPayoutTable();
             }
@@ -1769,7 +1770,7 @@ function initializeTabs() {
             const updateRespectPayoutTable = () => {
 
                 
-                if (warReportData.playerStats && Object.keys(warReportData.playerStats).length > 0) {
+                if (warData.playerStats && Object.keys(warData.playerStats).length > 0) {
 
                     renderRespectPayoutTable();
 
@@ -1986,9 +1987,9 @@ function initializeTabs() {
 
 // --- Patch renderPayoutTable to match main report style and remove breakdown columns ---
 function renderPayoutTable() {
-    const playerStats = warReportData.playerStats;
-    const warInfo = warReportData.warInfo;
-    const allAttacks = warReportData.allAttacks;
+    const playerStats = warData.playerStats;
+    const warInfo = warData.warInfo;
+    const allAttacks = warData.allAttacks;
     if (!playerStats || Object.keys(playerStats).length === 0) {
 
         return;
@@ -2050,7 +2051,7 @@ function renderPayoutTable() {
         
         if (filterLowFF) {
             // Find all war hits for this player and check FF ratings
-            const playerAttacks = warReportData.allAttacks.filter(attack => 
+            const playerAttacks = warData.allAttacks.filter(attack => 
                 String(attack.attacker?.id) === String(player.id) &&
                 attack.modifiers?.war === 2 &&
                 !attack.is_interrupted
@@ -2171,7 +2172,7 @@ function renderPayoutTable() {
     }
 
     // Sort by payout sort state
-    const { column: sortColumn, direction: sortDirection } = warReportData.payoutSortState;
+    const { column: sortColumn, direction: sortDirection } = warData.payoutSortState;
     playersWithPayouts.sort((a, b) => {
         let aValue = a[sortColumn];
         let bValue = b[sortColumn];
@@ -2214,15 +2215,15 @@ function renderPayoutTable() {
             <table id="payoutTable" style="min-width:1000px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
-                    <th data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${warReportData.payoutSortState.column === 'name' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="level" style="cursor: pointer;">Level <span class="sort-indicator">${warReportData.payoutSortState.column === 'level' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warHits" style="cursor: pointer;">War Hits <span class="sort-indicator">${warReportData.payoutSortState.column === 'warHits' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="lowFFHits" style="cursor: pointer; color: #ff6b6b;">Low FF Hits <span class="sort-indicator">${warReportData.payoutSortState.column === 'lowFFHits' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warRetals" style="cursor: pointer;">Retaliations <span class="sort-indicator">${warReportData.payoutSortState.column === 'warRetals' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warAssists" style="cursor: pointer;">Assists <span class="sort-indicator">${warReportData.payoutSortState.column === 'warAssists' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="overseasHits" style="cursor: pointer;">Overseas <span class="sort-indicator">${warReportData.payoutSortState.column === 'overseasHits' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="otherAttacks" style="cursor: pointer;">Other Attacks <span class="sort-indicator">${warReportData.payoutSortState.column === 'otherAttacks' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="totalPayout" style="cursor: pointer;"><strong>Total Payout</strong> <span class="sort-indicator">${warReportData.payoutSortState.column === 'totalPayout' ? (warReportData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${warData.payoutSortState.column === 'name' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="level" style="cursor: pointer;">Level <span class="sort-indicator">${warData.payoutSortState.column === 'level' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warHits" style="cursor: pointer;">War Hits <span class="sort-indicator">${warData.payoutSortState.column === 'warHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="lowFFHits" style="cursor: pointer; color: #ff6b6b;">Low FF Hits <span class="sort-indicator">${warData.payoutSortState.column === 'lowFFHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warRetals" style="cursor: pointer;">Retaliations <span class="sort-indicator">${warData.payoutSortState.column === 'warRetals' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warAssists" style="cursor: pointer;">Assists <span class="sort-indicator">${warData.payoutSortState.column === 'warAssists' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="overseasHits" style="cursor: pointer;">Overseas <span class="sort-indicator">${warData.payoutSortState.column === 'overseasHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="otherAttacks" style="cursor: pointer;">Other Attacks <span class="sort-indicator">${warData.payoutSortState.column === 'otherAttacks' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="totalPayout" style="cursor: pointer;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.payoutSortState.column === 'totalPayout' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th>Pay link</th>
                 </tr>
             </thead>
@@ -2276,11 +2277,11 @@ function renderPayoutTable() {
             header.addEventListener('click', () => {
                 const column = header.getAttribute('data-column');
 
-                if (warReportData.payoutSortState.column === column) {
-                    warReportData.payoutSortState.direction = warReportData.payoutSortState.direction === 'asc' ? 'desc' : 'asc';
+                if (warData.payoutSortState.column === column) {
+                    warData.payoutSortState.direction = warData.payoutSortState.direction === 'asc' ? 'desc' : 'asc';
                 } else {
-                    warReportData.payoutSortState.column = column;
-                    warReportData.payoutSortState.direction = column === 'name' ? 'asc' : 'desc';
+                    warData.payoutSortState.column = column;
+                    warData.payoutSortState.direction = column === 'name' ? 'asc' : 'desc';
                 }
 
                 renderPayoutTable();
@@ -2394,7 +2395,7 @@ function renderPayoutTable() {
 
 // --- Patch exportPayoutToCSV to match new columns ---
 function exportPayoutToCSV() {
-    const playerStats = warReportData.playerStats;
+    const playerStats = warData.playerStats;
     if (!playerStats || Object.keys(playerStats).length === 0) {
         alert('No payout data to export. Please fetch war data first.');
         return;
@@ -2450,9 +2451,9 @@ function exportPayoutToCSV() {
 // --- Respect Based Payout Table Rendering ---
 function renderRespectPayoutTable() {
 
-    const playerStats = warReportData.playerStats;
-    const warInfo = warReportData.warInfo;
-    const allAttacks = warReportData.allAttacks;
+    const playerStats = warData.playerStats;
+    const warInfo = warData.warInfo;
+    const allAttacks = warData.allAttacks;
     if (!playerStats || Object.keys(playerStats).length === 0) {
 
         return;
@@ -2649,7 +2650,7 @@ function renderRespectPayoutTable() {
         let lowFFHits = 0;
         if (filterLowFF) {
             // Find all war hits for this player and check FF ratings
-            const playerAttacks = warReportData.allAttacks.filter(attack => 
+            const playerAttacks = warData.allAttacks.filter(attack => 
                 String(attack.attacker?.id) === String(player.id) &&
                 attack.modifiers?.war === 2 &&
                 !attack.is_interrupted
@@ -2881,7 +2882,7 @@ function renderRespectPayoutTable() {
     let totalPayout = playersWithRespectPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
 
     // Sort by respect payout sort state (AFTER all calculations are complete)
-    const { column: sortColumn, direction: sortDirection } = warReportData.respectPayoutSortState;
+    const { column: sortColumn, direction: sortDirection } = warData.respectPayoutSortState;
     playersWithRespectPayouts.sort((a, b) => {
         let aValue = a[sortColumn];
         let bValue = b[sortColumn];
@@ -2928,17 +2929,17 @@ function renderRespectPayoutTable() {
             <table id="respectPayoutTable" style="min-width:1100px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
-                    <th data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Member <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'name' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="level" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Level <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'level' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War Hits <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="playerWarRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War ${removeModifiers ? 'Base' : 'Full'} Respect <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'playerWarRespect' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="playerOutsideRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Outside ${removeModifiers ? 'Base' : 'Full'} Respect <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'playerOutsideRespect' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="respectRatio" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Respect % <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'respectRatio' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warRetals" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Retals <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warRetals' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warAssists" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Assists <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'warAssists' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="overseasHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Abroad <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'overseasHits' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="otherAttacks" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Other Attacks <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'otherAttacks' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>Total Payout</strong> <span class="sort-indicator">${warReportData.respectPayoutSortState.column === 'totalPayout' ? (warReportData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Member <span class="sort-indicator">${warData.respectPayoutSortState.column === 'name' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="level" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Level <span class="sort-indicator">${warData.respectPayoutSortState.column === 'level' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War Hits <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="playerWarRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">War ${removeModifiers ? 'Base' : 'Full'} Respect <span class="sort-indicator">${warData.respectPayoutSortState.column === 'playerWarRespect' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="playerOutsideRespect" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Outside ${removeModifiers ? 'Base' : 'Full'} Respect <span class="sort-indicator">${warData.respectPayoutSortState.column === 'playerOutsideRespect' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="respectRatio" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Respect % <span class="sort-indicator">${warData.respectPayoutSortState.column === 'respectRatio' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warRetals" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Retals <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warRetals' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warAssists" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Assists <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warAssists' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="overseasHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Abroad <span class="sort-indicator">${warData.respectPayoutSortState.column === 'overseasHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="otherAttacks" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Other Attacks <span class="sort-indicator">${warData.respectPayoutSortState.column === 'otherAttacks' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.respectPayoutSortState.column === 'totalPayout' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040;">Pay link</th>
                 </tr>
             </thead>
@@ -3050,11 +3051,11 @@ function renderRespectPayoutTable() {
             header.addEventListener('click', () => {
                 const column = header.getAttribute('data-column');
 
-                if (warReportData.respectPayoutSortState.column === column) {
-                    warReportData.respectPayoutSortState.direction = warReportData.respectPayoutSortState.direction === 'asc' ? 'desc' : 'asc';
+                if (warData.respectPayoutSortState.column === column) {
+                    warData.respectPayoutSortState.direction = warData.respectPayoutSortState.direction === 'asc' ? 'desc' : 'asc';
                 } else {
-                    warReportData.respectPayoutSortState.column = column;
-                    warReportData.respectPayoutSortState.direction = column === 'name' ? 'asc' : 'desc';
+                    warData.respectPayoutSortState.column = column;
+                    warData.respectPayoutSortState.direction = column === 'name' ? 'asc' : 'desc';
                 }
 
                 renderRespectPayoutTable();
@@ -3106,8 +3107,8 @@ function renderRespectPayoutTable() {
 
 // --- Export Respect Payout to CSV ---
 function exportRespectPayoutToCSV() {
-    const playerStats = warReportData.playerStats;
-    const allAttacks = warReportData.allAttacks;
+    const playerStats = warData.playerStats;
+    const allAttacks = warData.allAttacks;
     if (!playerStats || Object.keys(playerStats).length === 0) {
         alert('No respect payout data to export. Please fetch war data first.');
         return;
@@ -3264,7 +3265,7 @@ function exportRespectPayoutToCSV() {
 }
 
 // --- Loading Dots Animation ---
-let loadingDotsInterval = null;
+var loadingDotsInterval = null;
 function startLoadingDots() {
     const loadingText = document.getElementById('loadingWarData');
     const dotsSpan = loadingText ? loadingText.querySelector('.loading-dots') : null;

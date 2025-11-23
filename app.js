@@ -44,6 +44,659 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // ==================== VIP TRACKING SYSTEM ====================
+    
+    // VIP Level thresholds
+    const VIP_LEVELS = {
+        1: 10,
+        2: 50,
+        3: 100
+    };
+    
+    // Google Sheets URL for VIP tracking (using same Apps Script as tool usage logs)
+    const GOOGLE_SHEETS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx9dnveoMQYIAzjvsBrhzO1Fl9y29SAUsqLlQLG4YSiyIJ0FyAFpbj0idb854_7w87u/exec';
+    
+    // Get admin API key (stored in localStorage with key 'adminApiKey')
+    function getAdminApiKey() {
+        // Admin API key should be set via admin dashboard or localStorage
+        // For security, this should only be accessible to admins
+        const adminKey = localStorage.getItem('adminApiKey');
+        if (adminKey) {
+            return adminKey;
+        }
+        // Fallback: if current user is admin, use their API key
+        const currentKey = localStorage.getItem('tornApiKey');
+        if (currentKey) {
+            // Check if current user is admin (quick check without API call)
+            // This is a fallback - ideally admin key should be set separately
+            return null; // Will be handled by checking if user is admin
+        }
+        return null;
+    }
+    
+    // Parse Xanax sent event from events API
+    function parseXanaxEvent(eventText) {
+        // Format: "You were sent 11x Xanax from <a href = http://www.torn.com/http://www.torn.com/profiles.php?XID=2181017>Methuzelah</a>"
+        const xanaxMatch = eventText.match(/You were sent (\d+)x Xanax from/);
+        if (!xanaxMatch) return null;
+        
+        const amount = parseInt(xanaxMatch[1], 10);
+        const playerMatch = eventText.match(/XID=(\d+)[^>]*>([^<]+)<\/a>/);
+        if (!playerMatch) return null;
+        
+        return {
+            amount: amount,
+            playerId: parseInt(playerMatch[1], 10),
+            playerName: playerMatch[2]
+        };
+    }
+    
+    // Calculate deductions based on time elapsed (1 xanax per 2 days)
+    function calculateDeductions(lastDeductionDate, currentDate) {
+        if (!lastDeductionDate) return 0;
+        
+        const lastDate = new Date(lastDeductionDate);
+        const current = new Date(currentDate);
+        const daysElapsed = Math.floor((current - lastDate) / (1000 * 60 * 60 * 24));
+        
+        // Deduct 1 xanax every 2 days
+        return Math.floor(daysElapsed / 2);
+    }
+    
+    // Determine VIP level from balance
+    function getVipLevel(balance) {
+        if (balance >= VIP_LEVELS[3]) return 3;
+        if (balance >= VIP_LEVELS[2]) return 2;
+        if (balance >= VIP_LEVELS[1]) return 1;
+        return 0;
+    }
+    
+    // Get progress to next VIP level
+    function getVipProgress(balance, currentLevel) {
+        if (currentLevel >= 3) {
+            return { nextLevel: null, current: balance, needed: 0, progress: 100 };
+        }
+        
+        const nextLevel = currentLevel + 1;
+        const nextThreshold = VIP_LEVELS[nextLevel];
+        const currentThreshold = currentLevel > 0 ? VIP_LEVELS[currentLevel] : 0;
+        const progress = ((balance - currentThreshold) / (nextThreshold - currentThreshold)) * 100;
+        
+        return {
+            nextLevel: nextLevel,
+            current: balance,
+            needed: nextThreshold - balance,
+            progress: Math.max(0, Math.min(100, progress))
+        };
+    }
+    
+    // Calculate cache expiration time based on VIP status
+    // Returns milliseconds until they could potentially drop a VIP level
+    function calculateCacheExpiration(vipData) {
+        if (!vipData || vipData.currentBalance === 0) {
+            return 0; // No cache for users with no balance
+        }
+        
+        const currentLevel = vipData.vipLevel || 0;
+        const currentBalance = vipData.currentBalance || 0;
+        
+        // If they have no VIP level, cache for 2 days (they could send Xanax anytime)
+        if (currentLevel === 0) {
+            return 2 * 24 * 60 * 60 * 1000; // 2 days in milliseconds
+        }
+        
+        // Calculate how many Xanax they need to lose before dropping a level
+        const thresholdForCurrentLevel = VIP_LEVELS[currentLevel];
+        const xanaxUntilDrop = currentBalance - thresholdForCurrentLevel + 1; // +1 to be safe
+        
+        // If they're already below their current level threshold (shouldn't happen, but safety check)
+        if (xanaxUntilDrop <= 0) {
+            return 0; // No cache, need to check immediately
+        }
+        
+        // Calculate days until they could drop: Xanax needed * 2 days per Xanax
+        // Add 2 days buffer for safety
+        const daysUntilDrop = (xanaxUntilDrop * 2) + 2;
+        const millisecondsUntilDrop = daysUntilDrop * 24 * 60 * 60 * 1000;
+        
+        return millisecondsUntilDrop;
+    }
+    
+    // Fetch VIP balance from Google Sheets (with local cache)
+    async function getVipBalance(playerId, useCache = true) {
+        // Check cache first if enabled
+        if (useCache) {
+            const cacheKey = `vipBalance_${playerId}`;
+            const cacheExpiryKey = `vipBalanceExpiry_${playerId}`;
+            
+            const cachedData = localStorage.getItem(cacheKey);
+            const cacheExpiry = localStorage.getItem(cacheExpiryKey);
+            
+            if (cachedData && cacheExpiry) {
+                const now = Date.now();
+                const expiryTime = parseInt(cacheExpiry, 10);
+                
+                // If cache is still valid, return cached data (but recalculate deductions)
+                if (now < expiryTime) {
+                    try {
+                        const vipData = JSON.parse(cachedData);
+                        
+                        // Recalculate deductions based on time elapsed since last deduction
+                        if (vipData.lastDeductionDate) {
+                            const nowISO = new Date().toISOString();
+                            const deductions = calculateDeductions(vipData.lastDeductionDate, nowISO);
+                            
+                            if (deductions > 0) {
+                                // Apply deductions to cached balance
+                                vipData.currentBalance = Math.max(0, vipData.currentBalance - deductions);
+                                vipData.lastDeductionDate = nowISO;
+                                
+                                // Recalculate VIP level after deductions
+                                vipData.vipLevel = getVipLevel(vipData.currentBalance);
+                                
+                                // Update cache with new balance (but keep same expiration)
+                                localStorage.setItem(cacheKey, JSON.stringify(vipData));
+                            } else {
+                                // No deductions needed, just recalculate VIP level
+                                vipData.vipLevel = getVipLevel(vipData.currentBalance);
+                            }
+                        } else {
+                            // No lastDeductionDate, just recalculate VIP level
+                            vipData.vipLevel = getVipLevel(vipData.currentBalance);
+                        }
+                        
+                        return vipData;
+                    } catch (e) {
+                        // If cache is corrupted, clear it and fetch fresh
+                        localStorage.removeItem(cacheKey);
+                        localStorage.removeItem(cacheExpiryKey);
+                    }
+                }
+            }
+        }
+        
+        // Cache expired or doesn't exist, fetch from Google Sheets
+        try {
+            const response = await fetch(`${GOOGLE_SHEETS_SCRIPT_URL}?action=getVipBalance&playerId=${playerId}`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data && data.playerId) {
+                    // Cache the result with expiration
+                    if (useCache) {
+                        const cacheKey = `vipBalance_${playerId}`;
+                        const cacheExpiryKey = `vipBalanceExpiry_${playerId}`;
+                        const expirationTime = Date.now() + calculateCacheExpiration(data);
+                        
+                        localStorage.setItem(cacheKey, JSON.stringify(data));
+                        localStorage.setItem(cacheExpiryKey, expirationTime.toString());
+                    }
+                    return data;
+                }
+                // If data is null, player doesn't exist yet
+                return null;
+            }
+        } catch (error) {
+            console.error('Error fetching VIP balance from Google Sheets:', error);
+        }
+        
+        return null;
+    }
+    
+    // Clear VIP cache for a player (useful when balance is updated)
+    function clearVipCache(playerId) {
+        localStorage.removeItem(`vipBalance_${playerId}`);
+        localStorage.removeItem(`vipBalanceExpiry_${playerId}`);
+    }
+    
+    // Update VIP balance in Google Sheets
+    async function updateVipBalance(playerId, playerName, totalSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) {
+        const vipData = {
+            action: 'updateVipBalance',
+            playerId: playerId,
+            playerName: playerName,
+            totalXanaxSent: totalSent,
+            currentBalance: currentBalance,
+            lastDeductionDate: lastDeductionDate,
+            vipLevel: vipLevel,
+            lastLoginDate: lastLoginDate
+        };
+        
+        try {
+            // Use no-cors mode for Google Apps Script (required for web apps)
+            const url = `${GOOGLE_SHEETS_SCRIPT_URL}?action=updateVipBalance`;
+            await fetch(url, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(vipData)
+            });
+            // Note: With no-cors, we can't read the response, but the request was sent
+        } catch (error) {
+            console.error('Error updating VIP balance in Google Sheets:', error);
+        }
+    }
+    
+    // Log VIP transaction to Google Sheets
+    async function logVipTransaction(playerId, playerName, amount, transactionType, balanceAfter) {
+        const transaction = {
+            action: 'logVipTransaction',
+            timestamp: new Date().toISOString(),
+            playerId: playerId,
+            playerName: playerName,
+            amount: amount,
+            transactionType: transactionType, // 'Sent' or 'Deduction'
+            balanceAfter: balanceAfter
+        };
+        
+        try {
+            // Use no-cors mode for Google Apps Script (required for web apps)
+            const url = `${GOOGLE_SHEETS_SCRIPT_URL}?action=logVipTransaction`;
+            await fetch(url, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(transaction)
+            });
+        } catch (error) {
+            console.error('Error logging VIP transaction to Google Sheets:', error);
+        }
+    }
+    
+    // Check for new Xanax events and update balances
+    async function checkAndUpdateVipStatus(userApiKey, userData) {
+        // Try to get admin API key
+        let adminApiKey = getAdminApiKey();
+        
+        // If no admin key set, check if current user is admin and use their key
+        if (!adminApiKey) {
+            const isCurrentUserAdmin = await isAdmin();
+            if (isCurrentUserAdmin) {
+                adminApiKey = userApiKey; // Use admin's own API key
+            } else {
+                console.log('Admin API key not configured and user is not admin, skipping VIP check');
+                return null;
+            }
+        }
+        
+        try {
+            // Get current VIP balance from Google Sheets by player ID (skip cache for updates)
+            let vipData = await getVipBalance(userData.playerId, false);
+            
+            // If not found by ID, try to find by name (for backfilled data where playerId was 0)
+            if (!vipData) {
+                try {
+                    const response = await fetch(`${GOOGLE_SHEETS_SCRIPT_URL}?action=getVipBalance&playerName=${encodeURIComponent(userData.name)}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data && data.playerName === userData.name) {
+                            vipData = data;
+                            // Update player ID if it was 0 (from backfill)
+                            if (vipData.playerId === 0 || !vipData.playerId) {
+                                vipData.playerId = userData.playerId;
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error fetching VIP balance by name:', error);
+                }
+            } else if (vipData.playerId === 0 || !vipData.playerId) {
+                // Update player ID if it was 0 (from backfill) or missing
+                vipData.playerId = userData.playerId;
+            }
+            
+            // If still no VIP data, create new entry
+            if (!vipData) {
+                vipData = {
+                    playerId: userData.playerId,
+                    playerName: userData.name,
+                    totalXanaxSent: 0,
+                    currentBalance: 0,
+                    lastDeductionDate: null,
+                    vipLevel: 0,
+                    lastLoginDate: null
+                };
+            }
+            
+            // Check last 30 days for Xanax events (API limit is 100 events, so we check 30 days)
+            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+            const fromTimestamp = Math.floor(thirtyDaysAgo.getTime() / 1000);
+            
+            // Fetch events from admin's API (checking last 30 days, max 100 events)
+            const eventsResponse = await fetch(`https://api.torn.com/user/?selections=events&from=${fromTimestamp}&key=${adminApiKey}`);
+            const eventsData = await eventsResponse.json();
+            
+            if (eventsData.error) {
+                console.error('Error fetching events:', eventsData.error);
+                return null;
+            }
+            
+            // Parse events for Xanax sent to admin
+            const events = eventsData.events || {};
+            let newXanaxReceived = 0;
+            
+            Object.values(events).forEach(event => {
+                if (event.event && event.event.includes('You were sent') && event.event.includes('Xanax')) {
+                    const parsed = parseXanaxEvent(event.event);
+                    if (parsed && parsed.playerId === userData.playerId) {
+                        newXanaxReceived += parsed.amount;
+                    }
+                }
+            });
+            
+            // Update total sent and current balance
+            if (newXanaxReceived > 0) {
+                vipData.totalXanaxSent += newXanaxReceived;
+                vipData.currentBalance += newXanaxReceived;
+                
+                // Log transaction
+                await logVipTransaction(
+                    userData.playerId,
+                    userData.name,
+                    newXanaxReceived,
+                    'Sent',
+                    vipData.currentBalance
+                );
+            }
+            
+            // Calculate deductions
+            const now = new Date().toISOString();
+            const deductions = calculateDeductions(vipData.lastDeductionDate, now);
+            
+            if (deductions > 0) {
+                vipData.currentBalance = Math.max(0, vipData.currentBalance - deductions);
+                vipData.lastDeductionDate = now;
+                
+                // Log deduction transaction
+                if (deductions > 0) {
+                    await logVipTransaction(
+                        userData.playerId,
+                        userData.name,
+                        deductions,
+                        'Deduction',
+                        vipData.currentBalance
+                    );
+                }
+            }
+            
+            // Update VIP level
+            vipData.vipLevel = getVipLevel(vipData.currentBalance);
+            vipData.lastLoginDate = now;
+            
+            // Update Google Sheets
+            await updateVipBalance(
+                vipData.playerId,
+                vipData.playerName,
+                vipData.totalXanaxSent,
+                vipData.currentBalance,
+                vipData.lastDeductionDate,
+                vipData.vipLevel,
+                vipData.lastLoginDate
+            );
+            
+            // Clear cache and update it with new data (since balance changed)
+            clearVipCache(vipData.playerId);
+            const cacheKey = `vipBalance_${vipData.playerId}`;
+            const cacheExpiryKey = `vipBalanceExpiry_${vipData.playerId}`;
+            const expirationTime = Date.now() + calculateCacheExpiration(vipData);
+            localStorage.setItem(cacheKey, JSON.stringify(vipData));
+            localStorage.setItem(cacheExpiryKey, expirationTime.toString());
+            
+            // Store last login
+            localStorage.setItem(`lastLogin_${userData.playerId}`, now);
+            
+            return vipData;
+        } catch (error) {
+            console.error('Error checking VIP status:', error);
+            return null;
+        }
+    }
+    
+    // Simple backfill function for specific Xanax events
+    // Usage: backfillVipEventsSimple([{playerName: 'Methuzelah', amount: 11}, ...])
+    // This writes directly to Google Sheets - playerId will be 0 until player logs in and matches by name
+    async function backfillVipEventsSimple(events) {
+        console.log(`Starting VIP backfill for ${events.length} events...`);
+        
+        // Process each event
+        for (const event of events) {
+            const { playerName, amount } = event;
+            
+            // Try to get existing VIP data from Google Sheets by name
+            // We'll search by getting all balances and finding by name (since we don't have playerId yet)
+            let vipData = null;
+            
+            // For now, create new entry with playerId = 0 (will be updated when player logs in)
+            vipData = {
+                playerId: 0, // Temporary - will be updated when player logs in and matches by name
+                playerName: playerName,
+                totalXanaxSent: amount,
+                currentBalance: amount,
+                lastDeductionDate: null,
+                vipLevel: getVipLevel(amount),
+                lastLoginDate: null
+            };
+            
+            // Write directly to Google Sheets
+            await updateVipBalance(
+                vipData.playerId,
+                vipData.playerName,
+                vipData.totalXanaxSent,
+                vipData.currentBalance,
+                vipData.lastDeductionDate,
+                vipData.vipLevel,
+                vipData.lastLoginDate
+            );
+            
+            // Log transaction
+            await logVipTransaction(
+                vipData.playerId,
+                playerName,
+                amount,
+                'Sent',
+                vipData.currentBalance
+            );
+            
+            console.log(`✓ Backfilled ${playerName}: +${amount} Xanax (Total: ${vipData.totalXanaxSent}, Balance: ${vipData.currentBalance}, VIP: ${vipData.vipLevel})`);
+        }
+        
+        console.log(`Backfill complete! Processed ${events.length} events.`);
+        console.log('Note: Player IDs (currently 0) will be updated when players log in and match by name.');
+    }
+    
+    // Helper function to match VIP data by name when player logs in and update with real player ID
+    async function matchVipDataByName(playerId, playerName) {
+        // We need to check Google Sheets for entries with this name and playerId = 0
+        // For now, we'll handle this in checkAndUpdateVipStatus by checking if we need to update an existing entry
+        // This is a simplified approach - in a full implementation, you'd query Google Sheets by name
+        return null; // Will be handled by the main VIP check function
+    }
+    
+    // Backfill VIP data for existing players (call this manually with list of player IDs)
+    async function backfillVipData(playerIds, adminApiKey) {
+        if (!adminApiKey) {
+            adminApiKey = getAdminApiKey();
+            if (!adminApiKey) {
+                console.error('Admin API key required for backfill');
+                return;
+            }
+        }
+        
+        console.log(`Starting VIP backfill for ${playerIds.length} players...`);
+        
+        // Check events from a reasonable time period (e.g., last 30 days)
+        const fromTimestamp = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+        
+        try {
+            const eventsResponse = await fetch(`https://api.torn.com/user/?selections=events&from=${fromTimestamp}&key=${adminApiKey}`);
+            const eventsData = await eventsResponse.json();
+            
+            if (eventsData.error) {
+                console.error('Error fetching events for backfill:', eventsData.error);
+                return;
+            }
+            
+            const events = eventsData.events || {};
+            const xanaxByPlayer = {};
+            
+            // Parse all Xanax events
+            Object.values(events).forEach(event => {
+                if (event.event && event.event.includes('You were sent') && event.event.includes('Xanax')) {
+                    const parsed = parseXanaxEvent(event.event);
+                    if (parsed && playerIds.includes(parsed.playerId)) {
+                        if (!xanaxByPlayer[parsed.playerId]) {
+                            xanaxByPlayer[parsed.playerId] = {
+                                playerId: parsed.playerId,
+                                playerName: parsed.playerName,
+                                totalAmount: 0
+                            };
+                        }
+                        xanaxByPlayer[parsed.playerId].totalAmount += parsed.amount;
+                    }
+                }
+            });
+            
+            // Update balances for each player
+            for (const playerId in xanaxByPlayer) {
+                const player = xanaxByPlayer[playerId];
+                const vipData = {
+                    playerId: player.playerId,
+                    playerName: player.playerName,
+                    totalXanaxSent: player.totalAmount,
+                    currentBalance: player.totalAmount, // Start with full amount (deductions will be calculated on next login)
+                    lastDeductionDate: null,
+                    vipLevel: getVipLevel(player.totalAmount),
+                    lastLoginDate: null
+                };
+                
+                await updateVipBalance(
+                    vipData.playerId,
+                    vipData.playerName,
+                    vipData.totalXanaxSent,
+                    vipData.currentBalance,
+                    vipData.lastDeductionDate,
+                    vipData.vipLevel,
+                    vipData.lastLoginDate
+                );
+                
+                console.log(`Backfilled ${player.playerName} (ID: ${player.playerId}): ${player.totalAmount} Xanax`);
+            }
+            
+            console.log(`Backfill complete! Processed ${Object.keys(xanaxByPlayer).length} players.`);
+        } catch (error) {
+            console.error('Error during backfill:', error);
+        }
+    }
+    
+    // Display VIP status in welcome message (appends to existing welcome message)
+    function displayVipStatus(vipData, playerName) {
+        const welcomeMessage = document.getElementById('welcomeMessage');
+        if (!welcomeMessage || !vipData) return;
+        
+        const vipLevel = vipData.vipLevel;
+        const progress = getVipProgress(vipData.currentBalance, vipLevel);
+        
+        // Check if VIP status is already displayed (to avoid duplicates)
+        if (welcomeMessage.innerHTML.includes('VIP') || welcomeMessage.innerHTML.includes('Xanax to VIP')) {
+            // VIP status already shown, just update it
+            const welcomeText = `<span style="color: var(--accent-color);">Welcome, <strong>${playerName}</strong>!</span>`;
+            let vipHtml = '';
+            
+            if (vipLevel > 0) {
+                vipHtml = `
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
+                        <div style="color: var(--accent-color); font-weight: bold;">⭐ VIP ${vipLevel}</div>
+                `;
+                
+                if (progress.nextLevel) {
+                    vipHtml += `
+                        <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
+                            ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
+                                <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    vipHtml += `
+                        <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
+                            Maximum VIP level! (${vipData.currentBalance} Xanax remaining)
+                        </div>
+                    `;
+                }
+                
+                vipHtml += `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+            } else if (progress.nextLevel) {
+                vipHtml = `
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
+                        <div style="font-size: 0.85em; color: #95a5a6;">
+                            ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
+                                <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
+                            </div>
+                        </div>
+                        <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+            }
+            
+            welcomeMessage.innerHTML = welcomeText + vipHtml;
+            return;
+        }
+        
+        // Get current welcome text (preserve it)
+        const currentHtml = welcomeMessage.innerHTML;
+        let welcomeText = currentHtml;
+        
+        // If welcome text isn't there, create it
+        if (!currentHtml.includes('Welcome')) {
+            welcomeText = `<span style="color: var(--accent-color);">Welcome, <strong>${playerName}</strong>!</span>`;
+        }
+        
+        let vipHtml = '';
+        if (vipLevel > 0) {
+            vipHtml = `
+                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
+                    <div style="color: var(--accent-color); font-weight: bold;">⭐ VIP ${vipLevel}</div>
+            `;
+            
+            if (progress.nextLevel) {
+                vipHtml += `
+                    <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
+                        ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                        <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
+                            <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                vipHtml += `
+                    <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
+                        Maximum VIP level! (${vipData.currentBalance} Xanax remaining)
+                    </div>
+                `;
+            }
+            
+            vipHtml += `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+        } else if (progress.nextLevel) {
+            vipHtml = `
+                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
+                    <div style="font-size: 0.85em; color: #95a5a6;">
+                        ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                        <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
+                            <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+        }
+        
+        // Append VIP status to welcome message (don't replace)
+        welcomeMessage.innerHTML = welcomeText + vipHtml;
+    }
+    
+    // ==================== END VIP TRACKING SYSTEM ====================
+    
     // Function to log tool usage
     async function logToolUsage(toolName) {
         const apiKey = localStorage.getItem('tornApiKey');
@@ -51,6 +704,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const userData = await getUserData(apiKey);
         if (!userData) return;
+        
+        // Check and update VIP status when tool is used
+        await checkAndUpdateVipStatus(apiKey, userData);
         
         const logEntry = {
             timestamp: new Date().toISOString(),
@@ -516,6 +1172,265 @@ document.addEventListener('DOMContentLoaded', () => {
     window.isAdmin = isAdmin;
     window.checkAndAddAdminMenu = checkAndAddAdminMenu;
     window.initAdminDashboard = initAdminDashboard;
+    window.backfillVipData = backfillVipData; // For backfilling VIP data: window.backfillVipData([playerId1, playerId2, ...], adminApiKey)
+    window.backfillVipEventsSimple = backfillVipEventsSimple; // For simple backfill: window.backfillVipEventsSimple([{playerName: 'Name', amount: 10}, ...])
+    window.checkAndUpdateVipStatus = checkAndUpdateVipStatus; // For manual VIP checks
+    
+    // Manual VIP balance update function
+    // Usage: window.updateVipBalanceManually('PlayerName', playerId, totalXanax)
+    window.updateVipBalanceManually = async function(playerName, playerId, totalXanax) {
+        console.log(`Manually updating VIP balance for ${playerName} (ID: ${playerId}): ${totalXanax} Xanax`);
+        
+        const vipData = {
+            playerId: playerId,
+            playerName: playerName,
+            totalXanaxSent: totalXanax,
+            currentBalance: totalXanax, // Start with full amount
+            lastDeductionDate: null,
+            vipLevel: getVipLevel(totalXanax),
+            lastLoginDate: new Date().toISOString()
+        };
+        
+        try {
+            // Update VIP balance
+            await updateVipBalance(
+                vipData.playerId,
+                vipData.playerName,
+                vipData.totalXanaxSent,
+                vipData.currentBalance,
+                vipData.lastDeductionDate,
+                vipData.vipLevel,
+                vipData.lastLoginDate
+            );
+            
+            // Log transaction
+            await logVipTransaction(
+                vipData.playerId,
+                playerName,
+                totalXanax,
+                'Sent',
+                vipData.currentBalance
+            );
+            
+            console.log(`✓ Successfully updated ${playerName}: ${totalXanax} Xanax (VIP Level ${vipData.vipLevel})`);
+            return vipData;
+        } catch (error) {
+            console.error('Error updating VIP balance:', error);
+            return null;
+        }
+    };
+    
+    // Function to test and verify Google Sheets
+    window.testGoogleSheets = async function() {
+        console.log('Testing Google Sheets connection and verifying sheet names...');
+        console.log('URL:', `${GOOGLE_SHEETS_SCRIPT_URL}?action=testSheets`);
+        try {
+            const testUrl = `${GOOGLE_SHEETS_SCRIPT_URL}?action=testSheets`;
+            console.log('Fetching:', testUrl);
+            const response = await fetch(testUrl);
+            console.log('Response status:', response.status, response.statusText);
+            
+            if (response.ok) {
+                const text = await response.text();
+                console.log('Response text:', text);
+                
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (parseError) {
+                    console.error('Failed to parse JSON:', parseError);
+                    console.log('Raw response:', text);
+                    return;
+                }
+                
+                console.log('=== Sheet Verification Results ===');
+                console.log('All sheets in your spreadsheet:', data.allSheets);
+                console.log('');
+                console.log('Expected vs Found:');
+                if (data.expectedNames) {
+                    console.log(`  Tool Usage ("${data.expectedNames.toolUsage}"): ${data.toolUsageSheet}`);
+                    console.log(`  VIP Balances ("${data.expectedNames.vipBalances}"): ${data.vipBalancesSheet}`);
+                    console.log(`  VIP Transactions ("${data.expectedNames.vipTransactions}"): ${data.vipTransactionsSheet}`);
+                } else {
+                    console.log('  Tool Usage:', data.toolUsageSheet);
+                    console.log('  VIP Balances:', data.vipBalancesSheet);
+                    console.log('  VIP Transactions:', data.vipTransactionsSheet);
+                }
+                console.log('');
+                if (data.testWrite) {
+                    console.log('Test Write Result:', data.testWrite);
+                }
+                console.log('');
+                if (data.vipBalancesSheet === 'NOT FOUND' || data.vipTransactionsSheet === 'NOT FOUND') {
+                    console.error('❌ ERROR: One or more VIP sheets are missing!');
+                    console.log('Please create sheets with these EXACT names:');
+                    console.log('  - "VIP Balances"');
+                    console.log('  - "VIP Transactions"');
+                } else {
+                    console.log('✓ All VIP sheets found!');
+                }
+                return data;
+            } else {
+                const errorText = await response.text();
+                console.error('Failed to test sheets:', response.status);
+                console.error('Error response:', errorText);
+            }
+        } catch (error) {
+            console.error('Error testing sheets:', error);
+            console.error('Full error:', error.message, error.stack);
+        }
+    };
+    
+    // Test function to check VIP tracking with real API events
+    window.testVipTracking = async function() {
+        console.log('Testing VIP tracking - checking YOUR events for Xanax sent TO you...');
+        const apiKey = localStorage.getItem('tornApiKey');
+        if (!apiKey) {
+            console.error('No API key found. Please enter your API key first.');
+            return;
+        }
+        
+        try {
+            // Get your user data (you're the admin)
+            const userData = await getUserData(apiKey);
+            if (!userData) {
+                console.error('Failed to get user data');
+                return;
+            }
+            
+            console.log('Admin:', userData.name, '(ID:', userData.playerId + ')');
+            console.log('Fetching your events to find Xanax sent TO you...');
+            
+            // Fetch events from admin's API (checking last 30 days to find all Xanax events)
+            const fromTimestamp = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+            const eventsResponse = await fetch(`https://api.torn.com/user/?selections=events&from=${fromTimestamp}&key=${apiKey}`);
+            const eventsData = await eventsResponse.json();
+            
+            if (eventsData.error) {
+                console.error('Error fetching events:', eventsData.error);
+                return;
+            }
+            
+            // Parse all Xanax events
+            const events = eventsData.events || {};
+            const xanaxEvents = [];
+            
+            Object.values(events).forEach(event => {
+                if (event.event && event.event.includes('You were sent') && event.event.includes('Xanax')) {
+                    const parsed = parseXanaxEvent(event.event);
+                    if (parsed) {
+                        xanaxEvents.push({
+                            timestamp: event.timestamp,
+                            ...parsed
+                        });
+                    }
+                }
+            });
+            
+            console.log(`\nFound ${xanaxEvents.length} Xanax events:`);
+            xanaxEvents.forEach(evt => {
+                console.log(`  - ${evt.playerName} (ID: ${evt.playerId}) sent you ${evt.amount}x Xanax`);
+            });
+            
+            if (xanaxEvents.length === 0) {
+                console.log('\nNo Xanax events found in the last 30 days.');
+                console.log('This is normal if no one has sent you Xanax recently.');
+                return;
+            }
+            
+            console.log('\nNow testing VIP tracking for each player who sent Xanax...');
+            console.log('(This simulates what happens when each player logs in)');
+            
+            // Test VIP tracking for each player who sent Xanax
+            for (const xanaxEvent of xanaxEvents) {
+                console.log(`\n--- Testing for ${xanaxEvent.playerName} (ID: ${xanaxEvent.playerId}) ---`);
+                
+                // Create a mock userData for this player
+                const mockUserData = {
+                    playerId: xanaxEvent.playerId,
+                    name: xanaxEvent.playerName
+                };
+                
+                // Check and update VIP status for this player
+                const vipData = await checkAndUpdateVipStatus(apiKey, mockUserData);
+                
+                if (vipData) {
+                    console.log(`✓ VIP Status for ${xanaxEvent.playerName}:`, vipData);
+                    console.log(`  - Total Xanax Sent: ${vipData.totalXanaxSent}`);
+                    console.log(`  - Current Balance: ${vipData.currentBalance}`);
+                    console.log(`  - VIP Level: ${vipData.vipLevel}`);
+                } else {
+                    console.log(`⚠ No VIP data created for ${xanaxEvent.playerName}`);
+                }
+            }
+            
+            console.log('\n✓ Test complete!');
+            console.log('Please check your Google Sheets:');
+            console.log('  - VIP Balances sheet should have entries for players who sent Xanax');
+            console.log('  - VIP Transactions sheet should have transaction logs');
+            
+        } catch (error) {
+            console.error('Error testing VIP tracking:', error);
+        }
+    };
+    
+    // Test function to check Google Sheets connection
+    window.testVipConnection = async function() {
+        console.log('Testing VIP Google Sheets connection...');
+        try {
+            const testData = {
+                playerId: 999999,
+                playerName: 'Test Player',
+                totalXanaxSent: 1,
+                currentBalance: 1,
+                lastDeductionDate: null,
+                vipLevel: 0,
+                lastLoginDate: null
+            };
+            
+            console.log('Sending test update (using no-cors mode)...');
+            // Use no-cors mode for Google Apps Script
+            await fetch(GOOGLE_SHEETS_SCRIPT_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'updateVipBalance',
+                    ...testData
+                })
+            });
+            
+            console.log('✓ Test update sent!');
+            console.log('Note: With no-cors mode, we cannot verify the response.');
+            console.log('Please check your "VIP Balances" sheet for a row with Player ID = 999999');
+            console.log('If you see it, the connection is working!');
+            
+            // Try to verify by reading back (this uses GET which should work)
+            setTimeout(async () => {
+                try {
+                    const checkUrl = `${GOOGLE_SHEETS_SCRIPT_URL}?action=getVipBalance&playerId=999999`;
+                    const checkResponse = await fetch(checkUrl);
+                    if (checkResponse.ok) {
+                        const data = await checkResponse.json();
+                        if (data && data.playerId === 999999) {
+                            console.log('✓ Verification successful! Test data found in sheet:', data);
+                        } else {
+                            console.log('⚠ Test data not found yet. It may take a moment to appear.');
+                        }
+                    }
+                } catch (e) {
+                    console.log('Could not verify (this is normal with no-cors mode)');
+                }
+            }, 2000);
+            
+            return true;
+        } catch (error) {
+            console.error('✗ Connection error:', error);
+            return false;
+        }
+    };
 
     // --- API BATCHING UTILITIES ---
     
@@ -699,7 +1614,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 delete userCache[apiKey];
                 const userData = await getUserData(apiKey);
                 if (userData && userData.name) {
+                    // Set welcome message first
                     welcomeMessage.innerHTML = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
+                    
+                    // Check VIP status (use cache for display, but still check for updates in background)
+                    // First try cached data for fast display
+                    let vipData = await getVipBalance(userData.playerId, true);
+                    
+                    // If we have cached data, display it immediately
+                    if (vipData) {
+                        displayVipStatus(vipData, userData.name);
+                    }
+                    
+                    // Then check for updates in background (this will update cache if needed)
+                    // Only do full check if cache is expired or missing
+                    const cacheExpiryKey = `vipBalanceExpiry_${userData.playerId}`;
+                    const cacheExpiry = localStorage.getItem(cacheExpiryKey);
+                    const now = Date.now();
+                    
+                    if (!cacheExpiry || now >= parseInt(cacheExpiry, 10)) {
+                        // Cache expired or missing, do full check
+                        const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
+                        if (updatedVipData) {
+                            displayVipStatus(updatedVipData, userData.name);
+                        }
+                    }
                 } else {
                     welcomeMessage.style.display = 'none';
                 }
