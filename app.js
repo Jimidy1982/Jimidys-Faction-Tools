@@ -155,6 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Calculate statistics (excluding admin by default)
         const stats = {};
         const userStats = {};
+        const factionStats = {}; // Track faction usage
         const recentLogs = filteredLogs.slice(-20).reverse(); // Last 20 logs, most recent first
         
         filteredLogs.forEach(log => {
@@ -182,11 +183,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Update faction name to the most recent entry
                 userStats[log.userName].factionName = log.factionName || 'No Faction';
             }
+            
+            // Faction usage stats
+            const factionName = log.factionName || 'No Faction';
+            if (!factionStats[factionName]) {
+                factionStats[factionName] = { 
+                    count: 0, 
+                    users: new Set(),
+                    factionId: log.factionId || null
+                };
+            }
+            factionStats[factionName].count++;
+            factionStats[factionName].users.add(log.userName);
         });
         
         // Sort stats
         const sortedToolStats = Object.entries(stats).sort((a, b) => b[1].count - a[1].count);
         const sortedUserStats = Object.entries(userStats).sort((a, b) => b[1].count - a[1].count).slice(0, 10); // Top 10 users
+        const sortedFactionStats = Object.entries(factionStats).sort((a, b) => b[1].count - a[1].count).slice(0, 5); // Top 5 factions
+        const uniqueFactionsCount = Object.keys(factionStats).length;
         
         // Generate HTML
         let html = `
@@ -217,6 +232,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div style="font-size: 0.8em; color: #888;">${showAdminData ? '(including admin)' : '(excluding admin)'}</div>
                     </div>
                     <div class="stat-card">
+                        <h3>Unique Factions</h3>
+                        <div class="stat-number">${uniqueFactionsCount}</div>
+                        <div style="font-size: 0.8em; color: #888;">${showAdminData ? '(including admin)' : '(excluding admin)'}</div>
+                    </div>
+                    <div class="stat-card">
                         <h3>Tools Available</h3>
                         <div class="stat-number">${Object.keys(stats).length}</div>
                     </div>
@@ -239,6 +259,37 @@ document.addEventListener('DOMContentLoaded', () => {
             html += `
                 <tr>
                     <td><strong>${tool}</strong></td>
+                    <td>${data.count}</td>
+                    <td>${data.users.size}</td>
+                </tr>
+            `;
+        });
+        
+        html += `
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="dashboard-section">
+                    <h2>Top 5 Most Using Factions</h2>
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Faction</th>
+                                <th>Total Uses</th>
+                                <th>Unique Users</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        `;
+        
+        sortedFactionStats.forEach(([factionName, data]) => {
+            const factionLink = data.factionId 
+                ? `<a href="https://www.torn.com/factions.php?step=profile&ID=${data.factionId}" target="_blank" class="user-link">${factionName}</a>`
+                : factionName;
+            html += `
+                <tr>
+                    <td><strong>${factionLink}</strong></td>
                     <td>${data.count}</td>
                     <td>${data.users.size}</td>
                 </tr>
@@ -616,18 +667,66 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // --- GLOBAL API KEY HANDLING ---
+    // Function to update welcome message
+    let welcomeMessageTimeout = null;
+    async function updateWelcomeMessage() {
+        const welcomeMessage = document.getElementById('welcomeMessage');
+        if (!welcomeMessage) return;
+        
+        const apiKey = localStorage.getItem('tornApiKey');
+        if (!apiKey || apiKey.trim() === '') {
+            welcomeMessage.style.display = 'none';
+            // Clear cache for old API key
+            if (welcomeMessageTimeout) {
+                clearTimeout(welcomeMessageTimeout);
+                welcomeMessageTimeout = null;
+            }
+            return;
+        }
+        
+        // Debounce: wait 500ms after user stops typing
+        if (welcomeMessageTimeout) {
+            clearTimeout(welcomeMessageTimeout);
+        }
+        
+        welcomeMessageTimeout = setTimeout(async () => {
+            // Show loading state
+            welcomeMessage.style.display = 'block';
+            welcomeMessage.innerHTML = '<span style="color: #888;">Loading...</span>';
+            
+            try {
+                // Clear cache for this API key to get fresh data
+                delete userCache[apiKey];
+                const userData = await getUserData(apiKey);
+                if (userData && userData.name) {
+                    welcomeMessage.innerHTML = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
+                } else {
+                    welcomeMessage.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Error updating welcome message:', error);
+                welcomeMessage.style.display = 'none';
+            }
+        }, 500);
+    }
+    
     const globalApiKeyInput = document.getElementById('globalApiKey');
     if (globalApiKeyInput) {
         // Load saved API key from localStorage
         const savedApiKey = localStorage.getItem('tornApiKey');
         if (savedApiKey) {
             globalApiKeyInput.value = savedApiKey;
+            // Update welcome message on page load if API key exists
+            updateWelcomeMessage();
         }
 
         // Save API key to localStorage on input change
         globalApiKeyInput.addEventListener('input', () => {
             const apiKeyValue = globalApiKeyInput.value || '';
             localStorage.setItem('tornApiKey', apiKeyValue);
+            
+            // Update welcome message when API key changes
+            updateWelcomeMessage();
             
             // Dispatch custom event for War Report 2.0 to listen to
             const event = new CustomEvent('apiKeyUpdated', {

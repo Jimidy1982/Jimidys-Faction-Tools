@@ -552,6 +552,16 @@ nav a:hover::after {
     font-style: italic;
 }
 
+.welcome-message {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background-color: rgba(255, 215, 0, 0.1);
+    border-left: 3px solid var(--accent-color);
+    border-radius: 4px;
+    font-size: 0.9rem;
+    line-height: 1.4;
+}
+
 /* Page footer styles */
 .page-footer {
     background-color: var(--secondary-color);
