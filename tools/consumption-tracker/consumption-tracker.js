@@ -216,6 +216,44 @@ const handleConsumptionFetch = async () => {
         
         console.log('Item values mapping:', itemValues);
         
+        // Fetch points market to get current market value for points
+        console.log('Fetching points market data...');
+        try {
+            const pointsMarketResponse = await fetch(`https://api.torn.com/market/?selections=pointsmarket&key=${apiKey}`);
+            const pointsMarketData = await pointsMarketResponse.json();
+            
+            if (pointsMarketData.error) {
+                console.warn('Points market API error:', pointsMarketData.error.error);
+                console.warn('Points will be tracked without market value');
+            } else if (pointsMarketData.pointsmarket) {
+                // Get all listings and sort by cost (ascending)
+                const listings = Object.values(pointsMarketData.pointsmarket);
+                const sortedListings = listings.sort((a, b) => a.cost - b.cost);
+                
+                // Get the 5th lowest priced listing (index 4)
+                if (sortedListings.length >= 5) {
+                    const fifthLowest = sortedListings[4];
+                    const pointsMarketValue = fifthLowest.cost;
+                    itemValues['Points'] = pointsMarketValue;
+                    itemTypes['Points'] = 'Points';
+                    console.log(`Points market value (5th lowest): $${pointsMarketValue.toLocaleString()} per point`);
+                    console.log(`Listing details: ${fifthLowest.quantity} points at $${fifthLowest.cost.toLocaleString()} each (total: $${fifthLowest.total_cost.toLocaleString()})`);
+                } else {
+                    console.warn(`Not enough points market listings (found ${sortedListings.length}, need at least 5). Using lowest available.`);
+                    if (sortedListings.length > 0) {
+                        const lowest = sortedListings[0];
+                        const pointsMarketValue = lowest.cost;
+                        itemValues['Points'] = pointsMarketValue;
+                        itemTypes['Points'] = 'Points';
+                        console.log(`Points market value (lowest available): $${pointsMarketValue.toLocaleString()} per point`);
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('Error fetching points market:', error);
+            console.warn('Points will be tracked without market value');
+        }
+        
         // Get rate limit setting
         const rateLimitSelect = document.getElementById('rateLimit');
         const rateLimit = rateLimitSelect ? parseInt(rateLimitSelect.value) : 60;
@@ -364,6 +402,7 @@ const handleConsumptionFetch = async () => {
                 console.log(`Sample entry ${processedCount}:`, logText);
             }
             
+            
             // Extract player name and ID from the log text (handles HTML tags)
             // Format: "<a href="http://www.torn.com/profiles.php?XID=1234567">PlayerName</a> used one of the faction's ItemName items"
             const playerMatch = logText.match(/<a href[^>]*XID=(\d+)[^>]*>([^<]+)<\/a>/);
@@ -408,7 +447,8 @@ const handleConsumptionFetch = async () => {
                     redCow: 0,
                     rockstarRudolph: 0,
                     taurineElite: 0,
-                    xmass: 0
+                    xmass: 0,
+                    points: 0
                 };
             }
             
@@ -493,6 +533,14 @@ const handleConsumptionFetch = async () => {
                 playerConsumption[playerName].taurineElite++;
             } else if (logText.includes('used one of the faction\'s Can of X-MASS items')) {
                 playerConsumption[playerName].xmass++;
+            }
+            // Points consumption - extract the number of points used
+            else if (logText.includes('used') && logText.includes('of the faction\'s points')) {
+                const pointsMatch = logText.match(/used\s+(\d+)\s+of\s+the\s+faction's\s+points/);
+                if (pointsMatch) {
+                    const pointsAmount = parseInt(pointsMatch[1], 10);
+                    playerConsumption[playerName].points += pointsAmount;
+                }
             }
         }
         
@@ -652,13 +700,15 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
                { id: 'redCow', label: 'Can of Red Cow', itemName: 'Can of Red Cow' },
                { id: 'rockstarRudolph', label: 'Can of Rockstar Rudolph', itemName: 'Can of Rockstar Rudolph' },
                { id: 'taurineElite', label: 'Can of Taurine Elite', itemName: 'Can of Taurine Elite' },
-               { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' }
+               { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' },
+               { id: 'points', label: 'Points', itemName: 'Points', isPoints: true }
            ];
     
     // Group items by type
     const groupedItems = {};
     columns.forEach(col => {
-        const itemType = itemTypes[col.itemName] || 'Unknown';
+        // Points don't have a market value, so give them their own category
+        const itemType = col.isPoints ? 'Points' : (itemTypes[col.itemName] || 'Unknown');
         if (!groupedItems[itemType]) {
             groupedItems[itemType] = [];
         }
@@ -672,7 +722,8 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
     const totalValues = {};
     columns.forEach(col => {
         totals[col.id] = members.reduce((sum, member) => sum + (member[col.id] || 0), 0);
-        const itemValue = itemValues[col.itemName] || 0;
+        // Points use market value from points market API if available
+        const itemValue = col.isPoints ? (itemValues['Points'] || 0) : (itemValues[col.itemName] || 0);
         totalValues[col.id] = totals[col.id] * itemValue;
     });
     
@@ -783,21 +834,30 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
                    itemSection.className = 'item-section';
                    
                    const itemValue = totalValues[col.id];
-                   const itemPrice = itemValues[col.itemName] || 0;
+                   const itemPrice = col.isPoints ? (itemValues['Points'] || 0) : (itemValues[col.itemName] || 0);
                    
                    // Find players who used this item and sort by quantity (descending)
                    const playersWhoUsed = members
                        .filter(member => member[col.id] > 0)
                        .sort((a, b) => b[col.id] - a[col.id]); // Sort by quantity descending
                    
+                   // For points, show price/value if market value is available
+                   const statsHTML = col.isPoints && itemPrice > 0
+                       ? `<span class="item-total">Total: ${itemTotal} points</span>
+                          <span class="item-value">Value: $${itemValue.toLocaleString()}</span>
+                          <span class="item-price">Price: $${itemPrice.toLocaleString()} per point</span>`
+                       : col.isPoints
+                       ? `<span class="item-total">Total: ${itemTotal} points</span>`
+                       : `<span class="item-total">Total: ${itemTotal}</span>
+                          <span class="item-value">Value: $${itemValue.toLocaleString()}</span>
+                          <span class="item-price">Price: $${itemPrice.toLocaleString()}</span>`;
+                   
                    itemSection.innerHTML = `
                        <div class="item-header">
                            <div class="item-info">
                                <h4 class="item-name">${col.label}</h4>
                                <div class="item-stats">
-                                   <span class="item-total">Total: ${itemTotal}</span>
-                                   <span class="item-value">Value: $${itemValue.toLocaleString()}</span>
-                                   <span class="item-price">Price: $${itemPrice.toLocaleString()}</span>
+                                   ${statsHTML}
                                </div>
                            </div>
                            <div class="item-players">
@@ -807,15 +867,23 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
                            </div>
                        </div>
                        <div class="players-list" data-item="${col.id}" style="display: none;">
-                           ${playersWhoUsed.map(player => `
+                           ${playersWhoUsed.map(player => {
+                               const quantity = player[col.id];
+                               const costHTML = col.isPoints && itemPrice > 0
+                                   ? `<span class="player-cost">$${(quantity * itemPrice).toLocaleString()}</span>`
+                                   : col.isPoints
+                                   ? `<span class="player-cost">${quantity} points</span>`
+                                   : `<span class="player-cost">$${(quantity * itemPrice).toLocaleString()}</span>`;
+                               return `
                                <div class="player-item">
                                    <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link">
                                        ${player.name}
                                    </a>
-                                   <span class="player-quantity">${player[col.id]}</span>
-                                   <span class="player-cost">$${(player[col.id] * itemPrice).toLocaleString()}</span>
+                                   <span class="player-quantity">${quantity}</span>
+                                   ${costHTML}
                                </div>
-                           `).join('')}
+                           `;
+                           }).join('')}
                        </div>
                    `;
                    
@@ -950,7 +1018,8 @@ function exportConsumptionToCSV() {
         { id: 'redCow', label: 'Can of Red Cow', itemName: 'Can of Red Cow' },
         { id: 'rockstarRudolph', label: 'Can of Rockstar Rudolph', itemName: 'Can of Rockstar Rudolph' },
         { id: 'taurineElite', label: 'Can of Taurine Elite', itemName: 'Can of Taurine Elite' },
-        { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' }
+        { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' },
+        { id: 'points', label: 'Points', itemName: 'Points', isPoints: true }
     ];
 
     const members = consumptionTrackerData.fetchedMembers;
@@ -967,7 +1036,7 @@ function exportConsumptionToCSV() {
     const totalValues = {};
     columns.forEach(col => {
         totals[col.id] = members.reduce((sum, member) => sum + (member[col.id] || 0), 0);
-        const itemValue = itemValues[col.itemName] || 0;
+        const itemValue = col.isPoints ? 0 : (itemValues[col.itemName] || 0);
         totalValues[col.id] = totals[col.id] * itemValue;
     });
     
@@ -975,7 +1044,13 @@ function exportConsumptionToCSV() {
     
     // Create CSV content with cost data
     const headers = ['Member Name', ...columns.map(col => col.label)];
-    const costHeaders = ['', ...columns.map(col => `$${itemValues[col.itemName] || 0}`)];
+    const costHeaders = ['', ...columns.map(col => {
+        if (col.isPoints) {
+            const pointsPrice = itemValues['Points'] || 0;
+            return pointsPrice > 0 ? `$${pointsPrice.toLocaleString()}` : 'N/A';
+        }
+        return `$${itemValues[col.itemName] || 0}`;
+    })];
     const totalsRow = ['TOTALS', ...columns.map(col => totals[col.id])];
     const costRow = ['TOTAL COST', ...columns.map(col => `$${totalValues[col.id].toLocaleString()}`)];
     const grandTotalRow = ['GRAND TOTAL', ...Array(columns.length - 1).fill(''), `$${grandTotal.toLocaleString()}`];
@@ -1033,13 +1108,14 @@ function exportGroupedToCSV() {
         { id: 'redCow', label: 'Can of Red Cow', itemName: 'Can of Red Cow' },
         { id: 'rockstar', label: 'Can of Rockstar', itemName: 'Can of Rockstar' },
         { id: 'taurineElite', label: 'Can of Taurine Elite', itemName: 'Can of Taurine Elite' },
-        { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' }
+        { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' },
+        { id: 'points', label: 'Points', itemName: 'Points', isPoints: true }
     ];
     
     // Group items by type
     const groupedItems = {};
     columns.forEach(col => {
-        const itemType = itemTypes[col.itemName] || 'Unknown';
+        const itemType = col.isPoints ? 'Points' : (itemTypes[col.itemName] || 'Unknown');
         if (!groupedItems[itemType]) {
             groupedItems[itemType] = [];
         }
@@ -1051,7 +1127,7 @@ function exportGroupedToCSV() {
     const totalValues = {};
     columns.forEach(col => {
         totals[col.id] = members.reduce((sum, member) => sum + (member[col.id] || 0), 0);
-        const itemValue = itemValues[col.itemName] || 0;
+        const itemValue = col.isPoints ? (itemValues['Points'] || 0) : (itemValues[col.itemName] || 0);
         totalValues[col.id] = totals[col.id] * itemValue;
     });
     
@@ -1064,7 +1140,12 @@ function exportGroupedToCSV() {
     
     Object.keys(groupedItems).forEach(groupType => {
         csvContent += `${groupType}\n`;
-        csvContent += `Item,Total Usage,Unit Price,Total Value\n`;
+        // For points, show price/value if market value is available
+        const pointsPrice = itemValues['Points'] || 0;
+        const headerRow = (groupType === 'Points' && pointsPrice === 0)
+            ? `Item,Total Usage\n`
+            : `Item,Total Usage,Unit Price,Total Value\n`;
+        csvContent += headerRow;
         
         let groupTotal = 0;
         groupedItems[groupType].forEach(col => {
@@ -1075,14 +1156,28 @@ function exportGroupedToCSV() {
                 return;
             }
             
-            const price = itemValues[col.itemName] || 0;
-            const value = totalValues[col.id];
-            groupTotal += value;
-            
-            csvContent += `"${col.label}",${total},$${price.toLocaleString()},$${value.toLocaleString()}\n`;
+            if (col.isPoints) {
+                const price = itemValues['Points'] || 0;
+                const value = totalValues[col.id];
+                if (price > 0) {
+                    groupTotal += value;
+                    csvContent += `"${col.label}",${total},$${price.toLocaleString()},$${value.toLocaleString()}\n`;
+                } else {
+                    csvContent += `"${col.label}",${total}\n`;
+                }
+            } else {
+                const price = itemValues[col.itemName] || 0;
+                const value = totalValues[col.id];
+                groupTotal += value;
+                csvContent += `"${col.label}",${total},$${price.toLocaleString()},$${value.toLocaleString()}\n`;
+            }
         });
         
-        csvContent += `Group Total,,,$${groupTotal.toLocaleString()}\n\n`;
+        if (groupType === 'Points' && pointsPrice === 0) {
+            csvContent += `\n`;
+        } else {
+            csvContent += `Group Total,,,$${groupTotal.toLocaleString()}\n\n`;
+        }
     });
     
     // Create and download the CSV file
@@ -1136,7 +1231,8 @@ function exportPlayersToCSV() {
                { id: 'redCow', label: 'Can of Red Cow', itemName: 'Can of Red Cow' },
                { id: 'rockstarRudolph', label: 'Can of Rockstar Rudolph', itemName: 'Can of Rockstar Rudolph' },
                { id: 'taurineElite', label: 'Can of Taurine Elite', itemName: 'Can of Taurine Elite' },
-               { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' }
+               { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' },
+               { id: 'points', label: 'Points', itemName: 'Points', isPoints: true }
            ];
     
     // Create CSV content
@@ -1156,9 +1252,14 @@ function exportPlayersToCSV() {
     });
     
     // Header row (only for items with usage)
+    const pointsPrice = itemValues['Points'] || 0;
     csvContent += `Player Name,`;
     Object.values(itemsWithUsage).forEach(col => {
-        csvContent += `${col.label} (Qty),${col.label} (Cost),`;
+        if (col.isPoints && pointsPrice === 0) {
+            csvContent += `${col.label} (Qty),`;
+        } else {
+            csvContent += `${col.label} (Qty),${col.label} (Cost),`;
+        }
     });
     csvContent += `Total Value\n`;
     
@@ -1169,11 +1270,21 @@ function exportPlayersToCSV() {
         
         Object.values(itemsWithUsage).forEach(col => {
             const quantity = member[col.id] || 0;
-            const price = itemValues[col.itemName] || 0;
-            const cost = quantity * price;
-            playerTotal += cost;
-            
-            csvContent += `${quantity},$${cost.toLocaleString()},`;
+            if (col.isPoints) {
+                const price = itemValues['Points'] || 0;
+                if (price > 0) {
+                    const cost = quantity * price;
+                    playerTotal += cost;
+                    csvContent += `${quantity},$${cost.toLocaleString()},`;
+                } else {
+                    csvContent += `${quantity},`;
+                }
+            } else {
+                const price = itemValues[col.itemName] || 0;
+                const cost = quantity * price;
+                playerTotal += cost;
+                csvContent += `${quantity},$${cost.toLocaleString()},`;
+            }
         });
         
         csvContent += `$${playerTotal.toLocaleString()}\n`;
@@ -1184,15 +1295,24 @@ function exportPlayersToCSV() {
     const totalValues = {};
     columns.forEach(col => {
         totals[col.id] = members.reduce((sum, member) => sum + (member[col.id] || 0), 0);
-        const itemValue = itemValues[col.itemName] || 0;
+        const itemValue = col.isPoints ? 0 : (itemValues[col.itemName] || 0);
         totalValues[col.id] = totals[col.id] * itemValue;
     });
     
     const grandTotal = Object.values(totalValues).reduce((sum, cost) => sum + cost, 0);
     
     csvContent += `TOTALS,`;
-    columns.forEach(col => {
-        csvContent += `${totals[col.id]},$${totalValues[col.id].toLocaleString()},`;
+    Object.values(itemsWithUsage).forEach(col => {
+        if (col.isPoints) {
+            const price = itemValues['Points'] || 0;
+            if (price > 0) {
+                csvContent += `${totals[col.id]},$${totalValues[col.id].toLocaleString()},`;
+            } else {
+                csvContent += `${totals[col.id]},`;
+            }
+        } else {
+            csvContent += `${totals[col.id]},$${totalValues[col.id].toLocaleString()},`;
+        }
     });
     csvContent += `$${grandTotal.toLocaleString()}\n`;
     

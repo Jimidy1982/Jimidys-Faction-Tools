@@ -72,17 +72,27 @@ function calculateBaseRespect(attack, removeModifiers = false, shouldRound = tru
 }
 
 // Global state for this module
-let warReportData = {
-    playerStats: {},
-    warInfo: {},
-    allAttacks: [],
-    sortState: { column: 'warScore', direction: 'desc' },
-    payoutSortState: { column: 'totalPayout', direction: 'desc' },
-    respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
-};
+// Use window to avoid redeclaration errors when script is reloaded
+if (!window.warReportData) {
+    window.warReportData = {
+        playerStats: {},
+        warInfo: {},
+        allAttacks: [],
+        sortState: { column: 'warScore', direction: 'desc' },
+        payoutSortState: { column: 'totalPayout', direction: 'desc' },
+        respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
+    };
+}
+// Create local reference for convenience
+const warReportData = window.warReportData;
 
 // Global state for linked options group
-let chainGroupLinked = true; // All three options are linked together by default
+if (typeof window.chainGroupLinked === 'undefined') {
+    window.chainGroupLinked = true; // All three options are linked together by default
+}
+// Use getter function to access the value
+function getChainGroupLinked() { return window.chainGroupLinked; }
+function setChainGroupLinked(value) { window.chainGroupLinked = value; }
 const chainGroupOptions = ['respectPayRetals', 'respectPayOverseas', 'respectRemoveModifiers'];
 
 // Function to show confirmation dialog for opening multiple links
@@ -219,7 +229,7 @@ function saveRespectPayoutSettings() {
         retalMultiplier: document.getElementById('respectRetalMultiplier')?.value || '0.5',
         overseasMultiplier: document.getElementById('respectOverseasMultiplier')?.value || '0.25',
         otherAttacksMultiplier: document.getElementById('respectOtherAttacksMultiplier')?.value || '0.1',
-        chainGroupLinked: chainGroupLinked,
+        chainGroupLinked: getChainGroupLinked(),
         enableThresholds: document.getElementById('respectEnableThresholds')?.checked || false,
         minThreshold: document.getElementById('respectMinThreshold')?.value || '100',
         maxThreshold: document.getElementById('respectMaxThreshold')?.value || '300',
@@ -283,14 +293,14 @@ function loadHitPayoutSettings() {
 
 // Function to handle chain group toggle (clicking any chain button toggles all)
 function toggleChainGroup() {
-    chainGroupLinked = !chainGroupLinked;
+    setChainGroupLinked(!getChainGroupLinked());
     
     // Update all chain buttons to show the same state
     chainGroupOptions.forEach(optionId => {
         updateChainButtonState(optionId);
     });
     
-    if (chainGroupLinked) {
+    if (getChainGroupLinked()) {
 
     } else {
 
@@ -303,7 +313,7 @@ function toggleChainGroup() {
 
 // Function to handle checkbox changes when group is linked
 function handleLinkedOptionChange(changedCheckboxId) {
-    if (chainGroupLinked && chainGroupOptions.includes(changedCheckboxId)) {
+    if (getChainGroupLinked() && chainGroupOptions.includes(changedCheckboxId)) {
         const isChecked = document.getElementById(changedCheckboxId).checked;
         
         // Sync all options in the group
@@ -319,7 +329,7 @@ function updateChainButtonState(optionId) {
     const button = document.querySelector(`[data-option="${optionId}"]`);
     if (!button) return;
     
-    if (chainGroupLinked) {
+    if (getChainGroupLinked()) {
         button.innerHTML = '🔗';
         button.title = 'Click to unlink all options';
         button.style.color = '#ffd700';
@@ -361,7 +371,7 @@ function loadRespectPayoutSettings() {
             
             // Load chain group linked state
             if (settings.chainGroupLinked !== undefined) {
-                chainGroupLinked = settings.chainGroupLinked;
+                setChainGroupLinked(settings.chainGroupLinked);
                 // Update all chain button states
                 chainGroupOptions.forEach(optionId => {
                     updateChainButtonState(optionId);

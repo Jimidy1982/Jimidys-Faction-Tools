@@ -544,6 +544,14 @@ nav a:hover::after {
     border-color: var(--accent-color);
 }
 
+.api-key-item .api-key-note {
+    margin-top: 8px;
+    font-size: 0.85rem;
+    color: #95a5a6;
+    line-height: 1.4;
+    font-style: italic;
+}
+
 /* Page footer styles */
 .page-footer {
     background-color: var(--secondary-color);
@@ -1980,7 +1988,7 @@ th small {
 
 /* Mobile Navigation Toggle Button */
 .mobile-nav-toggle {
-    display: none;
+    display: none !important; /* Hidden by default on desktop, shown on mobile */
     position: fixed;
     top: 0.85rem;
     left: 20px;
@@ -1996,7 +2004,6 @@ th small {
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     line-height: 1;
     height: 36px;
-    display: flex;
     align-items: center;
     justify-content: center;
 }
@@ -2005,7 +2012,7 @@ th small {
 @media (max-width: 768px) {
     /* Show hamburger menu button */
     .mobile-nav-toggle {
-        display: block;
+        display: flex !important; /* Use flex to center the icon */
     }
     
     /* Adjust header for mobile */
