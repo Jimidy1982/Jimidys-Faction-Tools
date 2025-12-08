@@ -75,13 +75,13 @@ function calculateBaseRespect(attack, removeModifiers = false, shouldRound = tru
 // Use window to avoid redeclaration errors when script is reloaded
 if (!window.warReportData) {
     window.warReportData = {
-        playerStats: {},
-        warInfo: {},
-        allAttacks: [],
-        sortState: { column: 'warScore', direction: 'desc' },
-        payoutSortState: { column: 'totalPayout', direction: 'desc' },
-        respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
-    };
+    playerStats: {},
+    warInfo: {},
+    allAttacks: [],
+    sortState: { column: 'warScore', direction: 'desc' },
+    payoutSortState: { column: 'totalPayout', direction: 'desc' },
+    respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
+};
 }
 // Create local reference for convenience (use var to allow redeclaration on script reload)
 var warData = window.warReportData;
@@ -480,8 +480,8 @@ function initWarReport2() {
     // Auto-fetch faction ID and wars when API key is available
     const autoFetchFactionAndWars = async () => {
         console.log('[WAR REPORT 2.0] autoFetchFactionAndWars called');
-        const globalApiKeyInput = document.getElementById('globalApiKey');
-        const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
+            const globalApiKeyInput = document.getElementById('globalApiKey');
+            const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
         
         if (apiKey && factionIdInput) {
             try {
@@ -1174,7 +1174,7 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
             `;
         } else {
             // Generic error message
-            resultsSection.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+        resultsSection.innerHTML = `<div class="error">Error: ${error.message}</div>`;
         }
     } finally {
         stopLoadingDots();
@@ -1321,7 +1321,7 @@ function renderWarReportTable() {
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.avgDefLevel || 0), 0) / sorted.length > 0 ? (sorted.reduce((sum, p) => sum + (p.avgDefLevel || 0), 0) / sorted.length).toFixed(1) : '0.0'}</strong></td>
                 </tr>
             </tfoot>
-            </table>
+        </table>
         </div>
     `;
 
@@ -1378,6 +1378,21 @@ function exportWarReportToCSV() {
         return;
     }
 
+    // Use the same sorting logic as the table display
+    const sortState = warData.sortState;
+    const sorted = Object.values(playerStats).sort((a, b) => {
+        let aValue = a[sortState.column];
+        let bValue = b[sortState.column];
+        if (sortState.column === 'name') {
+            aValue = (aValue || '').toLowerCase();
+            bValue = (bValue || '').toLowerCase();
+            return sortState.direction === 'asc' ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
+        }
+        aValue = aValue || 0;
+        bValue = bValue || 0;
+        return sortState.direction === 'asc' ? aValue - bValue : bValue - aValue;
+    });
+
     const headers = [
         'Member',
         'Level',
@@ -1392,7 +1407,7 @@ function exportWarReportToCSV() {
     ];
 
     let csvContent = headers.join(',') + '\r\n';
-    Object.values(playerStats).forEach(player => {
+    sorted.forEach(player => {
         const row = [
             '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
@@ -2261,7 +2276,7 @@ function renderPayoutTable() {
                     <td></td>
                 </tr>
             </tfoot>
-            </table>
+        </table>
         </div>
         </div>
     `;
@@ -2400,10 +2415,23 @@ function exportPayoutToCSV() {
         alert('No payout data to export. Please fetch war data first.');
         return;
     }
-    // Get payout settings
+    // Get payout settings (same as renderPayoutTable)
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
     const payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d.]/g, '') || '1000000');
+    
+    // Get advanced payout options (same as renderPayoutTable)
+    const payAssists = document.getElementById('payAssists')?.checked;
+    const assistMultiplier = parseFloat(document.getElementById('assistMultiplier')?.value || '0.25');
+    const payRetals = document.getElementById('payRetals')?.checked;
+    const retalMultiplier = parseFloat(document.getElementById('retalMultiplier')?.value || '0.5');
+    const payOverseas = document.getElementById('payOverseas')?.checked;
+    const overseasMultiplier = parseFloat(document.getElementById('overseasMultiplier')?.value || '0.25');
+    const payOtherAttacks = document.getElementById('payOtherAttacks')?.checked;
+    const otherAttacksMultiplier = parseFloat(document.getElementById('otherAttacksMultiplier')?.value || '0.1');
+    const filterLowFF = document.getElementById('filterLowFF')?.checked;
+    const minFFRating = parseFloat(document.getElementById('minFFRating')?.value || '2.0');
+    
     const headers = [
         'Member',
         'Level',
@@ -2416,12 +2444,118 @@ function exportPayoutToCSV() {
         'Total Payout',
         'Pay link'
     ];
-    let csvContent = headers.join(',') + '\r\n';
-    // Calculate payouts and sort by total payout
+    
+    // Calculate payouts using the same logic as renderPayoutTable
     const playersWithPayouts = Object.values(playerStats).map(player => {
-        const payout = calculatePlayerPayout(player, payPerHit);
-        return { ...player, ...payout };
-    }).sort((a, b) => b.totalPayout - a.totalPayout);
+        // Count low FF hits for this player
+        let lowFFHits = 0;
+        let qualifiedWarHits = player.warHits || 0;
+        
+        if (filterLowFF) {
+            const playerAttacks = warData.allAttacks.filter(attack => 
+                String(attack.attacker?.id) === String(player.id) &&
+                attack.modifiers?.war === 2 &&
+                !attack.is_interrupted
+            );
+            
+            lowFFHits = playerAttacks.filter(attack => 
+                attack.modifiers?.fair_fight !== undefined && 
+                attack.modifiers.fair_fight < minFFRating &&
+                !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
+            ).length;
+            
+            qualifiedWarHits = (player.warHits || 0) - lowFFHits;
+        }
+        
+        let warHitPayout = Math.round(qualifiedWarHits * payPerHit);
+        let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerHit * retalMultiplier) : 0;
+        let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerHit * assistMultiplier) : 0;
+        let overseasPayout = payOverseas ? Math.round((player.overseasHits || 0) * payPerHit * overseasMultiplier) : 0;
+        let otherAttacksPayout = payOtherAttacks ? Math.round(((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerHit * otherAttacksMultiplier)) : 0;
+        
+        let lowFFPayout = 0;
+        if (filterLowFF && lowFFHits > 0) {
+            lowFFPayout = Math.round(lowFFHits * payPerHit * otherAttacksMultiplier);
+        }
+
+        return {
+            ...player,
+            lowFFHits,
+            qualifiedWarHits,
+            warHitPayout,
+            retalPayout,
+            assistPayout,
+            overseasPayout,
+            otherAttacksPayout,
+            lowFFPayout,
+            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout + lowFFPayout)
+        };
+    });
+
+    // Apply threshold-based payout adjustments if thresholds are enabled
+    const enableThresholds = document.getElementById('hitEnableThresholds')?.checked || false;
+    const minThreshold = parseFloat(document.getElementById('hitMinThreshold')?.value || '20');
+    const maxThreshold = parseFloat(document.getElementById('hitMaxThreshold')?.value || '50');
+    const payoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio';
+
+    if (enableThresholds) {
+        playersWithPayouts.forEach(player => {
+            const combinedHits = (player.warHits || 0) + (player.warAssists || 0);
+            
+            if (combinedHits < minThreshold) {
+                player.warHitPayout = 0;
+                let minThresholdPlayerPayout;
+                if (payoutMode === 'equal') {
+                    minThresholdPlayerPayout = minThreshold * payPerHit;
+                } else {
+                    const adjustedMinHits = Math.min(minThreshold, maxThreshold);
+                    minThresholdPlayerPayout = adjustedMinHits * payPerHit;
+                }
+                
+                const otherModifiersTotal = (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+                
+                if (otherModifiersTotal > minThresholdPlayerPayout) {
+                    const scaleFactor = minThresholdPlayerPayout / otherModifiersTotal;
+                    player.retalPayout = Math.round((player.retalPayout || 0) * scaleFactor);
+                    player.assistPayout = Math.round((player.assistPayout || 0) * scaleFactor);
+                    player.overseasPayout = Math.round((player.overseasPayout || 0) * scaleFactor);
+                    player.otherAttacksPayout = Math.round((player.otherAttacksPayout || 0) * scaleFactor);
+                    player.lowFFPayout = Math.round((player.lowFFPayout || 0) * scaleFactor);
+                }
+            } else {
+                if (payoutMode === 'equal') {
+                    player.warHitPayout = minThreshold * payPerHit;
+                } else {
+                    const adjustedHits = Math.min(combinedHits, maxThreshold);
+                    player.warHitPayout = adjustedHits * payPerHit;
+                }
+                
+                player.retalPayout = 0;
+                player.assistPayout = 0;
+                player.overseasPayout = 0;
+                player.otherAttacksPayout = 0;
+                player.lowFFPayout = 0;
+            }
+            
+            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+        });
+    }
+
+    // Sort by payout sort state (same as table display)
+    const { column: sortColumn, direction: sortDirection } = warData.payoutSortState;
+    playersWithPayouts.sort((a, b) => {
+        let aValue = a[sortColumn];
+        let bValue = b[sortColumn];
+        if (typeof aValue === 'string') {
+            aValue = aValue.toLowerCase();
+            bValue = bValue.toLowerCase();
+        }
+        if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+        if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+
+    let csvContent = headers.join(',') + '\r\n';
     playersWithPayouts.forEach(player => {
         const otherAttacks = (player.totalAttacks || 0) - (player.warHits || 0) - (player.warAssists || 0);
         const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
@@ -2981,7 +3115,7 @@ function renderRespectPayoutTable() {
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
                 </tr>
             </tfoot>
-            </table>
+        </table>
         </div>
         </div>
         
@@ -3233,7 +3367,21 @@ function exportRespectPayoutToCSV() {
             respectRatio: respectRatio.toFixed(4),
             totalPayout
         };
-    }).sort((a, b) => b.totalPayout - a.totalPayout);
+    });
+    
+    // Sort by respect payout sort state (same as table display)
+    const { column: sortColumn, direction: sortDirection } = warData.respectPayoutSortState;
+    playersWithRespectPayouts.sort((a, b) => {
+        let aValue = a[sortColumn];
+        let bValue = b[sortColumn];
+        if (typeof aValue === 'string') {
+            aValue = aValue.toLowerCase();
+            bValue = bValue.toLowerCase();
+        }
+        if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+        if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
     
     playersWithRespectPayouts.forEach(player => {
         const otherAttacks = (player.totalAttacks || 0) - (player.warHits || 0) - (player.warAssists || 0);

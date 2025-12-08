@@ -748,27 +748,71 @@ function exportOCStatsToCSV() {
         return;
     }
     
-    const { difficultyStats, playerStats, totalCrimes } = ocStatsData;
+    // Get filtered data (same as what's displayed in the table)
+    const filteredDifficultyStats = getCurrentFilteredData('difficulty');
+    const filteredPlayerStats = getCurrentFilteredData('player');
+    
+    // Apply sorting to difficulty stats (same as table display)
+    const difficultySort = ocStatsData.sortState.difficulty;
+    const sortedDifficultyStats = [...filteredDifficultyStats].sort((a, b) => {
+        let aVal = a[difficultySort.column];
+        let bVal = b[difficultySort.column];
+        if (difficultySort.direction === 'asc') {
+            return aVal - bVal;
+        } else {
+            return bVal - aVal;
+        }
+    });
+    
+    // Apply sorting to player stats (same as table display)
+    const playerSort = ocStatsData.sortState.player;
+    const sortedPlayerStats = [...filteredPlayerStats].sort((a, b) => {
+        let aVal = a[playerSort.column];
+        let bVal = b[playerSort.column];
+        
+        // Handle text sorting for name
+        if (playerSort.column === 'name') {
+            aVal = aVal.toLowerCase();
+            bVal = bVal.toLowerCase();
+            if (playerSort.direction === 'asc') {
+                return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+            } else {
+                return bVal < aVal ? -1 : bVal > aVal ? 1 : 0;
+            }
+        }
+        
+        // Numeric sorting
+        if (playerSort.direction === 'asc') {
+            return aVal - bVal;
+        } else {
+            return bVal - aVal;
+        }
+    });
+    
+    // Calculate totals from filtered data
+    const totalSuccessful = sortedDifficultyStats.reduce((sum, stat) => sum + stat.successful, 0);
+    const totalFailed = sortedDifficultyStats.reduce((sum, stat) => sum + stat.failed, 0);
+    const totalCrimes = totalSuccessful + totalFailed;
     
     let csvContent = 'Organised Crime Statistics\n\n';
     csvContent += `Total Crimes Analyzed: ${totalCrimes}\n\n`;
     
-    // Difficulty stats
+    // Difficulty stats (using filtered and sorted data)
     csvContent += 'SUCCESS RATES BY DIFFICULTY\n';
     csvContent += 'Difficulty,Total Crimes,Successful,Failed,Success Rate\n';
-    difficultyStats.forEach(stat => {
+    sortedDifficultyStats.forEach(stat => {
         csvContent += `${stat.difficulty}/10,${stat.total},${stat.successful},${stat.failed},${stat.successRate}%\n`;
     });
     
     csvContent += '\n\nPLAYER PARTICIPATION STATS\n';
     csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate\n';
-    playerStats.forEach(player => {
+    sortedPlayerStats.forEach(player => {
         csvContent += `"${player.name}",${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%\n`;
     });
     
     csvContent += '\n\nPLAYER DIFFICULTY BREAKDOWN\n';
     csvContent += 'Player Name,Difficulty,Total,Successful,Failed,Success Rate\n';
-    playerStats.forEach(player => {
+    sortedPlayerStats.forEach(player => {
         if (player.totalParticipations > 0) {
             for (let diff = 1; diff <= 10; diff++) {
                 const breakdown = player.difficultyBreakdown[diff];
