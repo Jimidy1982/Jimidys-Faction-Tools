@@ -776,8 +776,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Function to calculate unique users per day from logs
-    function calculateUniqueUsersPerDay(logs, daysBack) {
+    // Function to calculate unique users and tool usage per day from logs
+    function calculateUsagePerDay(logs, daysBack) {
         const now = new Date();
         const startDate = new Date(now);
         startDate.setDate(startDate.getDate() - daysBack);
@@ -788,24 +788,43 @@ document.addEventListener('DOMContentLoaded', () => {
             return logDate >= startDate;
         });
         
-        // Group by date and count unique users per day
+        // Group by date: unique users and unique users per tool per day
         const dailyData = {};
+        const toolUsageData = {}; // { dateKey: { toolName: Set of users } }
+        const allTools = new Set();
         
         filteredLogs.forEach(log => {
             const logDate = new Date(log.timestamp);
             const dateKey = logDate.toISOString().split('T')[0]; // YYYY-MM-DD format
             
+            // Track unique users per day
             if (!dailyData[dateKey]) {
                 dailyData[dateKey] = new Set();
             }
             dailyData[dateKey].add(log.userName);
+            
+            // Track unique users per tool per day (not total uses)
+            if (!toolUsageData[dateKey]) {
+                toolUsageData[dateKey] = {};
+            }
+            if (!toolUsageData[dateKey][log.tool]) {
+                toolUsageData[dateKey][log.tool] = new Set();
+            }
+            toolUsageData[dateKey][log.tool].add(log.userName); // Add user to set (unique per day)
+            allTools.add(log.tool);
         });
         
         // Convert to array format for chart
         const dates = [];
         const uniqueUsers = [];
+        const toolUsage = {}; // { toolName: [counts per day] }
         
-        // Fill in all dates in the range (even if no users)
+        // Initialize tool usage arrays
+        allTools.forEach(tool => {
+            toolUsage[tool] = [];
+        });
+        
+        // Fill in all dates in the range (even if no usage)
         for (let i = daysBack - 1; i >= 0; i--) {
             const date = new Date(now);
             date.setDate(date.getDate() - i);
@@ -813,14 +832,32 @@ document.addEventListener('DOMContentLoaded', () => {
             
             dates.push(dateKey);
             uniqueUsers.push(dailyData[dateKey] ? dailyData[dateKey].size : 0);
+            
+            // Add tool usage for this date (count unique users, not total uses)
+            allTools.forEach(tool => {
+                const uniqueUsersForTool = toolUsageData[dateKey]?.[tool];
+                toolUsage[tool].push(uniqueUsersForTool ? uniqueUsersForTool.size : 0);
+            });
         }
         
-        return { dates, uniqueUsers };
+        return { dates, uniqueUsers, toolUsage, allTools: Array.from(allTools).sort() };
     }
     
-    // Function to render the users graph
-    function renderUsersGraph(logs, daysBack) {
-        const { dates, uniqueUsers } = calculateUniqueUsersPerDay(logs, daysBack);
+    // Color palette for tools (distinct colors)
+    const toolColors = [
+        '#ffd700', '#4da6ff', '#ff6b6b', '#51cf66', '#ffa94d',
+        '#a78bfa', '#f472b6', '#60a5fa', '#34d399', '#fbbf24',
+        '#818cf8', '#fb7185', '#4ade80', '#f59e0b', '#ec4899'
+    ];
+    
+    // Function to get color for a tool (with cycling)
+    function getToolColor(toolIndex) {
+        return toolColors[toolIndex % toolColors.length];
+    }
+    
+    // Function to render the users graph with tool usage
+    function renderUsersGraph(logs, daysBack, visibilitySettings = {}) {
+        const { dates, uniqueUsers, toolUsage, allTools } = calculateUsagePerDay(logs, daysBack);
         
         const canvas = document.getElementById('usersGraph');
         if (!canvas) return;
@@ -838,24 +875,60 @@ document.addEventListener('DOMContentLoaded', () => {
             return `${d.getMonth() + 1}/${d.getDate()}`;
         });
         
+        // Build datasets based on visibility settings
+        const datasets = [];
+        
+        // Add "Total Unique Users" dataset if visible
+        if (visibilitySettings.totalUsers !== false) {
+            datasets.push({
+                label: 'Total Unique Users',
+                data: uniqueUsers,
+                borderColor: '#ffd700',
+                backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.4,
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                pointBackgroundColor: '#ffd700',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2,
+                hidden: visibilitySettings.totalUsers === false
+            });
+        }
+        
+        // Add tool usage datasets
+        allTools.forEach((tool, index) => {
+            if (visibilitySettings[tool] !== false) {
+                const color = getToolColor(index);
+                // Add display name with alias for War Report 2.0
+                let displayName = tool;
+                if (tool === 'War Report 2.0' || tool === 'war-report-2.0') {
+                    displayName = 'War Report 2.0 (Payout Calculator)';
+                }
+                datasets.push({
+                    label: displayName,
+                    data: toolUsage[tool],
+                    borderColor: color,
+                    backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.4,
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                    pointBackgroundColor: color,
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 1,
+                    hidden: visibilitySettings[tool] === false
+                });
+            }
+        });
+        
         window.usersChart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: displayDates,
-                datasets: [{
-                    label: 'Unique Users',
-                    data: uniqueUsers,
-                    borderColor: '#ffd700',
-                    backgroundColor: 'rgba(255, 215, 0, 0.1)',
-                    borderWidth: 2,
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 3,
-                    pointHoverRadius: 5,
-                    pointBackgroundColor: '#ffd700',
-                    pointBorderColor: '#fff',
-                    pointBorderWidth: 2
-                }]
+                datasets: datasets
             },
             options: {
                 responsive: true,
@@ -867,9 +940,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         labels: {
                             color: '#fff',
                             font: {
-                                size: 14,
+                                size: 12,
                                 weight: 'bold'
-                            }
+                            },
+                            usePointStyle: true,
+                            padding: 10
                         }
                     },
                     tooltip: {
@@ -884,7 +959,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                 return dates[index]; // Show full date in tooltip
                             },
                             label: function(context) {
-                                return `Unique Users: ${context.parsed.y}`;
+                                const label = context.dataset.label || '';
+                                const value = context.parsed.y;
+                                if (label === 'Total Unique Users') {
+                                    return `${label}: ${value}`;
+                                } else {
+                                    return `${label}: ${value} uses`;
+                                }
                             }
                         }
                     }
@@ -1039,13 +1120,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 
                 <div class="dashboard-section">
-                    <h2>Unique Users Per Day</h2>
+                    <h2>Usage Analytics</h2>
                     <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button class="time-period-btn active" data-days="7">1 Week</button>
-                        <button class="time-period-btn" data-days="30">1 Month</button>
+                        <button class="time-period-btn" data-days="7">1 Week</button>
+                        <button class="time-period-btn active" data-days="30">1 Month</button>
                         <button class="time-period-btn" data-days="90">3 Months</button>
                         <button class="time-period-btn" data-days="180">6 Months</button>
                         <button class="time-period-btn" data-days="365">1 Year</button>
+                    </div>
+                    <div style="margin-bottom: 15px; background-color: var(--secondary-color); padding: 15px; border-radius: 8px;">
+                        <div style="margin-bottom: 10px; font-weight: bold; color: var(--accent-color);">Show on Graph:</div>
+                        <div id="graphVisibilityControls" style="display: flex; flex-wrap: wrap; gap: 15px;">
+                            <!-- Checkboxes will be added here -->
+                        </div>
                     </div>
                     <div style="position: relative; height: 400px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
                         <canvas id="usersGraph"></canvas>
@@ -1271,9 +1358,55 @@ document.addEventListener('DOMContentLoaded', () => {
         
         appContent.innerHTML = html;
         
+        // Get tools list from stats (already calculated)
+        const allTools = Object.keys(stats).sort();
+        
+        // Generate checkboxes for graph visibility
+        const visibilityControls = document.getElementById('graphVisibilityControls');
+        if (visibilityControls) {
+            // Add "Total Unique Users" checkbox
+            const totalCheckbox = document.createElement('label');
+            totalCheckbox.className = 'graph-checkbox-label';
+            totalCheckbox.innerHTML = `
+                <input type="checkbox" class="graph-visibility-checkbox" data-series="totalUsers" checked>
+                <span style="color: #ffd700; font-weight: bold;">Total Unique Users</span>
+            `;
+            visibilityControls.appendChild(totalCheckbox);
+            
+            // Add checkboxes for each tool
+            allTools.forEach((tool, index) => {
+                const color = getToolColor(index);
+                // Add display name with alias for War Report 2.0
+                let displayName = tool;
+                if (tool === 'War Report 2.0' || tool === 'war-report-2.0') {
+                    displayName = 'War Report 2.0 (Payout Calculator)';
+                }
+                const checkbox = document.createElement('label');
+                checkbox.className = 'graph-checkbox-label';
+                checkbox.innerHTML = `
+                    <input type="checkbox" class="graph-visibility-checkbox" data-series="${tool}" checked>
+                    <span style="color: ${color}; font-weight: bold;">${displayName}</span>
+                `;
+                visibilityControls.appendChild(checkbox);
+            });
+        }
+        
+        // Initialize visibility settings (all enabled by default)
+        let visibilitySettings = {
+            totalUsers: true
+        };
+        allTools.forEach(tool => {
+            visibilitySettings[tool] = true;
+        });
+        
+        // Function to update graph with current visibility settings
+        const updateGraph = () => {
+            renderUsersGraph(filteredLogs, currentDaysBack, visibilitySettings);
+        };
+        
         // Initialize graph with default 30 days
         let currentDaysBack = 30;
-        renderUsersGraph(filteredLogs, currentDaysBack);
+        updateGraph();
         
         // Add event listeners for time period buttons
         document.querySelectorAll('.time-period-btn').forEach(btn => {
@@ -1284,7 +1417,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // Update graph
                 currentDaysBack = parseInt(btn.dataset.days);
-                renderUsersGraph(filteredLogs, currentDaysBack);
+                updateGraph();
+            });
+        });
+        
+        // Add event listeners for visibility checkboxes
+        document.querySelectorAll('.graph-visibility-checkbox').forEach(checkbox => {
+            checkbox.addEventListener('change', () => {
+                const series = checkbox.dataset.series;
+                visibilitySettings[series] = checkbox.checked;
+                updateGraph();
             });
         });
         

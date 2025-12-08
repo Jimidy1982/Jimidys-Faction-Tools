@@ -1927,6 +1927,27 @@ th small {
     background-color: #ffed4e;
 }
 
+.graph-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 5px 10px;
+    border-radius: 4px;
+    transition: background-color 0.2s ease;
+}
+
+.graph-checkbox-label:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.graph-visibility-checkbox {
+    cursor: pointer;
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-color);
+}
+
 @media (max-width: 768px) {
     /* Stats cards - single column */
     .stats-grid {
