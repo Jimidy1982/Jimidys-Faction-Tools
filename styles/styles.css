@@ -1899,6 +1899,34 @@ th small {
     text-decoration: underline;
 }
 
+.time-period-btn {
+    background-color: var(--secondary-color);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    padding: 8px 16px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: bold;
+    transition: all 0.3s ease;
+}
+
+.time-period-btn:hover {
+    background-color: var(--primary-color);
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+.time-period-btn.active {
+    background-color: var(--accent-color);
+    color: #1a1a1a;
+    border-color: var(--accent-color);
+}
+
+.time-period-btn.active:hover {
+    background-color: #ffed4e;
+}
+
 @media (max-width: 768px) {
     /* Stats cards - single column */
     .stats-grid {

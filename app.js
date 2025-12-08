@@ -776,6 +776,146 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Function to calculate unique users per day from logs
+    function calculateUniqueUsersPerDay(logs, daysBack) {
+        const now = new Date();
+        const startDate = new Date(now);
+        startDate.setDate(startDate.getDate() - daysBack);
+        
+        // Filter logs to the time period
+        const filteredLogs = logs.filter(log => {
+            const logDate = new Date(log.timestamp);
+            return logDate >= startDate;
+        });
+        
+        // Group by date and count unique users per day
+        const dailyData = {};
+        
+        filteredLogs.forEach(log => {
+            const logDate = new Date(log.timestamp);
+            const dateKey = logDate.toISOString().split('T')[0]; // YYYY-MM-DD format
+            
+            if (!dailyData[dateKey]) {
+                dailyData[dateKey] = new Set();
+            }
+            dailyData[dateKey].add(log.userName);
+        });
+        
+        // Convert to array format for chart
+        const dates = [];
+        const uniqueUsers = [];
+        
+        // Fill in all dates in the range (even if no users)
+        for (let i = daysBack - 1; i >= 0; i--) {
+            const date = new Date(now);
+            date.setDate(date.getDate() - i);
+            const dateKey = date.toISOString().split('T')[0];
+            
+            dates.push(dateKey);
+            uniqueUsers.push(dailyData[dateKey] ? dailyData[dateKey].size : 0);
+        }
+        
+        return { dates, uniqueUsers };
+    }
+    
+    // Function to render the users graph
+    function renderUsersGraph(logs, daysBack) {
+        const { dates, uniqueUsers } = calculateUniqueUsersPerDay(logs, daysBack);
+        
+        const canvas = document.getElementById('usersGraph');
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        
+        // Destroy existing chart if it exists
+        if (window.usersChart) {
+            window.usersChart.destroy();
+        }
+        
+        // Format dates for display (MM/DD)
+        const displayDates = dates.map(date => {
+            const d = new Date(date);
+            return `${d.getMonth() + 1}/${d.getDate()}`;
+        });
+        
+        window.usersChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: displayDates,
+                datasets: [{
+                    label: 'Unique Users',
+                    data: uniqueUsers,
+                    borderColor: '#ffd700',
+                    backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    pointBackgroundColor: '#ffd700',
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            color: '#fff',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleColor: '#ffd700',
+                        bodyColor: '#fff',
+                        borderColor: '#ffd700',
+                        borderWidth: 1,
+                        callbacks: {
+                            title: function(context) {
+                                const index = context[0].dataIndex;
+                                return dates[index]; // Show full date in tooltip
+                            },
+                            label: function(context) {
+                                return `Unique Users: ${context.parsed.y}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: {
+                            color: '#fff',
+                            maxRotation: 45,
+                            minRotation: 45
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            color: '#fff',
+                            stepSize: 1,
+                            precision: 0
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
     // Function to initialize admin dashboard
     async function initAdminDashboard() {
         // Show loading indicator
@@ -895,6 +1035,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="stat-card">
                         <h3>Tools Available</h3>
                         <div class="stat-number">${Object.keys(stats).length}</div>
+                    </div>
+                </div>
+                
+                <div class="dashboard-section">
+                    <h2>Unique Users Per Day</h2>
+                    <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="time-period-btn active" data-days="7">1 Week</button>
+                        <button class="time-period-btn" data-days="30">1 Month</button>
+                        <button class="time-period-btn" data-days="90">3 Months</button>
+                        <button class="time-period-btn" data-days="180">6 Months</button>
+                        <button class="time-period-btn" data-days="365">1 Year</button>
+                    </div>
+                    <div style="position: relative; height: 400px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
+                        <canvas id="usersGraph"></canvas>
                     </div>
                 </div>
                 
@@ -1116,6 +1270,23 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         
         appContent.innerHTML = html;
+        
+        // Initialize graph with default 30 days
+        let currentDaysBack = 30;
+        renderUsersGraph(filteredLogs, currentDaysBack);
+        
+        // Add event listeners for time period buttons
+        document.querySelectorAll('.time-period-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Update active state
+                document.querySelectorAll('.time-period-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                // Update graph
+                currentDaysBack = parseInt(btn.dataset.days);
+                renderUsersGraph(filteredLogs, currentDaysBack);
+            });
+        });
         
         // Add event listeners for the new buttons
         document.getElementById('toggleAdminFilter')?.addEventListener('click', async () => {
