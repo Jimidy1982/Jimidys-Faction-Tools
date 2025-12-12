@@ -532,7 +532,7 @@ async function handleFetchWarData() {
                   '3. Set the access level to Limited or Full\n' +
                   '4. Copy the new key and enter it in the API Key field');
         } else {
-            alert('Error fetching war data: ' + error.message);
+        alert('Error fetching war data: ' + error.message);
         }
     } finally {
         fetchButton.disabled = false;

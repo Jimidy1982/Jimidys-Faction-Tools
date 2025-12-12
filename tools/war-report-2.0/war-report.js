@@ -937,35 +937,14 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
                 progressDetails.textContent = `Processing batch ${batchCount + 1}... (${allAttacks.length} attacks found)`;
             }
             
-            if (batchCount === 50) {
-
-                // Show countdown for API limit wait
-                if (progressContainer) {
-                    progressMessage.textContent = 'Waiting for API Limit...';
-                    progressDetails.textContent = 'API rate limit reached, waiting 30 seconds...';
-                }
-                
-                // Countdown from 30 to 0
-                for (let i = 30; i > 0; i--) {
-                    if (progressContainer) {
-                        progressDetails.textContent = `API rate limit reached, waiting ${i} seconds...`;
-                    }
-                    await sleep(1000);
-                }
-                
-                if (progressContainer) {
-                    progressMessage.textContent = 'Fetching war attacks...';
-                    progressDetails.textContent = 'Resuming data collection...';
-                }
-            } else if (batchCount > 50) {
-                await sleep(667); // 1.5 calls per second = 667ms between calls
-            }
-            
             // Use v2 API endpoint with ASCENDING sort to get oldest attacks first
             const attacksUrl = `https://api.torn.com/v2/faction/attacks?limit=100&sort=ASC&from=${currentBatchFrom}&key=${apiKey}`;
 
-            const attacksResponse = await fetch(attacksUrl);
-            const attacksData = await attacksResponse.json();
+            // Use global rate-limited fetch function
+            const attacksData = await window.fetchWithRateLimit(attacksUrl, {
+                progressMessage: progressMessage,
+                progressDetails: progressDetails
+            });
             
             if (attacksData.error) {
                 throw new Error(`Torn API Error: ${attacksData.error.error}`);

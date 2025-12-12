@@ -3,9 +3,9 @@ console.log('[CONSUMPTION TRACKER] consumption-tracker.js LOADED');
 // Global state for consumption tracker (use window to avoid redeclaration errors when script is reloaded)
 if (!window.consumptionTrackerData) {
     window.consumptionTrackerData = {
-        fetchedMembers: [],
-        sortState: { column: 'xanax', direction: 'desc' }
-    };
+    fetchedMembers: [],
+    sortState: { column: 'xanax', direction: 'desc' }
+};
 }
 // Create local reference for convenience (use var to allow redeclaration on script reload)
 var consumptionTrackerData = window.consumptionTrackerData;
@@ -23,25 +23,17 @@ function initConsumptionTracker() {
         fetchBtn.addEventListener('click', handleConsumptionFetch);
     }
     
-    const startDateInput = document.getElementById('startDate');
-    const endDateInput = document.getElementById('endDate');
-
-    if (startDateInput && endDateInput) {
-        const startDatePicker = flatpickr(startDateInput, {
-            dateFormat: "Y-m-d",
-            defaultDate: "today",
-            locale: {
-                firstDayOfWeek: 1
-            }
-        });
-        flatpickr(endDateInput, {
-            dateFormat: "Y-m-d",
-            defaultDate: "today",
-            locale: {
-                firstDayOfWeek: 1
-            }
-        });
-    }
+    // Initialize date pickers using global function (same as War & Chain Reporter)
+    setTimeout(() => {
+        if (window.initDatePickers) {
+            window.initDatePickers('startDate', 'endDate', {
+                startDefaultDate: "today",
+                endDefaultDate: "today"
+            });
+        } else {
+            console.error('[CONSUMPTION TRACKER] window.initDatePickers is not available!');
+        }
+    }, 100);
 }
 
 const handleConsumptionFetch = async () => {
@@ -258,12 +250,12 @@ const handleConsumptionFetch = async () => {
             console.warn('Points will be tracked without market value');
         }
         
-        // Get rate limit setting
-        const rateLimitSelect = document.getElementById('rateLimit');
-        const rateLimit = rateLimitSelect ? parseInt(rateLimitSelect.value) : 60;
-        const delayBetweenCalls = Math.floor(60000 / rateLimit); // Convert to milliseconds
+        // Use global rate limit setting (from welcome message area)
+        // The global rate limit is managed by app.js and stored in localStorage
+        // We'll use the dynamic interval that's already calculated
+        const delayBetweenCalls = window.CALL_INTERVAL_MS || 667; // Default to 667ms if not set
         
-        console.log(`Using rate limit: ${rateLimit} calls per minute (${delayBetweenCalls}ms between calls)`);
+        console.log(`Using global rate limit: ${delayBetweenCalls}ms between calls`);
         
         // Step 1: Fetch faction news (armory actions) for the date range with proper pagination
         console.log('Fetching faction armory actions...');
@@ -620,7 +612,7 @@ const handleConsumptionFetch = async () => {
                   '3. Set the access level to Limited or Full\n' +
                   '4. Copy the new key and enter it in the API Key field');
         } else {
-            alert('Error fetching consumption data: ' + error.message);
+        alert('Error fetching consumption data: ' + error.message);
         }
     } finally {
         if (loadingSpinner) loadingSpinner.style.display = 'none';
@@ -1170,17 +1162,17 @@ function exportGroupedToCSV() {
                     csvContent += `"${col.label}",${total}\n`;
                 }
             } else {
-                const price = itemValues[col.itemName] || 0;
-                const value = totalValues[col.id];
-                groupTotal += value;
-                csvContent += `"${col.label}",${total},$${price.toLocaleString()},$${value.toLocaleString()}\n`;
+            const price = itemValues[col.itemName] || 0;
+            const value = totalValues[col.id];
+            groupTotal += value;
+            csvContent += `"${col.label}",${total},$${price.toLocaleString()},$${value.toLocaleString()}\n`;
             }
         });
         
         if (groupType === 'Points' && pointsPrice === 0) {
             csvContent += `\n`;
         } else {
-            csvContent += `Group Total,,,$${groupTotal.toLocaleString()}\n\n`;
+        csvContent += `Group Total,,,$${groupTotal.toLocaleString()}\n\n`;
         }
     });
     
@@ -1262,7 +1254,7 @@ function exportPlayersToCSV() {
         if (col.isPoints && pointsPrice === 0) {
             csvContent += `${col.label} (Qty),`;
         } else {
-            csvContent += `${col.label} (Qty),${col.label} (Cost),`;
+        csvContent += `${col.label} (Qty),${col.label} (Cost),`;
         }
     });
     csvContent += `Total Value\n`;
@@ -1284,10 +1276,10 @@ function exportPlayersToCSV() {
                     csvContent += `${quantity},`;
                 }
             } else {
-                const price = itemValues[col.itemName] || 0;
-                const cost = quantity * price;
-                playerTotal += cost;
-                csvContent += `${quantity},$${cost.toLocaleString()},`;
+            const price = itemValues[col.itemName] || 0;
+            const cost = quantity * price;
+            playerTotal += cost;
+            csvContent += `${quantity},$${cost.toLocaleString()},`;
             }
         });
         
@@ -1310,7 +1302,7 @@ function exportPlayersToCSV() {
         if (col.isPoints) {
             const price = itemValues['Points'] || 0;
             if (price > 0) {
-                csvContent += `${totals[col.id]},$${totalValues[col.id].toLocaleString()},`;
+        csvContent += `${totals[col.id]},$${totalValues[col.id].toLocaleString()},`;
             } else {
                 csvContent += `${totals[col.id]},`;
             }

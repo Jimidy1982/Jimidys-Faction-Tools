@@ -7,6 +7,399 @@ document.addEventListener('DOMContentLoaded', () => {
     const ADMIN_USER_NAME = 'Jimidy'; // Your username to exclude from results (keeping for backward compatibility)
     let userCache = {}; // Cache for API key -> user data
     let showAdminData = false; // Global toggle for showing admin data
+    
+    // Dynamic rate limiting: Track API call timestamps in rolling 60-second window
+    window.apiCallTracker = window.apiCallTracker || [];
+    
+    // User-configurable rate limit (stored in localStorage, default 90)
+    const getRateLimit = () => {
+        const stored = localStorage.getItem('tornApiRateLimit');
+        return stored ? parseInt(stored, 10) : 90; // Default to 90 (safety margin)
+    };
+    
+    const setRateLimit = (limit) => {
+        localStorage.setItem('tornApiRateLimit', limit.toString());
+        // Update the interval calculation
+        window.CALL_INTERVAL_MS = (60 * 1000) / limit; // Dynamic interval based on rate limit
+    };
+    
+    // Initialize rate limit from storage or default
+    setRateLimit(getRateLimit()); // This also sets CALL_INTERVAL_MS
+    
+    // Function to clean old timestamps (older than 60 seconds)
+    const cleanOldCalls = () => {
+        const now = Date.now();
+        window.apiCallTracker = window.apiCallTracker.filter(timestamp => (now - timestamp) < 60000);
+    };
+    
+    // Function to get calls made in the last 60 seconds
+    const getCallsInLastMinute = () => {
+        cleanOldCalls();
+        return window.apiCallTracker.length;
+    };
+    
+    // Function to calculate how many calls can be made immediately
+    const calculateAvailableCalls = () => {
+        cleanOldCalls();
+        const callsInLastMinute = window.apiCallTracker.length;
+        const currentRateLimit = getRateLimit(); // Get current rate limit (may have changed)
+        
+        if (callsInLastMinute === 0) {
+            // No calls in last minute, can make full batch
+            return currentRateLimit;
+        }
+        
+        if (window.apiCallTracker.length === 0) {
+            return currentRateLimit;
+        }
+        
+        // Find the oldest call in the tracker
+        const oldestCall = Math.min(...window.apiCallTracker);
+        const timeSinceOldestCall = Date.now() - oldestCall;
+        const secondsRemaining = Math.max(0, 60 - (timeSinceOldestCall / 1000));
+        
+        // Calculate total remaining capacity in the minute window
+        const remainingCapacity = currentRateLimit - callsInLastMinute;
+        
+        if (remainingCapacity <= 0) {
+            // Already at or over limit, need to wait
+            return 0;
+        }
+        
+        // We can make calls immediately up to the remaining capacity
+        // We don't need to reserve gradual capacity - we'll slow down naturally as we approach the limit
+        // Be more aggressive: use most of the remaining capacity immediately
+        // Reserve only a small buffer (10%) for gradual calls
+        const buffer = Math.ceil(remainingCapacity * 0.1); // 10% buffer
+        const availableImmediate = Math.max(0, remainingCapacity - buffer);
+        
+        return availableImmediate;
+    };
+    
+    // Function to record an API call
+    const recordApiCall = () => {
+        window.apiCallTracker.push(Date.now());
+        cleanOldCalls();
+    };
+    
+    // ==================== GLOBAL BATCH API CALLS WITH RATE LIMITING ====================
+    /**
+     * Helper function for single API call with dynamic rate limiting
+     * Useful for dynamic loops where the number of requests is unknown upfront
+     * 
+     * @param {string} url - The URL to fetch
+     * @param {Object} options - Configuration options
+     * @param {HTMLElement} options.progressMessage - Element to display progress message
+     * @param {HTMLElement} options.progressDetails - Element to display detailed progress
+     * @param {boolean} options.retryOnRateLimit - Whether to retry on rate limit errors (default: true)
+     * @param {number} options.retryDelay - Delay before retry in ms (default: 30000)
+     * @returns {Promise<Object>} The JSON response data
+     */
+    window.fetchWithRateLimit = async (url, options = {}) => {
+        const {
+            progressMessage,
+            progressDetails,
+            retryOnRateLimit = true,
+            retryDelay = 30000
+        } = options;
+        
+        // Dynamic rate limiting logic
+        const currentCallsInLastMinute = getCallsInLastMinute();
+        const currentRateLimit = getRateLimit();
+        
+        if (currentCallsInLastMinute >= currentRateLimit) {
+            // We've hit the limit, need to wait
+            const oldestCall = Math.min(...window.apiCallTracker);
+            const timeSinceOldestCall = Date.now() - oldestCall;
+            const waitTime = Math.ceil(60000 - timeSinceOldestCall);
+            
+            if (progressMessage) {
+                progressMessage.textContent = 'Waiting for API Limit...';
+            }
+            if (progressDetails) {
+                progressDetails.textContent = `API rate limit reached, waiting ${Math.ceil(waitTime / 1000)} seconds...`;
+            }
+            
+            // Countdown
+            const waitSeconds = Math.ceil(waitTime / 1000);
+            for (let j = waitSeconds; j > 0; j--) {
+                if (progressDetails) {
+                    progressDetails.textContent = `API rate limit reached, waiting ${j} seconds...`;
+                }
+                await sleep(1000);
+            }
+            
+            if (progressMessage) {
+                progressMessage.textContent = 'Fetching data...';
+            }
+            if (progressDetails) {
+                progressDetails.textContent = 'Resuming data collection...';
+            }
+            } else {
+                const availableImmediate = calculateAvailableCalls();
+                if (availableImmediate <= 0) {
+                    // Need to wait a bit before making the call
+                    await sleep(window.CALL_INTERVAL_MS);
+                }
+            }
+        
+        // Make the API call
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data.error) {
+                // Check for rate limit error
+                if ((data.error.error === 'Too many requests' || data.code === 2) && retryOnRateLimit) {
+                    if (progressMessage) {
+                        progressMessage.textContent = 'Waiting for API Limit...';
+                    }
+                    if (progressDetails) {
+                        progressDetails.textContent = 'Rate limit detected, waiting 30 seconds...';
+                    }
+                    await sleep(retryDelay);
+                    if (progressMessage) {
+                        progressMessage.textContent = 'Fetching data...';
+                    }
+                    
+                    // Retry once
+                    const retryResponse = await fetch(url);
+                    const retryData = await retryResponse.json();
+                    
+                    if (retryData.error) {
+                        throw new Error(`API Error after retry: ${retryData.error.error || retryData.error}`);
+                    }
+                    
+                    recordApiCall();
+                    return retryData;
+                }
+                
+                throw new Error(`API Error: ${data.error.error || data.error}`);
+            }
+            
+            recordApiCall();
+            return data;
+        } catch (error) {
+            // Re-throw fetch errors
+            throw error;
+        }
+    };
+    
+    /**
+     * Global function for batch API calls with dynamic rate limiting
+     * Can be used by any tool that needs to make multiple Torn API calls
+     * 
+     * @param {Array} requests - Array of request objects or URLs. If objects, should have `url` property. Can also include `id`, `cacheKey`, or other metadata.
+     * @param {Object} options - Configuration options
+     * @param {Function} options.onProgress - Callback for progress updates: (current, total, successful) => void
+     * @param {HTMLElement} options.progressMessage - Element to display progress message
+     * @param {HTMLElement} options.progressDetails - Element to display detailed progress
+     * @param {HTMLElement} options.progressPercentage - Element to display percentage
+     * @param {HTMLElement} options.progressFill - Element for progress bar fill
+     * @param {Function} options.onSuccess - Callback for each successful request: (response, request, index) => void
+     * @param {Function} options.onError - Callback for errors: (error, request, index) => void
+     * @param {boolean} options.retryOnRateLimit - Whether to retry on rate limit errors (default: true)
+     * @param {number} options.retryDelay - Delay before retry in ms (default: 30000)
+     * @param {boolean} options.useCache - Whether to use caching (default: false). If true, requests should have `cacheKey` property.
+     * @param {Function} options.getCache - Optional custom cache getter function: (cacheKey) => cachedData
+     * @param {Function} options.setCache - Optional custom cache setter function: (cacheKey, data) => void
+     * @returns {Promise<Array>} Array of results in the same order as requests
+     */
+    window.batchApiCallsWithRateLimit = async (requests, options = {}) => {
+        const {
+            onProgress,
+            progressMessage,
+            progressDetails,
+            progressPercentage,
+            progressFill,
+            onSuccess,
+            onError,
+            retryOnRateLimit = true,
+            retryDelay = 30000,
+            useCache = false,
+            getCache = null,
+            setCache = null
+        } = options;
+        
+        // Use provided cache functions or default to global cache
+        const cacheGet = getCache || (useCache ? getCachedData : null);
+        const cacheSet = setCache || (useCache ? setCachedData : null);
+        
+        const results = [];
+        let successfulCount = 0;
+        let immediateBatchSize = calculateAvailableCalls();
+        let callsInImmediateBatch = 0;
+        
+        // Check cache first if caching is enabled
+        const uncachedRequests = [];
+        const cachedResults = [];
+        
+        if (useCache && cacheGet) {
+            requests.forEach((request, index) => {
+                const cacheKey = request.cacheKey || request.url;
+                const cached = cacheGet(cacheKey);
+                if (cached) {
+                    cachedResults[index] = { success: true, data: cached, request };
+                    if (onSuccess) onSuccess(cached, request, index);
+                } else {
+                    uncachedRequests.push({ request, originalIndex: index });
+                }
+            });
+        } else {
+            // No caching, process all requests
+            requests.forEach((request, index) => {
+                uncachedRequests.push({ request, originalIndex: index });
+            });
+        }
+        
+        // Process uncached requests
+        for (let i = 0; i < uncachedRequests.length; i++) {
+            const { request, originalIndex } = uncachedRequests[i];
+            const url = typeof request === 'string' ? request : request.url;
+            const requestId = request.id || request.playerId || originalIndex;
+            
+            // Update progress (based on total requests, not just uncached)
+            const progress = ((originalIndex + 1) / requests.length) * 100;
+            if (progressPercentage) {
+                progressPercentage.textContent = `${Math.round(progress)}%`;
+            }
+            if (progressFill) {
+                progressFill.style.width = `${progress}%`;
+            }
+            if (progressDetails) {
+                progressDetails.textContent = `Processing request ${originalIndex + 1}/${requests.length} (${successfulCount + cachedResults.length} successful)`;
+            }
+            if (onProgress) {
+                onProgress(originalIndex + 1, requests.length, successfulCount + cachedResults.length);
+            }
+            
+        // Dynamic rate limiting logic
+        const currentCallsInLastMinute = getCallsInLastMinute();
+        const currentRateLimit = getRateLimit();
+        
+        if (currentCallsInLastMinute >= currentRateLimit) {
+                // We've hit the limit, need to wait
+                const oldestCall = Math.min(...window.apiCallTracker);
+                const timeSinceOldestCall = Date.now() - oldestCall;
+                const waitTime = Math.ceil(60000 - timeSinceOldestCall);
+                
+                if (progressMessage) {
+                    progressMessage.textContent = 'Waiting for API Limit...';
+                }
+                if (progressDetails) {
+                    progressDetails.textContent = `API rate limit reached, waiting ${Math.ceil(waitTime / 1000)} seconds...`;
+                }
+                
+                // Countdown
+                const waitSeconds = Math.ceil(waitTime / 1000);
+                for (let j = waitSeconds; j > 0; j--) {
+                    if (progressDetails) {
+                        progressDetails.textContent = `API rate limit reached, waiting ${j} seconds...`;
+                    }
+                    await sleep(1000);
+                }
+                
+                // Recalculate after waiting
+                immediateBatchSize = calculateAvailableCalls();
+                callsInImmediateBatch = 0;
+                
+                if (progressMessage) {
+                    progressMessage.textContent = 'Fetching data...';
+                }
+                if (progressDetails) {
+                    progressDetails.textContent = 'Resuming data collection...';
+                }
+            } else if (callsInImmediateBatch < immediateBatchSize) {
+                // Still in immediate batch, no delay needed
+                callsInImmediateBatch++;
+            } else {
+                // Past immediate batch, add delay between calls
+                await sleep(window.CALL_INTERVAL_MS);
+            }
+            
+            // Make the API call
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.error) {
+                    // Check for rate limit error
+                    if ((data.error.error === 'Too many requests' || data.code === 2) && retryOnRateLimit) {
+                        if (progressMessage) {
+                            progressMessage.textContent = 'Waiting for API Limit...';
+                        }
+                        if (progressDetails) {
+                            progressDetails.textContent = 'Rate limit detected, waiting 30 seconds...';
+                        }
+                        await sleep(retryDelay);
+                        if (progressMessage) {
+                            progressMessage.textContent = 'Fetching data...';
+                        }
+                        
+                        // Retry once
+                        const retryResponse = await fetch(url);
+                        const retryData = await retryResponse.json();
+                        
+                        if (retryData.error) {
+                            const error = new Error(`API Error after retry: ${retryData.error.error || retryData.error}`);
+                            results[originalIndex] = { success: false, error, data: null, request };
+                            if (onError) onError(error, request, originalIndex);
+                            recordApiCall(); // Record retry attempt
+                            continue;
+                        }
+                        
+                        // Success on retry
+                        const retryResult = { success: true, data: retryData, request };
+                        results[originalIndex] = retryResult;
+                        successfulCount++;
+                        recordApiCall();
+                        // Cache the result if caching is enabled
+                        if (useCache && cacheSet && request.cacheKey) {
+                            cacheSet(request.cacheKey, retryData);
+                        }
+                        if (onSuccess) onSuccess(retryData, request, originalIndex);
+                        continue;
+                    }
+                    
+                    // Non-rate-limit error or retry disabled
+                    const error = new Error(`API Error: ${data.error.error || data.error}`);
+                    results[originalIndex] = { success: false, error, data: null, request };
+                    if (onError) onError(error, request, originalIndex);
+                    continue;
+                }
+                
+                // Success
+                const result = { success: true, data, request };
+                results[originalIndex] = result;
+                successfulCount++;
+                recordApiCall();
+                // Cache the result if caching is enabled
+                if (useCache && cacheSet && request.cacheKey) {
+                    cacheSet(request.cacheKey, data);
+                }
+                if (onSuccess) onSuccess(data, request, originalIndex);
+                
+            } catch (error) {
+                results[originalIndex] = { success: false, error, data: null, request };
+                if (onError) onError(error, request, originalIndex);
+                continue;
+            }
+        }
+        
+        // Merge cached results into final results array
+        cachedResults.forEach(({ success, data, request }, index) => {
+            if (results[index] === undefined) {
+                results[index] = { success, data, request };
+            }
+        });
+        
+        // Ensure results array has same length as requests array
+        while (results.length < requests.length) {
+            results.push(null);
+        }
+        
+        return results;
+    };
 
     // Function to get user data from API key
     async function getUserData(apiKey) {
@@ -638,6 +1031,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
                             </div>
                         </div>
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
+                                <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
+                            </div>
+                        </div>
                         <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
             }
             
@@ -691,9 +1088,68 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
         }
         
-        // Append VIP status to welcome message (don't replace)
-        welcomeMessage.innerHTML = welcomeText + vipHtml;
+        // Append VIP status and rate limit settings to welcome message (don't replace)
+        const rateLimitHtml = getRateLimitSettingsHtml();
+        welcomeMessage.innerHTML = welcomeText + vipHtml + rateLimitHtml;
     }
+    
+    // Function to generate rate limit settings HTML
+    function getRateLimitSettingsHtml() {
+        const currentRateLimit = getRateLimit();
+        return `
+            <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                    <input 
+                        type="number" 
+                        id="rateLimitInput" 
+                        min="50" 
+                        max="100" 
+                        value="${currentRateLimit}" 
+                        style="width: 60px; padding: 3px 6px; background: var(--primary-color); border: 1px solid var(--border-color); color: var(--text-color); border-radius: 4px; font-size: 0.85em;"
+                    >
+                    <span style="font-size: 0.85em; color: #95a5a6;">API calls/minute</span>
+                </div>
+                <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 4px;">
+                    ${(window.CALL_INTERVAL_MS).toFixed(0)}ms between calls
+                </div>
+            </div>
+        `;
+    }
+    
+    // Function to initialize rate limit settings event listeners
+    let rateLimitSaveTimeout = null;
+    function initRateLimitSettings() {
+        // Use event delegation for input changes (auto-save after user stops typing)
+        document.addEventListener('input', (e) => {
+            if (e.target && e.target.id === 'rateLimitInput') {
+                const input = e.target;
+                const newLimit = parseInt(input.value, 10);
+                
+                // Clear existing timeout
+                if (rateLimitSaveTimeout) {
+                    clearTimeout(rateLimitSaveTimeout);
+                }
+                
+                // Validate and auto-save after 1 second of no typing
+                rateLimitSaveTimeout = setTimeout(() => {
+                    if (newLimit >= 50 && newLimit <= 100) {
+                        setRateLimit(newLimit);
+                        // Update the interval display
+                        const intervalDisplay = input.parentElement.nextElementSibling;
+                        if (intervalDisplay) {
+                            intervalDisplay.textContent = `${(window.CALL_INTERVAL_MS).toFixed(0)}ms between calls`;
+                        }
+                    } else if (input.value !== '') {
+                        // Invalid value, reset to current rate limit
+                        input.value = getRateLimit();
+                    }
+                }, 1000); // Wait 1 second after user stops typing
+            }
+        });
+    }
+    
+    // Initialize rate limit settings on page load
+    initRateLimitSettings();
     
     // ==================== END VIP TRACKING SYSTEM ====================
     
@@ -1848,48 +2304,51 @@ document.addEventListener('DOMContentLoaded', () => {
     // Batch multiple Torn API calls
     const batchTornApiCalls = async (apiKey, requests) => {
         const results = {};
-        const batchSize = 5; // Torn API can handle multiple requests
-        const delayMs = 667; // ~3 calls every 2 seconds
         
-        for (let i = 0; i < requests.length; i += batchSize) {
-            const batch = requests.slice(i, i + batchSize);
-            
-            // Make parallel requests for this batch
-            const batchPromises = batch.map(async (request) => {
-                const cacheKey = `${request.url}?${request.params}`; // Use '?' for clarity
-                const cached = getCachedData(cacheKey);
-                if (cached) {
-                    console.log(`Using cached data for: ${request.name}`);
-                    return { name: request.name, data: cached };
-                }
-                
+        // Check cache first and separate cached vs uncached requests
+        const uncachedRequests = [];
+        const cachedResults = {};
+        
+        requests.forEach(request => {
+            const cacheKey = `${request.url}?${request.params}`;
+            const cached = getCachedData(cacheKey);
+            if (cached) {
+                console.log(`Using cached data for: ${request.name}`);
+                cachedResults[request.name] = cached;
+            } else {
+                // Build full URL for uncached request
                 let fullUrl = request.url;
                 if (request.params) {
                     fullUrl += `?${request.params}`;
                 }
                 fullUrl += `${request.params ? '&' : '?'}key=${apiKey}`;
-
-                const response = await fetch(fullUrl);
-                const data = await response.json();
                 
-                if (data.error) {
-                    throw new Error(`Torn API Error (${request.name}): ${data.error.error}`);
-                }
-                
-                setCachedData(cacheKey, data);
-                return { name: request.name, data };
-            });
-            
-            const batchResults = await Promise.all(batchPromises);
-            batchResults.forEach(result => {
-                results[result.name] = result.data;
-            });
-            
-            // Rate limiting delay between batches
-            if (i + batchSize < requests.length) {
-                await new Promise(resolve => setTimeout(resolve, delayMs));
+                uncachedRequests.push({
+                    url: fullUrl,
+                    name: request.name,
+                    cacheKey: cacheKey
+                });
             }
+        });
+        
+        // Only make API calls for uncached requests using global batch function
+        if (uncachedRequests.length > 0) {
+            await window.batchApiCallsWithRateLimit(uncachedRequests, {
+                onSuccess: (data, request) => {
+                    // Store in cache
+                    setCachedData(request.cacheKey, data);
+                    // Store result by request name
+                    results[request.name] = data;
+                },
+                onError: (error, request) => {
+                    console.error(`Torn API Error (${request.name}):`, error);
+                    results[request.name] = { error: error.message };
+                }
+            });
         }
+        
+        // Merge cached results into final results
+        Object.assign(results, cachedResults);
         
         return results;
     };
@@ -1928,7 +2387,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const userData = await getUserData(apiKey);
                 if (userData && userData.name) {
                     // Set welcome message first
-                    welcomeMessage.innerHTML = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
+                    let welcomeHtml = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
                     
                     // Check VIP status (use cache for display, but still check for updates in background)
                     // First try cached data for fast display
@@ -1936,7 +2395,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     // If we have cached data, display it immediately
                     if (vipData) {
+                        // Temporarily set welcome message so displayVipStatus can append to it
+                        welcomeMessage.innerHTML = welcomeHtml;
                         displayVipStatus(vipData, userData.name);
+                    } else {
+                        // No VIP data, just show welcome + rate limit settings
+                        const rateLimitHtml = getRateLimitSettingsHtml();
+                        welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
                     }
                     
                     // Then check for updates in background (this will update cache if needed)
@@ -1949,7 +2414,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         // Cache expired or missing, do full check
                         const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
                         if (updatedVipData) {
+                            // Update display with fresh VIP data (this will also add rate limit settings)
+                            welcomeMessage.innerHTML = welcomeHtml;
                             displayVipStatus(updatedVipData, userData.name);
+                        } else if (!vipData) {
+                            // Still no VIP data after check, ensure rate limit settings are shown
+                            const rateLimitHtml = getRateLimitSettingsHtml();
+                            welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
                         }
                     }
                 } else {
@@ -2015,8 +2486,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (oldScript) oldScript.remove();
                 // Dynamically load the script
                 const script = document.createElement('script');
-                // Add cache-busting query parameter to ensure latest version is loaded
-                script.src = 'tools/consumption-tracker/consumption-tracker.js?v=' + Date.now();
+                // Use relative path - try without cache-busting first to see if that's the issue
+                script.src = './tools/consumption-tracker/consumption-tracker.js';
                 script.id = 'consumption-tracker-script';
                 script.onload = () => {
                     console.log('[APP] consumption-tracker/consumption-tracker.js loaded, calling initConsumptionTracker');
@@ -2026,7 +2497,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         window.initConsumptionTracker();
                     }
                 };
-                document.head.appendChild(script);
+                script.onerror = (error) => {
+                    console.error('[APP] Failed to load consumption-tracker.js:', error);
+                    console.error('[APP] Attempted to load from:', script.src);
+                };
+                document.body.appendChild(script);
             } else if (page.includes('organised-crime-stats')) {
                 // Remove any previous script for this tool
                 const oldScript = document.getElementById('organised-crime-stats-script');
@@ -2249,6 +2724,16 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log(`Torn API calls completed in ${(tornEndTime - tornStartTime).toFixed(2)}ms`);
             
             const myTotalStats = tornData.userStats.personalstats.totalstats;
+            const userData = await getUserData(apiKey);
+            const userPlayerId = userData?.playerId;
+            
+            // Check VIP level for "Check Activity" feature
+            let hasVipLevel1 = false;
+            if (userPlayerId) {
+                const vipData = await getVipBalance(userPlayerId, true);
+                hasVipLevel1 = vipData && vipData.vipLevel >= 1;
+            }
+            
             console.log('Faction info object:', tornData.factionInfo);
             let factionName = tornData.factionInfo?.basic?.name;
             if (!factionName && tornData.factionInfo?.name) {
@@ -2312,12 +2797,36 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button id="collectDetailedStatsBtn" class="btn" style="background-color: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px;">
                         Collect Detailed Stats
                     </button>
+                    <div style="position: relative; display: inline-block; margin-left: 10px;">
+                        <button id="compareActivityBtn" class="btn" style="background-color: ${hasVipLevel1 ? '#2196F3' : '#666'}; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: ${hasVipLevel1 ? 'pointer' : 'not-allowed'}; margin-left: 0; white-space: nowrap; opacity: ${hasVipLevel1 ? '1' : '0.6'};" ${hasVipLevel1 ? '' : 'disabled'}>
+                            Check Activity
+                        </button>
+                        ${!hasVipLevel1 ? `
+                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.7); border-radius: 5px; display: flex; align-items: center; justify-content: center; cursor: not-allowed; pointer-events: none;">
+                            <div style="text-align: center; padding: 5px;">
+                                <div style="color: var(--accent-color); font-size: 11px; font-weight: bold; margin-bottom: 2px;">⭐ VIP 1+ Required</div>
+                                <div style="color: #fff; font-size: 9px;">Send 10+ Xanax to unlock</div>
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                    <div style="display: flex; align-items: center; margin-left: 10px; gap: 12px; background-color: var(--secondary-color); padding: 8px 15px; border-radius: 5px; ${!hasVipLevel1 ? 'opacity: 0.6; pointer-events: none;' : ''}">
+                        <span style="color: var(--accent-color); font-weight: bold; font-size: 14px; white-space: nowrap;">Activity Period:</span>
+                        <label class="activity-period-label" style="color: var(--text-color); display: flex; align-items: center; cursor: pointer; padding: 6px 12px; border-radius: 4px; transition: all 0.2s; white-space: nowrap;" onmouseover="this.style.backgroundColor='rgba(255, 215, 0, 0.1)'" onmouseout="this.style.backgroundColor='transparent'">
+                            <input type="radio" name="activityPeriod" value="1" checked style="margin-right: 6px; cursor: pointer; accent-color: var(--accent-color); width: 16px; height: 16px;" ${!hasVipLevel1 ? 'disabled' : ''}>
+                            <span style="font-size: 14px;">1 Month</span>
+                        </label>
+                        <label class="activity-period-label" style="color: var(--text-color); display: flex; align-items: center; cursor: pointer; padding: 6px 12px; border-radius: 4px; transition: all 0.2s; white-space: nowrap;" onmouseover="this.style.backgroundColor='rgba(255, 215, 0, 0.1)'" onmouseout="this.style.backgroundColor='transparent'">
+                            <input type="radio" name="activityPeriod" value="3" style="margin-right: 6px; cursor: pointer; accent-color: var(--accent-color); width: 16px; height: 16px;" ${!hasVipLevel1 ? 'disabled' : ''}>
+                            <span style="font-size: 14px;">3 Months</span>
+                        </label>
+                    </div>
                 </div>
                 <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName}</h2>
                 
                 <!-- Table Wrapper (SCROLLABLE) -->
                 <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
-                    <table id="membersTable" style="min-width: 600px;">
+                    <table id="membersTable" style="min-width: 600px; font-size: 13px;">
                         <thead>
                             <tr>
                                 <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
@@ -2431,6 +2940,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
+            // Store data globally for activity comparison
+            window.battleStatsData = {
+                memberIDs,
+                membersObject,
+                ffScores,
+                battleStatsEstimates,
+                lastUpdated,
+                factionName,
+                factionID
+            };
+
+            // Add Compare Activity button functionality (remove old listener first to prevent duplicates)
+            const compareActivityBtn = document.getElementById('compareActivityBtn');
+            if (compareActivityBtn) {
+                // Clone and replace to remove all event listeners
+                const newBtn = compareActivityBtn.cloneNode(true);
+                compareActivityBtn.parentNode.replaceChild(newBtn, compareActivityBtn);
+                
+                if (!newBtn.disabled) {
+                    // Button is enabled (VIP Level 1+)
+                    newBtn.addEventListener('click', async () => {
+                        // Get selected period
+                        const periodRadio = document.querySelector('input[name="activityPeriod"]:checked');
+                        const periodMonths = periodRadio ? parseInt(periodRadio.value) : 3;
+                        await handleActivityComparison(memberIDs, membersObject, apiKey, factionName, factionID, periodMonths);
+                    });
+                } else {
+                    // Button is disabled (needs VIP Level 1+)
+                    newBtn.addEventListener('click', () => {
+                        alert('This feature requires VIP Level 1 or higher.\n\nSend 10+ Xanax to Jimidy to unlock this feature.\n\nProfile: https://www.torn.com/profiles.php?XID=2935825');
+                    });
+                }
+            }
+
             // Add CSV export functionality
             document.getElementById('exportCsvBtn').addEventListener('click', () => {
                 // 1. Create a list of members with all their data
@@ -2488,6 +3031,8 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('collectDetailedStatsBtn').addEventListener('click', () => {
                 handleDetailedStatsCollection(memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID);
             });
+            
+            // Compare Activity button listener already added above, skip duplicate
         } catch (error) {
             console.error("An error occurred:", error.message);
             const resultsContainer = document.getElementById('battle-stats-results');
@@ -2502,6 +3047,1304 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             spinner.style.display = 'none';
         }
+    };
+
+    // Helper function for rate limiting delays
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    
+    // Function to fetch and compare activity data
+    const handleActivityComparison = async (memberIDs, membersObject, apiKey, factionName, factionID, periodMonths = 3) => {
+        // Prevent concurrent execution
+        if (window.activityComparisonInProgress) {
+            return;
+        }
+        window.activityComparisonInProgress = true;
+        
+        const spinner = document.getElementById('loading-spinner');
+        const resultsContainer = document.getElementById('battle-stats-results');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressMessage = document.getElementById('progressMessage');
+        const progressPercentage = document.getElementById('progressPercentage');
+        const progressFill = document.getElementById('progressFill');
+        const progressDetails = document.getElementById('progressDetails');
+        
+        if (!spinner || !resultsContainer || !progressContainer) {
+            console.error("Required elements missing for activity comparison");
+            return;
+        }
+
+        // Hide results and show progress
+        resultsContainer.style.display = 'none';
+        spinner.style.display = 'none';
+        
+        // Show progress bar
+        if (progressContainer) {
+            progressContainer.style.display = 'block';
+            if (progressMessage) progressMessage.textContent = 'Fetching activity data...';
+            if (progressPercentage) progressPercentage.textContent = '0%';
+            if (progressFill) progressFill.style.width = '0%';
+            if (progressDetails) progressDetails.textContent = 'Initializing...';
+        }
+        
+        try {
+            // Calculate timestamps based on selected period
+            const periodDays = periodMonths * 30;
+            const nowTimestamp = Math.floor(Date.now() / 1000);
+            const pastTimestamp = Math.floor((Date.now() - (periodDays * 24 * 60 * 60 * 1000)) / 1000);
+            
+            console.log(`Fetching activity data for ${memberIDs.length} members...`);
+            console.log(`Period: ${periodMonths} month(s)`);
+            console.log(`Now timestamp: ${nowTimestamp} (${new Date(nowTimestamp * 1000).toISOString()})`);
+            console.log(`${periodMonths} month(s) ago timestamp: ${pastTimestamp} (${new Date(pastTimestamp * 1000).toISOString()})`);
+            
+            // Create API requests (2 per player: now and X months ago)
+            const activityRequests = [];
+            memberIDs.forEach(memberID => {
+                // Request for current time
+                activityRequests.push({
+                    playerId: memberID,
+                    timestamp: nowTimestamp,
+                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+                });
+                // Request for X months ago
+                activityRequests.push({
+                    playerId: memberID,
+                    timestamp: pastTimestamp,
+                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
+                });
+            });
+            
+            console.log(`Created ${activityRequests.length} activity API requests (2 per player)`);
+            
+            // Fetch activity data using global batch API function with rate limiting
+            const activityData = {};
+            
+            const results = await window.batchApiCallsWithRateLimit(activityRequests, {
+                progressMessage,
+                progressDetails,
+                progressPercentage,
+                progressFill,
+                onSuccess: (data, request) => {
+                    // Store successful response - extract value from personalstats array
+                    const timeplayed = data.personalstats?.[0]?.value || 0;
+                    if (!activityData[request.playerId]) {
+                        activityData[request.playerId] = {};
+                    }
+                    activityData[request.playerId][request.timestamp] = timeplayed;
+                },
+                onError: (error, request) => {
+                    console.error(`Error fetching activity for player ${request.playerId} at timestamp ${request.timestamp}:`, error);
+                }
+            });
+            
+            // Store timestamp of when this fetch completed for rate limit tracking
+            window.lastActivityFetchTime = Date.now();
+            
+            // Hide progress bar
+            if (progressContainer) {
+                progressContainer.style.display = 'none';
+            }
+            
+            // Calculate activity differences (current - X months ago) in hours
+            const activityHours = {};
+            memberIDs.forEach(memberID => {
+                const currentTime = activityData[memberID]?.[nowTimestamp] || 0;
+                const pastTime = activityData[memberID]?.[pastTimestamp] || 0;
+                const differenceSeconds = currentTime - pastTime;
+                const differenceHours = differenceSeconds / 3600; // Convert seconds to hours
+                activityHours[memberID] = Math.max(0, differenceHours); // Ensure non-negative
+            });
+            
+            console.log('Activity data calculated:', activityHours);
+            
+            // Store timestamp of when this fetch completed for rate limit tracking
+            window.lastActivityFetchTime = Date.now();
+            
+            // Get existing data for the table
+            const battleStatsData = window.battleStatsData || {};
+            const ffScores = battleStatsData.ffScores || {};
+            const battleStatsEstimates = battleStatsData.battleStatsEstimates || {};
+            const lastUpdated = battleStatsData.lastUpdated || {};
+            
+            // Update the table with activity column and create graph
+            updateTableWithActivity(memberIDs, membersObject, activityHours, ffScores, battleStatsEstimates, lastUpdated, factionName, factionID, apiKey, periodMonths);
+            
+            spinner.style.display = 'none';
+            
+        } catch (error) {
+            console.error('Error comparing activity:', error);
+            alert('Error fetching activity data: ' + error.message);
+            spinner.style.display = 'none';
+            if (progressContainer) {
+                progressContainer.style.display = 'none';
+            }
+        } finally {
+            // Always clear the in-progress flag
+            window.activityComparisonInProgress = false;
+        }
+    };
+    
+    // Function to update table with activity data and create graph
+    const updateTableWithActivity = (memberIDs, membersObject, activityHours, ffScores, battleStatsEstimates, lastUpdated, factionName, factionID, apiKey, periodMonths = 3) => {
+        const resultsContainer = document.getElementById('battle-stats-results');
+        if (!resultsContainer) return;
+        
+        // Sort members by activity (most active first)
+        const sortedMemberIDs = [...memberIDs].sort((a, b) => {
+            const activityA = activityHours[a] || 0;
+            const activityB = activityHours[b] || 0;
+            return activityB - activityA; // Descending (most active first)
+        });
+        
+        let tableHtml = `
+            <!-- Summary Section (NOT scrollable) -->
+            <div style="margin-bottom: 20px;">
+                <button id="exportCsvBtn" class="btn" style="background-color: #FFD700; color: #333; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
+                    Export to CSV
+                </button>
+                <button id="collectDetailedStatsBtn" class="btn" style="background-color: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px;">
+                    Collect Detailed Stats
+                </button>
+                <button id="compareActivityBtn" class="btn" style="background-color: #2196F3; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px; opacity: 0.7;" disabled>
+                    Check Activity (Loaded)
+                </button>
+            </div>
+            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName} - Activity Comparison (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})</h2>
+            
+            <!-- Activity Graph -->
+            <div style="margin-bottom: 30px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3 style="color: var(--accent-color); margin: 0;">Activity Graph (Most Active → Least Active)</h3>
+                    <button id="compareOwnFactionBtn" class="btn" style="background-color: #9C27B0; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                        Compare to Own Faction
+                    </button>
+                </div>
+                <div style="position: relative; height: 400px;">
+                    <canvas id="activityGraph"></canvas>
+                </div>
+            </div>
+            
+            <!-- Table Wrapper (SCROLLABLE) -->
+            <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                <table id="membersTable" style="min-width: 700px; font-size: 13px;">
+                    <thead>
+                        <tr>
+                            <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
+                            <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
+                            <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
+                            <th data-column="activity" style="min-width: 120px; cursor: pointer; text-align: left;">Activity (Hours) <span class="sort-indicator">↓</span></th>
+                            <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">Last Updated <span class="sort-indicator"></span></th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+        
+        for (const memberID of sortedMemberIDs) {
+            const member = membersObject[memberID];
+            const fairFightScore = ffScores[memberID] || 'Unknown';
+            const lastUpdatedTimestamp = lastUpdated[memberID];
+            const activity = activityHours[memberID] || 0;
+            
+            const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
+            const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
+            
+            const lastUpdatedDate = lastUpdatedTimestamp 
+                ? formatRelativeTime(lastUpdatedTimestamp * 1000) 
+                : 'N/A';
+            
+            const displayActivity = activity.toFixed(1);
+            
+            tableHtml += `
+                <tr>
+                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${memberID}]</a></td>
+                    <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
+                    <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
+                    <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
+                    <td data-column="activity" data-value="${activity}">${displayActivity}</td>
+                    <td data-column="lastupdated" data-value="${lastUpdatedTimestamp || 0}">${lastUpdatedDate}</td>
+                </tr>`;
+        }
+        
+        tableHtml += `
+                    </tbody>
+                </table>
+            </div>`;
+        
+        resultsContainer.innerHTML = tableHtml;
+        resultsContainer.style.display = 'block';
+        
+        // Store data for comparison
+        window.currentActivityData = {
+            sortedMemberIDs,
+            membersObject,
+            activityHours,
+            factionName,
+            ffScores,
+            battleStatsEstimates,
+            lastUpdated,
+            periodMonths
+        };
+        
+        // Create activity graph - wait a bit for DOM to update
+        setTimeout(() => {
+            createActivityGraph(sortedMemberIDs, membersObject, activityHours, null, periodMonths);
+        }, 100);
+        
+        // Add compare to own faction button functionality
+        document.getElementById('compareOwnFactionBtn').addEventListener('click', async () => {
+            await handleCompareToOwnFaction(apiKey, periodMonths);
+        });
+        
+        // Add sorting functionality
+        const table = document.getElementById('membersTable');
+        const headers = table.querySelectorAll('th[data-column]');
+        let currentSortColumn = 'activity'; // Default sort by activity
+        let currentSortDirection = 'desc'; // Most active first
+        
+        const sortTable = (column, direction) => {
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            headers.forEach(h => {
+                const indicator = h.querySelector('.sort-indicator');
+                const hColumn = h.getAttribute('data-column');
+                if (hColumn === column) {
+                    indicator.textContent = direction === 'asc' ? ' ↑' : ' ↓';
+                } else {
+                    indicator.textContent = '';
+                }
+            });
+            
+            rows.sort((a, b) => {
+                const aCell = a.querySelector(`td[data-column="${column}"]`);
+                const bCell = b.querySelector(`td[data-column="${column}"]`);
+                
+                let aValue = aCell.getAttribute('data-value') || aCell.textContent;
+                let bValue = bCell.getAttribute('data-value') || bCell.textContent;
+                
+                if (column === 'member') {
+                    aValue = aValue.toLowerCase();
+                    bValue = bValue.toLowerCase();
+                    if (aValue < bValue) return direction === 'asc' ? -1 : 1;
+                    if (aValue > bValue) return direction === 'asc' ? 1 : -1;
+                    return 0;
+                } else {
+                    let aNum = parseFloat(aValue);
+                    let bNum = parseFloat(bValue);
+                    if (isNaN(aNum)) aNum = -1;
+                    if (isNaN(bNum)) bNum = -1;
+                    
+                    if (direction === 'desc') {
+                        return bNum - aNum;
+                    } else {
+                        return aNum - bNum;
+                    }
+                }
+            });
+            
+            rows.forEach(row => tbody.appendChild(row));
+        };
+        
+        sortTable(currentSortColumn, currentSortDirection);
+        
+        headers.forEach(header => {
+            header.addEventListener('click', () => {
+                const column = header.getAttribute('data-column');
+                
+                if (currentSortColumn === column) {
+                    currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSortColumn = column;
+                    currentSortDirection = 'asc';
+                }
+                
+                sortTable(currentSortColumn, currentSortDirection);
+            });
+        });
+        
+        // Re-attach event listeners
+        document.getElementById('exportCsvBtn').addEventListener('click', () => {
+            const headers = ['Member', 'Level', 'Estimated Stats', 'FF Score', 'Activity (Hours)', 'Last Updated'];
+            let csvContent = headers.join(',') + '\r\n';
+            
+            sortedMemberIDs.forEach(memberID => {
+                const member = membersObject[memberID];
+                const fairFightScore = ffScores[memberID] || 'Unknown';
+                const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
+                const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
+                const lastUpdatedTimestamp = lastUpdated[memberID];
+                const lastUpdatedDate = lastUpdatedTimestamp 
+                    ? new Date(lastUpdatedTimestamp * 1000).toLocaleString() 
+                    : 'N/A';
+                const activity = (activityHours[memberID] || 0).toFixed(1);
+                
+                csvContent += `"${member.name} [${memberID}]",${member.level},"${displayEstimatedStat}",${fairFightScore},${activity},"${lastUpdatedDate}"\r\n`;
+            });
+            
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `faction_battle_stats_activity_${factionID}_${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        });
+    };
+    
+    // Function to compare to own faction
+    const handleCompareToOwnFaction = async (apiKey, periodMonths = 3) => {
+        const compareBtn = document.getElementById('compareOwnFactionBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressMessage = document.getElementById('progressMessage');
+        const progressPercentage = document.getElementById('progressPercentage');
+        const progressFill = document.getElementById('progressFill');
+        const progressDetails = document.getElementById('progressDetails');
+        
+        if (!compareBtn || !progressContainer) {
+            console.error("Required elements missing for comparison");
+            return;
+        }
+        
+        // Get period from current data if not provided
+        const currentData = window.currentActivityData;
+        const period = periodMonths || (currentData && currentData.periodMonths) || 3;
+        
+        // Disable button and show progress
+        compareBtn.disabled = true;
+        compareBtn.textContent = 'Fetching Own Faction...';
+        progressContainer.style.display = 'block';
+        if (progressMessage) progressMessage.textContent = 'Fetching your faction data...';
+        if (progressPercentage) progressPercentage.textContent = '0%';
+        if (progressFill) progressFill.style.width = '0%';
+        if (progressDetails) progressDetails.textContent = 'Getting your faction information...';
+        
+        try {
+            // Get user's faction ID
+            const userData = await getUserData(apiKey);
+            if (!userData || !userData.factionId) {
+                alert('Unable to get your faction ID. Please ensure your API key has access to faction information.');
+                compareBtn.disabled = false;
+                compareBtn.textContent = 'Compare to Own Faction';
+                progressContainer.style.display = 'none';
+                return;
+            }
+            
+            const ownFactionId = userData.factionId;
+            const ownFactionName = userData.factionName || `Faction ${ownFactionId}`;
+            
+            if (progressDetails) progressDetails.textContent = `Fetching members from ${ownFactionName}...`;
+            
+            // Fetch own faction members
+            const factionMembersUrl = `https://api.torn.com/v2/faction/${ownFactionId}/members?striptags=true&key=${apiKey}`;
+            const membersResponse = await fetch(factionMembersUrl);
+            const membersData = await membersResponse.json();
+            
+            if (membersData.error) {
+                throw new Error(`Error fetching faction members: ${membersData.error.error}`);
+            }
+            
+            const ownMembersArray = membersData.members || [];
+            const ownMemberIDs = ownMembersArray.map(member => member.id.toString());
+            const ownMembersObject = {};
+            ownMembersArray.forEach(member => {
+                ownMembersObject[member.id] = {
+                    name: member.name,
+                    level: member.level || 'Unknown'
+                };
+            });
+            
+            console.log(`Fetched ${ownMemberIDs.length} members from own faction`);
+            
+            if (progressDetails) progressDetails.textContent = `Fetching activity data for ${ownMemberIDs.length} members...`;
+            
+            // Fetch activity data for own faction (same process, using same period)
+            const periodDays = period * 30;
+            const nowTimestamp = Math.floor(Date.now() / 1000);
+            const pastTimestamp = Math.floor((Date.now() - (periodDays * 24 * 60 * 60 * 1000)) / 1000);
+            
+            const ownActivityRequests = [];
+            ownMemberIDs.forEach(memberID => {
+                ownActivityRequests.push({
+                    playerId: memberID,
+                    timestamp: nowTimestamp,
+                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+                });
+                ownActivityRequests.push({
+                    playerId: memberID,
+                    timestamp: pastTimestamp,
+                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
+                });
+            });
+            
+            // Fetch own faction activity data using global batch API function with rate limiting
+            const ownActivityData = {};
+            
+            const ownResults = await window.batchApiCallsWithRateLimit(ownActivityRequests, {
+                progressMessage,
+                progressDetails,
+                progressPercentage,
+                progressFill,
+                onSuccess: (data, request) => {
+                    // Store successful response - extract value from personalstats array
+                    const timeplayed = data.personalstats?.[0]?.value || 0;
+                    if (!ownActivityData[request.playerId]) {
+                        ownActivityData[request.playerId] = {};
+                    }
+                    ownActivityData[request.playerId][request.timestamp] = timeplayed;
+                },
+                onError: (error, request) => {
+                    console.error(`Error fetching activity for own faction member ${request.playerId}:`, error);
+                }
+            });
+            
+            // Calculate own faction activity hours
+            // Store with both string and number keys to ensure matching works
+            const ownActivityHours = {};
+            console.log('Calculating activity hours - nowTimestamp:', nowTimestamp, 'pastTimestamp:', pastTimestamp, 'period:', period);
+            ownMemberIDs.forEach(memberID => {
+                const currentTime = ownActivityData[memberID]?.[nowTimestamp] || 0;
+                const pastTime = ownActivityData[memberID]?.[pastTimestamp] || 0;
+                const differenceSeconds = currentTime - pastTime;
+                const differenceHours = differenceSeconds / 3600;
+                const hours = Math.max(0, differenceHours);
+                // Store with both string and number keys for reliable matching
+                ownActivityHours[memberID] = hours;
+                ownActivityHours[String(memberID)] = hours;
+                ownActivityHours[parseInt(memberID)] = hours;
+            });
+            
+            console.log('Calculated own faction activity hours:', ownActivityHours);
+            
+            // Sort own faction members by activity (most active first) for FF Scouter fetch
+            const ownSortedMemberIDs = Object.keys(ownActivityHours).sort((a, b) => {
+                const activityA = ownActivityHours[a] || ownActivityHours[parseInt(a)] || 0;
+                const activityB = ownActivityHours[b] || ownActivityHours[parseInt(b)] || 0;
+                return activityB - activityA; // Descending (most active first)
+            });
+            
+            // Fetch FF Scouter data for own faction members to get estimated stats
+            if (progressDetails) progressDetails.textContent = 'Fetching estimated stats for own faction members...';
+            const ownFactionMemberIDs = ownSortedMemberIDs.map(id => String(id));
+            const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+            console.log(`Fetching FF Scouter data for ${ownFactionMemberIDs.length} own faction members...`);
+            const ownFfData = await fetchInParallelChunks(ffScouterUrl, ownFactionMemberIDs, 200, 3, 1000);
+            
+            const ownFfScores = {};
+            const ownBattleStatsEstimates = {};
+            ownFfData.forEach(player => {
+                if (player.fair_fight) {
+                    ownFfScores[player.player_id] = player.fair_fight;
+                    ownBattleStatsEstimates[player.player_id] = player.bs_estimate;
+                }
+            });
+            
+            console.log('Fetched estimated stats for own faction:', ownBattleStatsEstimates);
+            
+            // Get current activity data
+            if (!currentData) {
+                throw new Error('Current activity data not found');
+            }
+            
+            // Update graph and table with both datasets
+            updateGraphWithComparison(currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, period, ownBattleStatsEstimates);
+            
+            // Hide progress
+            progressContainer.style.display = 'none';
+            compareBtn.disabled = false;
+            compareBtn.textContent = 'Comparison Loaded';
+            compareBtn.style.opacity = '0.7';
+            
+        } catch (error) {
+            console.error('Error comparing to own faction:', error);
+            alert('Error fetching own faction data: ' + error.message);
+            compareBtn.disabled = false;
+            compareBtn.textContent = 'Compare to Own Faction';
+            progressContainer.style.display = 'none';
+        }
+    };
+    
+    // Function to update graph and table with comparison data
+    const updateGraphWithComparison = (currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, periodMonths = 3, ownBattleStatsEstimates = {}) => {
+        // Graph will be created after table HTML is inserted (in setTimeout below)
+        
+        // Sort each faction's players separately by activity (most active to least active)
+        // Selected faction is already sorted in currentData.sortedMemberIDs
+        // Sort own faction's players by activity
+        const ownSortedMemberIDs = Object.keys(ownActivityHours).sort((a, b) => {
+            const activityA = ownActivityHours[a] || ownActivityHours[parseInt(a)] || 0;
+            const activityB = ownActivityHours[b] || ownActivityHours[parseInt(b)] || 0;
+            return activityB - activityA; // Descending (most active first)
+        });
+        
+        // Determine the maximum number of positions (use the larger of the two factions)
+        const maxPositions = Math.max(currentData.sortedMemberIDs.length, ownSortedMemberIDs.length);
+        
+        // Create position-based labels (1st, 2nd, 3rd, etc.)
+        const labels = Array.from({ length: maxPositions }, (_, i) => {
+            const position = i + 1;
+            // Get names for both factions at this position for the label
+            const selectedFactionName = currentData.sortedMemberIDs[i] 
+                ? (currentData.membersObject[currentData.sortedMemberIDs[i]]?.name || `Player ${currentData.sortedMemberIDs[i]}`)
+                : null;
+            const ownFactionNameAtPos = ownSortedMemberIDs[i]
+                ? (ownMembersObject[ownSortedMemberIDs[i]]?.name || ownMembersObject[parseInt(ownSortedMemberIDs[i])]?.name || `Player ${ownSortedMemberIDs[i]}`)
+                : null;
+            
+            if (selectedFactionName && ownFactionNameAtPos) {
+                return `${position} (${selectedFactionName} vs ${ownFactionNameAtPos})`;
+            } else if (selectedFactionName) {
+                return `${position} (${selectedFactionName})`;
+            } else if (ownFactionNameAtPos) {
+                return `${position} (${ownFactionNameAtPos})`;
+            }
+            return `Position ${position}`;
+        });
+        
+        // Create data arrays based on position (1st most active, 2nd most active, etc.)
+        const currentFactionData = Array.from({ length: maxPositions }, (_, i) => {
+            if (i < currentData.sortedMemberIDs.length) {
+                const memberID = currentData.sortedMemberIDs[i];
+                return currentData.activityHours[memberID] || currentData.activityHours[parseInt(memberID)] || 0;
+            }
+            return null;
+        });
+        
+        const ownFactionData = Array.from({ length: maxPositions }, (_, i) => {
+            if (i < ownSortedMemberIDs.length) {
+                const memberID = ownSortedMemberIDs[i];
+                const idStr = String(memberID);
+                const idNum = parseInt(memberID);
+                if (ownActivityHours[idStr] !== undefined) {
+                    return ownActivityHours[idStr];
+                }
+                if (ownActivityHours[idNum] !== undefined) {
+                    return ownActivityHours[idNum];
+                }
+                return 0;
+            }
+            return null;
+        });
+        
+        console.log('Comparison data:', {
+            selectedFactionCount: currentData.sortedMemberIDs.length,
+            ownFactionCount: ownSortedMemberIDs.length,
+            maxPositions: maxPositions,
+            labels: labels.length,
+            currentFactionDataPoints: currentFactionData.filter(v => v !== null).length,
+            ownFactionDataPoints: ownFactionData.filter(v => v !== null).length
+        });
+        
+        // Get existing data for the table
+        const battleStatsDataForTable = window.battleStatsData || {};
+        const currentFfScores = battleStatsDataForTable.ffScores || {};
+        const currentBattleStatsEstimates = battleStatsDataForTable.battleStatsEstimates || {};
+        
+        // Update the table to show side-by-side comparison (this creates the canvas element)
+        // Pass the sorted member IDs from both factions for the table
+        updateComparisonTable(currentData.sortedMemberIDs, ownSortedMemberIDs, currentData, ownMembersObject, ownActivityHours, ownFactionName, currentFfScores, currentBattleStatsEstimates, periodMonths, ownBattleStatsEstimates);
+        
+        // Create line chart with two datasets (similar to admin dashboard) - wait for DOM to update
+        setTimeout(() => {
+            const canvas = document.getElementById('activityGraph');
+            if (!canvas) {
+                console.error('Canvas element not found');
+                return;
+            }
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy existing chart if it exists
+            if (window.activityChart) {
+                window.activityChart.destroy();
+            }
+            
+            window.activityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: `${currentData.factionName} (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})`,
+                            data: currentFactionData,
+                            borderColor: '#ffd700', // Yellow to match app styling
+                            backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.4,
+                            pointRadius: 3,
+                            pointHoverRadius: 5,
+                            pointBackgroundColor: '#ffd700',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 1
+                        },
+                        {
+                            label: `${ownFactionName} (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})`,
+                            data: ownFactionData,
+                            borderColor: '#9C27B0', // Purple
+                            backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.4,
+                            pointRadius: 3,
+                            pointHoverRadius: 5,
+                            pointBackgroundColor: '#9C27B0',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                color: '#fff',
+                                font: {
+                                    size: 12,
+                                    weight: 'bold'
+                                },
+                                usePointStyle: true,
+                                padding: 10
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            titleColor: '#ffd700',
+                            bodyColor: '#fff',
+                            borderColor: '#ffd700',
+                            borderWidth: 1,
+                            callbacks: {
+                                label: function(context) {
+                                    if (context.parsed.y === null) return '';
+                                    return `${context.dataset.label}: ${context.parsed.y.toFixed(1)} hours`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Players (Most Active → Least Active)',
+                                color: '#fff',
+                                font: {
+                                    size: 14,
+                                    weight: 'bold'
+                                }
+                            },
+                            ticks: {
+                                color: '#fff',
+                                font: {
+                                    size: 10
+                                },
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Activity (Hours)',
+                                color: '#fff',
+                                font: {
+                                    size: 14,
+                                    weight: 'bold'
+                                }
+                            },
+                            ticks: {
+                                color: '#fff',
+                                stepSize: 50
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        }
+                    }
+                }
+            });
+        }, 300);
+    };
+    
+    // Function to update table with side-by-side comparison
+    const updateComparisonTable = (currentSortedMemberIDs, ownSortedMemberIDs, currentData, ownMembersObject, ownActivityHours, ownFactionName, currentFfScores, currentBattleStatsEstimates, periodMonths = 3, ownBattleStatsEstimates = {}) => {
+        const resultsContainer = document.getElementById('battle-stats-results');
+        if (!resultsContainer) return;
+        
+        // Get the current faction name
+        const currentFactionName = currentData.factionName;
+        
+        // Get the original table HTML to keep it below
+        const originalTable = resultsContainer.querySelector('#membersTable')?.closest('.table-scroll-wrapper');
+        const originalTableHtml = originalTable ? originalTable.outerHTML : '';
+        
+        let tableHtml = `
+            <!-- Summary Section (NOT scrollable) -->
+            <div style="margin-bottom: 20px;">
+                <button id="exportCsvBtn" class="btn" style="background-color: #FFD700; color: #333; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
+                    Export to CSV
+                </button>
+                <button id="collectDetailedStatsBtn" class="btn" style="background-color: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px;">
+                    Collect Detailed Stats
+                </button>
+                <button id="compareActivityBtn" class="btn" style="background-color: #2196F3; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px; opacity: 0.7;" disabled>
+                    Check Activity (Loaded)
+                </button>
+                <button id="compareOwnFactionBtn" class="btn" style="background-color: #9C27B0; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px; opacity: 0.7;" disabled>
+                    Comparison Loaded
+                </button>
+            </div>
+            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">Faction Activity Comparison (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})</h2>
+            
+            <!-- Activity Graph -->
+            <div style="margin-bottom: 30px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3 style="color: var(--accent-color); margin: 0;">Activity Graph (Most Active → Least Active)</h3>
+                </div>
+                <div style="position: relative; height: 400px;">
+                    <canvas id="activityGraph"></canvas>
+                </div>
+            </div>
+            
+            <!-- Comparison Table Wrapper (SCROLLABLE) -->
+            <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                <table id="membersTable" style="width: 100%; font-size: 13px;">
+                    <thead>
+                        <tr>
+                            <th colspan="4" style="text-align: center; background-color: rgba(255, 215, 0, 0.2); border-right: 2px solid var(--accent-color);">
+                                ${currentFactionName}
+                            </th>
+                            <th colspan="4" style="text-align: center; background-color: rgba(156, 39, 176, 0.2);">
+                                ${ownFactionName}
+                            </th>
+                        </tr>
+                        <tr>
+                            <th data-column="member1" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="level1" style="min-width: 60px; cursor: pointer; text-align: left; padding: 8px 6px;">Level <span class="sort-indicator"></span></th>
+                            <th data-column="stats1" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Estimated Stats <span class="sort-indicator"></span></th>
+                            <th data-column="activity1" style="min-width: 60px; cursor: pointer; text-align: left; border-right: 2px solid var(--accent-color); padding: 8px 6px; white-space: normal; line-height: 1.2;">Activity<br>(Hours) <span class="sort-indicator">↓</span></th>
+                            <th data-column="member2" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="level2" style="min-width: 60px; cursor: pointer; text-align: left; padding: 8px 6px;">Level <span class="sort-indicator"></span></th>
+                            <th data-column="stats2" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Estimated Stats <span class="sort-indicator"></span></th>
+                            <th data-column="activity2" style="min-width: 60px; cursor: pointer; text-align: left; padding: 8px 6px; white-space: normal; line-height: 1.2;">Activity<br>(Hours) <span class="sort-indicator">↓</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+        
+        // Create rows - pair up players from both factions side by side
+        const maxRows = Math.max(currentData.sortedMemberIDs.length, ownSortedMemberIDs.length);
+        
+        for (let i = 0; i < maxRows; i++) {
+            // Get player from selected faction (if exists)
+            const currentPlayerID = currentData.sortedMemberIDs[i];
+            const currentMember = currentPlayerID ? currentData.membersObject[currentPlayerID] : null;
+            const currentActivity = currentPlayerID ? (currentData.activityHours[currentPlayerID] || 0) : null;
+            const currentLevel = currentMember ? (currentMember.level || 'Unknown') : null;
+            const currentName = currentMember ? currentMember.name : null;
+            const currentEstimatedStat = currentPlayerID ? (currentBattleStatsEstimates[currentPlayerID] || 'N/A') : null;
+            const displayCurrentEstimatedStat = (currentEstimatedStat && currentEstimatedStat !== 'N/A') ? currentEstimatedStat.toLocaleString() : (currentEstimatedStat || '-');
+            
+            // Get player from own faction (if exists)
+            const ownPlayerID = ownSortedMemberIDs[i];
+            const ownMember = ownPlayerID ? (ownMembersObject[ownPlayerID] || ownMembersObject[parseInt(ownPlayerID)]) : null;
+            const ownActivity = ownPlayerID ? (ownActivityHours[ownPlayerID] || ownActivityHours[parseInt(ownPlayerID)] || 0) : null;
+            const ownLevel = ownMember ? (ownMember.level || 'Unknown') : null;
+            const ownName = ownMember ? ownMember.name : null;
+            const ownEstimatedStat = ownPlayerID ? (ownBattleStatsEstimates[ownPlayerID] || ownBattleStatsEstimates[parseInt(ownPlayerID)] || 'N/A') : null;
+            const displayOwnEstimatedStat = (ownEstimatedStat && ownEstimatedStat !== 'N/A') ? ownEstimatedStat.toLocaleString() : (ownEstimatedStat || '-');
+            
+            tableHtml += `
+                <tr>
+                    <td data-column="member1" data-value="${currentName ? currentName.toLowerCase() : ''}">
+                        ${currentPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${currentPlayerID}" target="_blank" style="color: #FFD700; text-decoration: none;">${currentName}</a>` : '-'}
+                    </td>
+                    <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}">${currentLevel || '-'}</td>
+                    <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}">${displayCurrentEstimatedStat}</td>
+                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding-right: 10px;">${currentActivity !== null ? currentActivity.toFixed(1) : '-'}</td>
+                    <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}">
+                        ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
+                    </td>
+                    <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}">${ownLevel || '-'}</td>
+                    <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}">${displayOwnEstimatedStat}</td>
+                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding-right: 10px;">${ownActivity !== null ? ownActivity.toFixed(1) : '-'}</td>
+                </tr>`;
+        }
+        
+        tableHtml += `
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Original Table (kept below comparison) -->
+            ${originalTableHtml ? `<div style="margin-top: 40px;"><h3 style="color: var(--accent-color); margin-bottom: 15px;">${currentFactionName} - Original View</h3>${originalTableHtml}</div>` : ''}`;
+        
+        resultsContainer.innerHTML = tableHtml;
+        resultsContainer.style.display = 'block';
+        
+        // Re-create the graph after DOM update - wait for canvas to exist
+        setTimeout(() => {
+            const canvas = document.getElementById('activityGraph');
+            if (canvas) {
+                // The graph should already be created by updateGraphWithComparison, but verify
+                if (!window.activityChart) {
+                    console.warn('Graph chart not found, attempting to recreate...');
+                    // Recreate with combined data
+                    const allPlayerIDs = new Set();
+                    currentData.sortedMemberIDs.forEach(id => allPlayerIDs.add(String(id)));
+                    Object.keys(ownActivityHours).forEach(id => allPlayerIDs.add(String(id)));
+                    const sortedAllPlayerIDsForGraph = Array.from(allPlayerIDs).sort((a, b) => {
+                        const activityA = currentData.activityHours[a] || currentData.activityHours[parseInt(a)] || ownActivityHours[a] || ownActivityHours[parseInt(a)] || 0;
+                        const activityB = currentData.activityHours[b] || currentData.activityHours[parseInt(b)] || ownActivityHours[b] || ownActivityHours[parseInt(b)] || 0;
+                        return activityB - activityA;
+                    });
+                    const labels = sortedAllPlayerIDsForGraph.map(id => {
+                        const member = currentData.membersObject[id] || currentData.membersObject[parseInt(id)] || ownMembersObject[id] || ownMembersObject[parseInt(id)];
+                        const isOwnFaction = ownActivityHours[id] !== undefined || ownActivityHours[parseInt(id)] !== undefined;
+                        return member ? `${member.name}${isOwnFaction ? ' (Your Faction)' : ''}` : `Player ${id}`;
+                    });
+                    const currentFactionData = sortedAllPlayerIDsForGraph.map(id => {
+                        return currentData.activityHours[id] || currentData.activityHours[parseInt(id)] || null;
+                    });
+                    const ownFactionData = sortedAllPlayerIDsForGraph.map(id => {
+                        const idStr = String(id);
+                        const idNum = parseInt(id);
+                        if (ownActivityHours[idStr] !== undefined) return ownActivityHours[idStr];
+                        if (ownActivityHours[idNum] !== undefined) return ownActivityHours[idNum];
+                        return null;
+                    });
+                    const ctx = canvas.getContext('2d');
+                    window.activityChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                {
+                                    label: `${currentData.factionName} (Last 3 Months)`,
+                                    data: currentFactionData,
+                                    borderColor: '#ffd700',
+                                    backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                                    borderWidth: 2,
+                                    fill: false,
+                                    tension: 0.4,
+                                    pointRadius: 3,
+                                    pointHoverRadius: 5,
+                                    pointBackgroundColor: '#ffd700',
+                                    pointBorderColor: '#fff',
+                                    pointBorderWidth: 1
+                                },
+                                {
+                                    label: `${ownFactionName} (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})`,
+                                    data: ownFactionData,
+                                    borderColor: '#9C27B0',
+                                    backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                                    borderWidth: 2,
+                                    fill: false,
+                                    tension: 0.4,
+                                    pointRadius: 3,
+                                    pointHoverRadius: 5,
+                                    pointBackgroundColor: '#9C27B0',
+                                    pointBorderColor: '#fff',
+                                    pointBorderWidth: 1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    position: 'top',
+                                    labels: {
+                                        color: '#fff',
+                                        font: { size: 12, weight: 'bold' },
+                                        usePointStyle: true,
+                                        padding: 10
+                                    }
+                                },
+                                tooltip: {
+                                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                                    titleColor: '#ffd700',
+                                    bodyColor: '#fff',
+                                    borderColor: '#ffd700',
+                                    borderWidth: 1,
+                                    callbacks: {
+                                        label: function(context) {
+                                            if (context.parsed.y === null) return '';
+                                            return `${context.dataset.label}: ${context.parsed.y.toFixed(1)} hours`;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    title: {
+                                        display: true,
+                                        text: 'Players (Most Active → Least Active)',
+                                        color: '#fff',
+                                        font: { size: 14, weight: 'bold' }
+                                    },
+                                    ticks: {
+                                        color: '#fff',
+                                        font: { size: 10 },
+                                        maxRotation: 45,
+                                        minRotation: 45
+                                    },
+                                    grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Activity (Hours)',
+                                        color: '#fff',
+                                        font: { size: 14, weight: 'bold' }
+                                    },
+                                    ticks: {
+                                        color: '#fff',
+                                        stepSize: 50
+                                    },
+                                    grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        }, 200);
+        
+        // Add sorting functionality for comparison table
+        const table = document.getElementById('membersTable');
+        const headers = table.querySelectorAll('th[data-column]');
+        let currentSortColumn = 'activity1';
+        let currentSortDirection = 'desc';
+        
+        // Store original data for re-sorting
+        const originalCurrentSortedIDs = [...currentData.sortedMemberIDs];
+        const originalOwnSortedIDs = [...ownSortedMemberIDs];
+        
+        const sortAndReRenderTable = (column, direction) => {
+            // Determine which column type we're sorting by (remove the 1/2 suffix)
+            const baseColumn = column.replace(/[12]$/, '');
+            const isColumn1 = column.endsWith('1');
+            const isColumn2 = column.endsWith('2');
+            
+            // Sort both factions independently based on the selected column
+            let sortedCurrentIDs = [...currentData.sortedMemberIDs];
+            let sortedOwnIDs = [...ownSortedMemberIDs];
+            
+            // Sort current faction
+            sortedCurrentIDs.sort((a, b) => {
+                const aMember = currentData.membersObject[a];
+                const bMember = currentData.membersObject[b];
+                let aValue, bValue;
+                
+                if (baseColumn === 'member') {
+                    aValue = aMember?.name?.toLowerCase() || '';
+                    bValue = bMember?.name?.toLowerCase() || '';
+                } else if (baseColumn === 'level') {
+                    aValue = aMember?.level === 'Unknown' ? -1 : (parseFloat(aMember?.level) || -1);
+                    bValue = bMember?.level === 'Unknown' ? -1 : (parseFloat(bMember?.level) || -1);
+                } else if (baseColumn === 'stats') {
+                    aValue = currentBattleStatsEstimates[a] || -1;
+                    bValue = currentBattleStatsEstimates[b] || -1;
+                } else if (baseColumn === 'activity') {
+                    aValue = currentData.activityHours[a] || currentData.activityHours[parseInt(a)] || 0;
+                    bValue = currentData.activityHours[b] || currentData.activityHours[parseInt(b)] || 0;
+                } else {
+                    return 0;
+                }
+                
+                if (baseColumn === 'member') {
+                    if (aValue < bValue) return direction === 'asc' ? -1 : 1;
+                    if (aValue > bValue) return direction === 'asc' ? 1 : -1;
+                    return 0;
+                } else {
+                    if (direction === 'desc') {
+                        return bValue - aValue;
+                    } else {
+                        return aValue - bValue;
+                    }
+                }
+            });
+            
+            // Sort own faction
+            sortedOwnIDs.sort((a, b) => {
+                const aMember = ownMembersObject[a] || ownMembersObject[parseInt(a)];
+                const bMember = ownMembersObject[b] || ownMembersObject[parseInt(b)];
+                let aValue, bValue;
+                
+                if (baseColumn === 'member') {
+                    aValue = aMember?.name?.toLowerCase() || '';
+                    bValue = bMember?.name?.toLowerCase() || '';
+                } else if (baseColumn === 'level') {
+                    aValue = aMember?.level === 'Unknown' ? -1 : (parseFloat(aMember?.level) || -1);
+                    bValue = bMember?.level === 'Unknown' ? -1 : (parseFloat(bMember?.level) || -1);
+                } else if (baseColumn === 'stats') {
+                    aValue = ownBattleStatsEstimates[a] || ownBattleStatsEstimates[parseInt(a)] || -1;
+                    bValue = ownBattleStatsEstimates[b] || ownBattleStatsEstimates[parseInt(b)] || -1;
+                } else if (baseColumn === 'activity') {
+                    const aStr = String(a);
+                    const aNum = parseInt(a);
+                    aValue = ownActivityHours[aStr] || ownActivityHours[aNum] || 0;
+                    const bStr = String(b);
+                    const bNum = parseInt(b);
+                    bValue = ownActivityHours[bStr] || ownActivityHours[bNum] || 0;
+                } else {
+                    return 0;
+                }
+                
+                if (baseColumn === 'member') {
+                    if (aValue < bValue) return direction === 'asc' ? -1 : 1;
+                    if (aValue > bValue) return direction === 'asc' ? 1 : -1;
+                    return 0;
+                } else {
+                    if (direction === 'desc') {
+                        return bValue - aValue;
+                    } else {
+                        return aValue - bValue;
+                    }
+                }
+            });
+            
+            // Update sort indicators
+            headers.forEach(h => {
+                const indicator = h.querySelector('.sort-indicator');
+                const hColumn = h.getAttribute('data-column');
+                if (hColumn === column || (hColumn.replace(/[12]$/, '') === baseColumn)) {
+                    if (hColumn === column) {
+                        indicator.textContent = direction === 'asc' ? ' ↑' : ' ↓';
+                    } else {
+                        indicator.textContent = '';
+                    }
+                } else {
+                    indicator.textContent = '';
+                }
+            });
+            
+            // Re-render the table with new sorted order
+            const tbody = table.querySelector('tbody');
+            tbody.innerHTML = '';
+            
+            const maxRows = Math.max(sortedCurrentIDs.length, sortedOwnIDs.length);
+            
+            for (let i = 0; i < maxRows; i++) {
+                const currentPlayerID = sortedCurrentIDs[i];
+                const currentMember = currentPlayerID ? currentData.membersObject[currentPlayerID] : null;
+                const currentActivity = currentPlayerID ? (currentData.activityHours[currentPlayerID] || 0) : null;
+                const currentLevel = currentMember ? (currentMember.level || 'Unknown') : null;
+                const currentName = currentMember ? currentMember.name : null;
+                const currentEstimatedStat = currentPlayerID ? (currentBattleStatsEstimates[currentPlayerID] || 'N/A') : null;
+                const displayCurrentEstimatedStat = (currentEstimatedStat && currentEstimatedStat !== 'N/A') ? currentEstimatedStat.toLocaleString() : (currentEstimatedStat || '-');
+                
+                const ownPlayerID = sortedOwnIDs[i];
+                const ownMember = ownPlayerID ? (ownMembersObject[ownPlayerID] || ownMembersObject[parseInt(ownPlayerID)]) : null;
+                const ownActivity = ownPlayerID ? (ownActivityHours[ownPlayerID] || ownActivityHours[parseInt(ownPlayerID)] || 0) : null;
+                const ownLevel = ownMember ? (ownMember.level || 'Unknown') : null;
+                const ownName = ownMember ? ownMember.name : null;
+                const ownEstimatedStat = ownPlayerID ? (ownBattleStatsEstimates[ownPlayerID] || ownBattleStatsEstimates[parseInt(ownPlayerID)] || 'N/A') : null;
+                const displayOwnEstimatedStat = (ownEstimatedStat && ownEstimatedStat !== 'N/A') ? ownEstimatedStat.toLocaleString() : (ownEstimatedStat || '-');
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td data-column="member1" data-value="${currentName ? currentName.toLowerCase() : ''}" style="padding: 8px 6px;">
+                        ${currentPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${currentPlayerID}" target="_blank" style="color: #FFD700; text-decoration: none;">${currentName}</a>` : '-'}
+                    </td>
+                    <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}" style="padding: 8px 6px;">${currentLevel || '-'}</td>
+                    <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}" style="padding: 8px 6px;">${displayCurrentEstimatedStat}</td>
+                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding: 8px 6px;">${currentActivity !== null ? currentActivity.toFixed(1) : '-'}</td>
+                    <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}" style="padding: 8px 6px;">
+                        ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
+                    </td>
+                    <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}" style="padding: 8px 6px;">${ownLevel || '-'}</td>
+                    <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}" style="padding: 8px 6px;">${displayOwnEstimatedStat}</td>
+                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding: 8px 6px;">${ownActivity !== null ? ownActivity.toFixed(1) : '-'}</td>
+                `;
+                tbody.appendChild(row);
+            }
+            
+            // Update the sorted arrays for CSV export
+            currentData.sortedMemberIDs = sortedCurrentIDs;
+            ownSortedMemberIDs.length = 0;
+            ownSortedMemberIDs.push(...sortedOwnIDs);
+        };
+        
+        sortAndReRenderTable(currentSortColumn, currentSortDirection);
+        
+        headers.forEach(header => {
+            header.addEventListener('click', () => {
+                const column = header.getAttribute('data-column');
+                
+                if (currentSortColumn === column) {
+                    currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSortColumn = column;
+                    currentSortDirection = 'asc';
+                }
+                
+                sortAndReRenderTable(currentSortColumn, currentSortDirection);
+            });
+        });
+        
+        // Add CSV export functionality for comparison table
+        document.getElementById('exportCsvBtn').addEventListener('click', () => {
+            const headers = [`${currentFactionName} - Member`, `${currentFactionName} - Level`, `${currentFactionName} - Estimated Stats`, `${currentFactionName} - Activity (Hours)`, `${ownFactionName} - Member`, `${ownFactionName} - Level`, `${ownFactionName} - Estimated Stats`, `${ownFactionName} - Activity (Hours)`];
+            let csvContent = headers.join(',') + '\r\n';
+            
+            for (let i = 0; i < maxRows; i++) {
+                const currentPlayerID = currentData.sortedMemberIDs[i];
+                const currentMember = currentPlayerID ? currentData.membersObject[currentPlayerID] : null;
+                const currentActivity = currentPlayerID ? (currentData.activityHours[currentPlayerID] || 0) : null;
+                const currentLevel = currentMember ? (currentMember.level || 'Unknown') : null;
+                const currentName = currentMember ? currentMember.name : null;
+                const currentEstimatedStat = currentPlayerID ? (currentBattleStatsEstimates[currentPlayerID] || 'N/A') : null;
+                const displayCurrentEstimatedStat = (currentEstimatedStat && currentEstimatedStat !== 'N/A') ? currentEstimatedStat.toLocaleString() : (currentEstimatedStat || '-');
+                
+                const ownPlayerID = ownSortedMemberIDs[i];
+                const ownMember = ownPlayerID ? (ownMembersObject[ownPlayerID] || ownMembersObject[parseInt(ownPlayerID)]) : null;
+                const ownActivity = ownPlayerID ? (ownActivityHours[ownPlayerID] || ownActivityHours[parseInt(ownPlayerID)] || 0) : null;
+                const ownLevel = ownMember ? (ownMember.level || 'Unknown') : null;
+                const ownName = ownMember ? ownMember.name : null;
+                const ownEstimatedStat = ownPlayerID ? (ownBattleStatsEstimates[ownPlayerID] || ownBattleStatsEstimates[parseInt(ownPlayerID)] || 'N/A') : null;
+                const displayOwnEstimatedStat = (ownEstimatedStat && ownEstimatedStat !== 'N/A') ? ownEstimatedStat.toLocaleString() : (ownEstimatedStat || '-');
+                
+                csvContent += `"${currentName || '-'}",${currentLevel || '-'},"${displayCurrentEstimatedStat}","${currentActivity !== null ? currentActivity.toFixed(1) : '-'}","${ownName || '-'}",${ownLevel || '-'},"${displayOwnEstimatedStat}","${ownActivity !== null ? ownActivity.toFixed(1) : '-'}"\r\n`;
+            }
+            
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `faction_activity_comparison_${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        });
+    };
+    
+    // Function to create activity graph
+    const createActivityGraph = (sortedMemberIDs, membersObject, activityHours, ownFactionData = null, periodMonths = 3) => {
+        const canvas = document.getElementById('activityGraph');
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        
+        // Destroy existing chart if it exists
+        if (window.activityChart) {
+            window.activityChart.destroy();
+        }
+        
+        // Prepare data (already sorted: most active to least active)
+        const labels = sortedMemberIDs.map(id => {
+            const member = membersObject[id];
+            return member.name;
+        });
+        
+        const data = sortedMemberIDs.map(id => activityHours[id] || 0);
+        
+        // Create line chart (similar to admin dashboard)
+        window.activityChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: `Activity (Hours) - ${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`}`,
+                    data: data,
+                    borderColor: '#ffd700', // Yellow to match app styling
+                    backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.4,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    pointBackgroundColor: '#ffd700',
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            color: '#fff',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            },
+                            usePointStyle: true,
+                            padding: 10
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleColor: '#ffd700',
+                        bodyColor: '#fff',
+                        borderColor: '#ffd700',
+                        borderWidth: 1,
+                        callbacks: {
+                            label: function(context) {
+                                return `Activity: ${context.parsed.y.toFixed(1)} hours`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Players (Most Active → Least Active)',
+                            color: '#fff',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        },
+                        ticks: {
+                            color: '#fff',
+                            font: {
+                                size: 10
+                            },
+                            maxRotation: 45,
+                            minRotation: 45
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Activity (Hours)',
+                            color: '#fff',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        },
+                        ticks: {
+                            color: '#fff',
+                            stepSize: 50
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    }
+                }
+            }
+        });
     };
 
     // --- DETAILED STATS COLLECTION ---
@@ -3349,6 +5192,68 @@ document.addEventListener('DOMContentLoaded', () => {
         return path.split('.').reduce((acc, part) => acc && acc[part], obj);
     }
 
+    // Global function to initialize date pickers with flatpickr
+    window.initDatePickers = function(startDateId = 'startDate', endDateId = 'endDate', options = {}) {
+        const defaultOptions = {
+            dateFormat: "Y-m-d",
+            locale: {
+                firstDayOfWeek: 1
+            },
+            ...options
+        };
+        
+        const startDateInput = document.getElementById(startDateId);
+        const endDateInput = document.getElementById(endDateId);
+
+        if (startDateInput && endDateInput) {
+            // Check if flatpickr is available
+            if (typeof flatpickr === 'undefined') {
+                console.error('[DATE PICKERS] flatpickr is not loaded!');
+                return null;
+            }
+            
+            // Destroy existing instances if they exist
+            if (startDateInput._flatpickr) {
+                startDateInput._flatpickr.destroy();
+            }
+            if (endDateInput._flatpickr) {
+                endDateInput._flatpickr.destroy();
+            }
+            
+            // Change input type to text if it's date (flatpickr works better with text inputs)
+            if (startDateInput.type === 'date') {
+                startDateInput.type = 'text';
+            }
+            if (endDateInput.type === 'date') {
+                endDateInput.type = 'text';
+            }
+            
+            try {
+                const startDatePicker = flatpickr(startDateInput, {
+                    ...defaultOptions,
+                    defaultDate: options.startDefaultDate || null
+                });
+                
+                const endDatePicker = flatpickr(endDateInput, {
+                    ...defaultOptions,
+                    defaultDate: options.endDefaultDate || "today"
+                });
+                
+                console.log('[DATE PICKERS] Date pickers initialized successfully');
+                return { startDatePicker, endDatePicker };
+            } catch (error) {
+                console.error('[DATE PICKERS] Error initializing date pickers:', error);
+                return null;
+            }
+        } else {
+            console.warn('[DATE PICKERS] Date input elements not found:', {
+                startDate: !!startDateInput,
+                endDate: !!endDateInput
+            });
+            return null;
+        }
+    };
+    
     function initWarChainReporter() {
         // Log tool usage
         if (window.logToolUsage) {
@@ -3360,26 +5265,12 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchBtn.addEventListener('click', handleWarReportFetch);
         }
 
-        // Initialize date pickers for war chain reporter
-        const startDateInput = document.getElementById('startDate');
-        const endDateInput = document.getElementById('endDate');
-
-        if (startDateInput && endDateInput) {
-            // Initialize flatpickr instances
-            const startDatePicker = flatpickr(startDateInput, {
-                dateFormat: "Y-m-d",
-                locale: {
-                    firstDayOfWeek: 1
-                }
+        // Initialize date pickers using global function
+        setTimeout(() => {
+            window.initDatePickers('startDate', 'endDate', {
+                endDefaultDate: "today"
             });
-            const endDatePicker = flatpickr(endDateInput, {
-                dateFormat: "Y-m-d",
-                defaultDate: "today",
-                locale: {
-                    firstDayOfWeek: 1
-                }
-            });
-        }
+        }, 100);
     }
 
     async function fetchTornApiInChunks(apiKey, requests, chunkSize = 10, delay = 6000) {
