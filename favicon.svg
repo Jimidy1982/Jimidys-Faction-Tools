@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Dark grey circle background -->
+  <circle cx="32" cy="32" r="30" fill="#2d2d2d" stroke="#404040" stroke-width="1.5"/>
+  <!-- Yellow "T" letter - perfectly centered -->
+  <text x="32" y="32" font-family="Arial, sans-serif" font-size="44" font-weight="900" fill="#FFD700" text-anchor="middle" dominant-baseline="central" alignment-baseline="central">T</text>
+</svg>
+
