@@ -3014,6 +3014,35 @@ function renderRespectPayoutTable() {
     const remaining2 = cacheSales * remainingPercentage2;
     const remainingPercent = cacheSales !== 0 ? ((remaining2 / cacheSales) * 100).toFixed(2) : '0.00';
     
+    // Store respect payout data in warData for export function
+    warData.respectPayoutData = {
+        removeModifiers,
+        includeOutsideRespect,
+        playerRespectData,
+        totalBaseRespect,
+        totalOutsideRespect,
+        totalCosts,
+        enableThresholds,
+        payoutMode,
+        minThreshold,
+        maxThreshold,
+        adjustedTotalRespect: window._totalAdjustedRespect || null,
+        playersWithRespectPayouts: playersWithRespectPayouts.map(p => ({
+            id: p.id,
+            name: p.name,
+            level: p.level,
+            warHits: p.warHits,
+            warRetals: p.warRetals,
+            warAssists: p.warAssists,
+            overseasHits: p.overseasHits,
+            totalAttacks: p.totalAttacks,
+            playerWarRespect: p.playerWarRespect,
+            playerOutsideRespect: p.playerOutsideRespect,
+            respectRatio: p.respectRatio,
+            totalPayout: p.totalPayout
+        }))
+    };
+    
     const respectPayoutTableDiv = document.getElementById('respectPayoutTable');
     if (!respectPayoutTableDiv) return;
     
@@ -3210,43 +3239,42 @@ function renderRespectPayoutTable() {
         });
     }
     
-    // Add click event listener for respect export button
+    // Add click event listener for respect export button (remove old listener first to prevent duplicates)
     const exportRespectPayoutBtn = document.getElementById('exportRespectPayoutCSV');
     if (exportRespectPayoutBtn) {
-        exportRespectPayoutBtn.addEventListener('click', exportRespectPayoutToCSV);
+        // Clone node to remove all old event listeners
+        const newBtn = exportRespectPayoutBtn.cloneNode(true);
+        exportRespectPayoutBtn.parentNode.replaceChild(newBtn, exportRespectPayoutBtn);
+        newBtn.addEventListener('click', exportRespectPayoutToCSV);
     }
 
 }
 
 // --- Export Respect Payout to CSV ---
 function exportRespectPayoutToCSV() {
-    const playerStats = warData.playerStats;
-    const allAttacks = warData.allAttacks;
-    if (!playerStats || Object.keys(playerStats).length === 0) {
-        alert('No respect payout data to export. Please fetch war data first.');
+    // Check if respect payout data exists (table must be rendered first)
+    if (!warData.respectPayoutData) {
+        alert('No respect payout data to export. Please view the Respect Based Payout table first.');
         return;
     }
     
-    // Get respect payout settings
-    const respectCacheSalesInput = document.getElementById('respectCacheSales');
-    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
-    const includeOutsideRespect = document.getElementById('respectIncludeOutside')?.checked;
+    const payoutData = warData.respectPayoutData;
+    const removeModifiers = payoutData.removeModifiers;
+    const playersWithRespectPayouts = payoutData.playersWithRespectPayouts;
     
-    // Calculate total base respect for all war hits
-    let totalBaseRespect = 0;
-    let totalWarHits = 0;
-    
-    // Process all attacks to calculate base respect
-    allAttacks.forEach(attack => {
-        if (attack.attacker_faction === parseInt(document.getElementById('factionId').value) && 
-            attack.defender_faction !== parseInt(document.getElementById('factionId').value)) {
-            totalWarHits++;
-            totalBaseRespect += calculateBaseRespect(attack);
+    // Sort by respect payout sort state (same as table display)
+    const { column: sortColumn, direction: sortDirection } = warData.respectPayoutSortState;
+    const sortedPlayers = [...playersWithRespectPayouts].sort((a, b) => {
+        let aValue = a[sortColumn];
+        let bValue = b[sortColumn];
+        if (typeof aValue === 'string') {
+            aValue = aValue.toLowerCase();
+            bValue = bValue.toLowerCase();
         }
+        if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+        if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+        return 0;
     });
-    
-    // Auto-calculate pay per war hit (based on war hits only)
-    const payPerWarHit = totalWarHits > 0 ? Math.round((cacheSales * 0.7) / totalWarHits) : 0;
     
     const headers = [
         'Member',
@@ -3264,105 +3292,7 @@ function exportRespectPayoutToCSV() {
     ];
     let csvContent = headers.join(',') + '\r\n';
     
-    // Calculate respect-based payouts and sort by total payout
-    const playersWithRespectPayouts = Object.values(playerStats).map(player => {
-        // Use cached player respect data instead of recalculating
-        const playerIdStr = String(player.id);
-        const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
-        const playerWarRespect = playerData.warRespect;
-        const playerOutsideRespect = playerData.outsideRespect;
-        
-        // Calculate proportional payout based on respect ratio (conditionally include outside)
-        const totalPlayerRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
-        const totalRespect = includeOutsideRespect ? (totalBaseRespect + totalOutsideRespect) : totalBaseRespect;
-        
-        // Calculate basic respect ratio payout (will be adjusted later if thresholds are enabled)
-        const respectRatio = totalRespect > 0 ? totalPlayerRespect / totalRespect : 0;
-        const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
-        const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
-        const remaining = cacheSales * remainingPercentage;
-        const availablePayout = cacheSales - remaining - totalCosts;
-        let warHitPayout = Math.round(respectRatio * availablePayout);
-        
-        // Calculate additional payouts using the same multipliers as hit-based
-        const payRetals = document.getElementById('respectPayRetals')?.checked;
-        const retalMultiplier = parseFloat(document.getElementById('respectRetalMultiplier')?.value || '0.5');
-        const payAssists = document.getElementById('respectPayAssists')?.checked;
-        const assistMultiplier = parseFloat(document.getElementById('respectAssistMultiplier')?.value || '0.25');
-        const payOverseas = document.getElementById('respectPayOverseas')?.checked;
-        const overseasMultiplier = parseFloat(document.getElementById('respectOverseasMultiplier')?.value || '0.25');
-        const payOtherAttacks = document.getElementById('respectPayOtherAttacks')?.checked;
-        const otherAttacksMultiplier = parseFloat(document.getElementById('respectOtherAttacksMultiplier')?.value || '0.1');
-        
-        // When thresholds are enabled and payout mode is equal, cap additional payouts at the minimum threshold payout
-        let additionalPayoutCap = null;
-        if (enableThresholds && payoutMode === 'equal' && adjustedTotalRespect > 0) {
-            const qualifyingPlayers = playersWithRespectPayouts.filter(p => {
-                const playerData = playerRespectData[p.id];
-                const playerWarRespect = playerData?.warRespect || 0;
-                const playerOutsideRespect = playerData?.outsideRespect || 0;
-                const playerTotalRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
-                return playerTotalRespect >= minThreshold;
-            });
-            
-            const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
-            const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
-            const remaining = cacheSales * remainingPercentage;
-            const availablePayout = cacheSales - remaining - totalCosts;
-            const qualifyingCount = qualifyingPlayers.length;
-            additionalPayoutCap = qualifyingCount > 0 ? Math.round(availablePayout / qualifyingCount) : 0;
-        } else if (enableThresholds && payoutMode === 'ratio') {
-            // For ratio mode, cap additional payouts at the minimum threshold respect payout
-            const minThresholdPayout = minThreshold / adjustedTotalRespect * (cacheSales - remaining - totalCosts);
-            additionalPayoutCap = Math.round(minThresholdPayout);
-        }
-        
-        let retalPayout = payRetals ? (player.warRetals || 0) * payPerWarHit * retalMultiplier : 0;
-        let assistPayout = payAssists ? (player.warAssists || 0) * payPerWarHit * assistMultiplier : 0;
-        let overseasPayout = payOverseas ? (player.overseasHits || 0) * payPerWarHit * overseasMultiplier : 0;
-        let otherAttacksPayout = payOtherAttacks ? ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * payPerWarHit * otherAttacksMultiplier) : 0;
-        
-        // Apply cap to additional payouts when thresholds are enabled
-        if (additionalPayoutCap !== null) {
-            const totalAdditionalPayout = retalPayout + assistPayout + overseasPayout + otherAttacksPayout;
-            const totalPayout = warHitPayout + totalAdditionalPayout;
-            
-            if (totalPayout > additionalPayoutCap) {
-                // Cap the total payout, but maintain relative proportions of additional payouts
-                const additionalPayoutRatio = totalAdditionalPayout > 0 ? additionalPayoutCap / totalAdditionalPayout : 1;
-                retalPayout = Math.round(retalPayout * additionalPayoutRatio);
-                assistPayout = Math.round(assistPayout * additionalPayoutRatio);
-                overseasPayout = Math.round(overseasPayout * additionalPayoutRatio);
-                otherAttacksPayout = Math.round(otherAttacksPayout * additionalPayoutRatio);
-            }
-        }
-        
-        const totalPayout = warHitPayout + retalPayout + assistPayout + overseasPayout + otherAttacksPayout;
-        
-        return {
-            ...player,
-            playerWarRespect: Math.round(playerWarRespect),
-            playerOutsideRespect: Math.round(playerOutsideRespect),
-            respectRatio: respectRatio.toFixed(4),
-            totalPayout
-        };
-    });
-    
-    // Sort by respect payout sort state (same as table display)
-    const { column: sortColumn, direction: sortDirection } = warData.respectPayoutSortState;
-    playersWithRespectPayouts.sort((a, b) => {
-        let aValue = a[sortColumn];
-        let bValue = b[sortColumn];
-        if (typeof aValue === 'string') {
-            aValue = aValue.toLowerCase();
-            bValue = bValue.toLowerCase();
-        }
-        if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
-        if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
-        return 0;
-    });
-    
-    playersWithRespectPayouts.forEach(player => {
+    sortedPlayers.forEach(player => {
         const otherAttacks = (player.totalAttacks || 0) - (player.warHits || 0) - (player.warAssists || 0);
         const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
         const row = [
