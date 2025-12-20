@@ -466,6 +466,51 @@ function initCacheSwapping() {
     const warIdInput = document.getElementById('warIdInput');
     const factionAPercentage = document.getElementById('factionAPercentage');
     const factionBPercentage = document.getElementById('factionBPercentage');
+    const marketValueAdjustment = document.getElementById('marketValueAdjustment');
+    
+    // Load saved market value adjustment from localStorage (default -5%)
+    if (marketValueAdjustment) {
+        const savedAdjustment = localStorage.getItem('cacheMarketValueAdjustment');
+        if (savedAdjustment !== null) {
+            marketValueAdjustment.value = savedAdjustment;
+        } else {
+            marketValueAdjustment.value = '-5'; // Default to -5%
+        }
+        
+        // Set up tooltip hover functionality
+        const tooltipContainer = marketValueAdjustment.parentElement.querySelector('.tooltip')?.parentElement;
+        if (tooltipContainer) {
+            const tooltip = tooltipContainer.querySelector('.tooltip');
+            if (tooltip) {
+                tooltipContainer.addEventListener('mouseenter', () => {
+                    tooltip.style.visibility = 'visible';
+                });
+                tooltipContainer.addEventListener('mouseleave', () => {
+                    tooltip.style.visibility = 'hidden';
+                });
+            }
+        }
+        
+        // Save to localStorage when user changes the value
+        marketValueAdjustment.addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            if (!isNaN(value) && value >= -100 && value <= 100) {
+                localStorage.setItem('cacheMarketValueAdjustment', value.toString());
+                console.log(`[CACHE SWAP] Market value adjustment saved: ${value}%`);
+                
+                // If cache values are already loaded, recalculate with new adjustment
+                if (cacheSwapData.cacheValues && Object.keys(cacheSwapData.cacheValues).length > 0) {
+                    // Re-fetch cache values with new adjustment
+                    fetchCacheValues().then(() => {
+                        // Recalculate cache swaps with updated values
+                        calculateCacheSwaps();
+                    }).catch(error => {
+                        console.error('[CACHE SWAP] Error recalculating with new adjustment:', error);
+                    });
+                }
+            }
+        });
+    }
     
     if (fetchButton) {
         fetchButton.addEventListener('click', handleFetchWarData);
@@ -646,6 +691,9 @@ async function fetchCacheValues() {
         throw new Error(`API Error: ${itemsData.error.error}`);
     }
     
+    // Get market value adjustment percentage from localStorage (default -5%)
+    const adjustmentPercent = parseFloat(localStorage.getItem('cacheMarketValueAdjustment') || '-5');
+    
     // Map item IDs to cache names and get market values
     const itemIdToCache = {
         '1118': 'Armor Cache',
@@ -657,12 +705,15 @@ async function fetchCacheValues() {
     
     const cacheValues = {};
     
-    // Extract market values for each cache type
+    // Extract market values for each cache type and apply adjustment
     Object.entries(itemIdToCache).forEach(([itemId, cacheType]) => {
         const item = itemsData.items[itemId];
         if (item && item.market_value !== undefined) {
-            cacheValues[cacheType] = item.market_value;
-            console.log(`[CACHE SWAP] ${cacheType} (ID: ${itemId}) - Market Value: $${item.market_value.toLocaleString()}`);
+            // Apply adjustment: multiply by (1 + adjustmentPercent/100)
+            // e.g., -5% means multiply by 0.95
+            const adjustedValue = Math.round(item.market_value * (1 + adjustmentPercent / 100));
+            cacheValues[cacheType] = adjustedValue;
+            console.log(`[CACHE SWAP] ${cacheType} (ID: ${itemId}) - Market Value: $${item.market_value.toLocaleString()} → Adjusted: $${adjustedValue.toLocaleString()} (${adjustmentPercent > 0 ? '+' : ''}${adjustmentPercent}%)`);
         } else {
             console.warn(`[CACHE SWAP] Could not find market value for ${cacheType} (ID: ${itemId})`);
             cacheValues[cacheType] = 0; // Default to 0 if not found
