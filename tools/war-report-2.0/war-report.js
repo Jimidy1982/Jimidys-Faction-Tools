@@ -1036,6 +1036,7 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
                     overseasHits: 0,
                     lowFFHits: 0,
                     warScore: 0,
+                    respectBleed: 0,
                     totalAttacks: 0,
                     totalFairFight: 0,
                     totalDefeatedLevel: 0,
@@ -1101,6 +1102,42 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
                 playerStats[attackerId].warAssists++;
             }
 
+        });
+
+        // Process attacks where defender is in user's faction (to track respect bleed)
+        allAttacks.forEach((attack) => {
+            // Only include attacks where the defender is in the user's faction
+            if (!attack.defender || !attack.defender.faction || String(attack.defender.faction.id) !== factionIdStr) {
+                return;
+            }
+
+            const defenderId = String(attack.defender.id);
+            
+            // Initialize player if not exists (in case they only got attacked, never attacked)
+            if (!playerStats[defenderId]) {
+                playerStats[defenderId] = {
+                    id: defenderId,
+                    name: attack.defender.name || 'Unknown',
+                    level: attack.defender.level || 0,
+                    warHits: 0,
+                    warAssists: 0,
+                    warRetals: 0,
+                    overseasHits: 0,
+                    lowFFHits: 0,
+                    warScore: 0,
+                    respectBleed: 0,
+                    totalAttacks: 0,
+                    totalFairFight: 0,
+                    totalDefeatedLevel: 0,
+                    successfulAttacks: 0
+                };
+            }
+
+            // Track respect bleed (respect gained by enemy = respect lost by our team)
+            // Only count if it's a war-related attack (war modifier exists)
+            if (attack.modifiers && attack.modifiers.war && attack.respect_gain) {
+                playerStats[defenderId].respectBleed += attack.respect_gain || 0;
+            }
         });
 
         // Debug: Overall attack counting
@@ -1257,6 +1294,7 @@ function renderWarReportTable() {
                     <th data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${sortState.column === 'name' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="level" style="cursor: pointer;">Level <span class="sort-indicator">${sortState.column === 'level' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warScore" style="cursor: pointer;">Score <span class="sort-indicator">${sortState.column === 'warScore' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="respectBleed" style="cursor: pointer;">Respect Bleed <span class="sort-indicator">${sortState.column === 'respectBleed' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warHits" style="cursor: pointer;">War Hits <span class="sort-indicator">${sortState.column === 'warHits' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warAssists" style="cursor: pointer;">Assists <span class="sort-indicator">${sortState.column === 'warAssists' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warRetals" style="cursor: pointer;">Retaliations <span class="sort-indicator">${sortState.column === 'warRetals' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -1275,6 +1313,7 @@ function renderWarReportTable() {
                             <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
                             <td>${player.level}</td>
                             <td>${Math.round(player.warScore || 0)}</td>
+                            <td>${Math.round(player.respectBleed || 0)}</td>
                             <td>${player.warHits}</td>
                             <td>${player.warAssists || 0}</td>
                             <td>${player.warRetals || 0}</td>
@@ -1291,6 +1330,7 @@ function renderWarReportTable() {
                     <td><strong>TOTALS</strong></td>
                     <td></td>
                     <td><strong>${Math.round(sorted.reduce((sum, p) => sum + (p.warScore || 0), 0))}</strong></td>
+                    <td><strong>${Math.round(sorted.reduce((sum, p) => sum + (p.respectBleed || 0), 0))}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.warHits || 0), 0)}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td>
@@ -1376,6 +1416,7 @@ function exportWarReportToCSV() {
         'Member',
         'Level',
         'Score',
+        'Respect Bleed',
         'Total Attacks',
         'War Hits',
         'Avg FF',
@@ -1391,6 +1432,7 @@ function exportWarReportToCSV() {
             '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
             Math.round(player.warScore || 0),
+            Math.round(player.respectBleed || 0),
             player.totalAttacks,
             player.warHits,
             (player.avgFairFight || 0).toFixed(2),
