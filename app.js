@@ -2948,8 +2948,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 battleStatsEstimates,
                 lastUpdated,
                 factionName,
-                factionID
+                factionID,
+                myTotalStats
             };
+            // Also store myTotalStats globally for easy access
+            window.myTotalStats = myTotalStats;
 
             // Add Compare Activity button functionality (remove old listener first to prevent duplicates)
             const compareActivityBtn = document.getElementById('compareActivityBtn');
@@ -3027,10 +3030,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.URL.revokeObjectURL(url);
             });
 
-            // Add detailed stats collection functionality
-            document.getElementById('collectDetailedStatsBtn').addEventListener('click', () => {
-                handleDetailedStatsCollection(memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID);
-            });
+            // Add detailed stats collection functionality (remove old listener first to prevent duplicates)
+            const collectDetailedStatsBtn = document.getElementById('collectDetailedStatsBtn');
+            if (collectDetailedStatsBtn) {
+                // Clone and replace to remove all event listeners
+                const newBtn = collectDetailedStatsBtn.cloneNode(true);
+                collectDetailedStatsBtn.parentNode.replaceChild(newBtn, collectDetailedStatsBtn);
+                newBtn.addEventListener('click', () => {
+                    handleDetailedStatsCollection(memberIDs, membersObject, ffScores, battleStatsEstimates, myTotalStats, factionName, factionID);
+                });
+            } else {
+                console.error('Collect Detailed Stats button not found!');
+            }
             
             // Compare Activity button listener already added above, skip duplicate
         } catch (error) {
@@ -3273,16 +3284,18 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsContainer.innerHTML = tableHtml;
         resultsContainer.style.display = 'block';
         
-        // Store data for comparison
+        // Store data for comparison (preserve myTotalStats if it exists)
         window.currentActivityData = {
             sortedMemberIDs,
             membersObject,
             activityHours,
             factionName,
+            factionID,
             ffScores,
             battleStatsEstimates,
             lastUpdated,
-            periodMonths
+            periodMonths,
+            myTotalStats: window.currentActivityData?.myTotalStats || window.battleStatsData?.myTotalStats || window.myTotalStats || 0
         };
         
         // Create activity graph - wait a bit for DOM to update
@@ -3391,6 +3404,30 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.removeChild(a);
             window.URL.revokeObjectURL(url);
         });
+        
+        // Re-attach Collect Detailed Stats button listener
+        const collectDetailedStatsBtn = document.getElementById('collectDetailedStatsBtn');
+        if (collectDetailedStatsBtn) {
+            // Clone and replace to remove all event listeners
+            const newBtn = collectDetailedStatsBtn.cloneNode(true);
+            collectDetailedStatsBtn.parentNode.replaceChild(newBtn, collectDetailedStatsBtn);
+            newBtn.addEventListener('click', () => {
+                const data = window.currentActivityData;
+                if (data) {
+                    handleDetailedStatsCollection(
+                        data.sortedMemberIDs, 
+                        data.membersObject, 
+                        data.ffScores, 
+                        data.battleStatsEstimates, 
+                        data.myTotalStats || 0, 
+                        data.factionName, 
+                        data.factionID
+                    );
+                } else {
+                    console.error('Activity data not found');
+                }
+            });
+        }
     };
     
     // Function to compare to own faction
