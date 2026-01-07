@@ -2700,7 +2700,6 @@ function renderRespectPayoutTable() {
                         playerRespectData[attackerId].chainBonuses.push({
                             ...chainBonus,
                             attackerName: attack.attacker?.name,
-                            deduction: chainBonus.points, // Add deduction property for display
                             hitType: 'War Hit' // Mark as war hit
                         });
                     }
@@ -2721,7 +2720,6 @@ function renderRespectPayoutTable() {
                         playerRespectData[attackerId].chainBonuses.push({
                             ...chainBonus,
                             attackerName: attack.attacker?.name,
-                            deduction: chainBonus.points, // Add deduction property for display
                             hitType: 'Outside Hit' // Mark as outside hit
                         });
                     }
