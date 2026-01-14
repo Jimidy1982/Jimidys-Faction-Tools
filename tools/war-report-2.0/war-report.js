@@ -1431,8 +1431,8 @@ function exportWarReportToCSV() {
         const row = [
             '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
-            Math.round(player.warScore || 0),
-            Math.round(player.respectBleed || 0),
+            player.warScore || 0,
+            player.respectBleed || 0,
             player.totalAttacks,
             player.warHits,
             (player.avgFairFight || 0).toFixed(2),
@@ -1643,6 +1643,31 @@ function initializeTabs() {
         });
         cacheSalesInput.addEventListener('input', updatePayoutTable);
         payPerHitInput.addEventListener('input', updatePayoutTable);
+        
+        // Add event listeners for calculation mode switching
+        const calculationModeRadios = document.querySelectorAll('input[name="hitCalculationMode"]');
+        calculationModeRadios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const mode = e.target.value;
+                const payPerHitContainer = document.getElementById('payPerHitContainer');
+                const factionCutContainer = document.getElementById('factionCutContainer');
+                
+                if (mode === 'factionCut') {
+                    if (payPerHitContainer) payPerHitContainer.style.display = 'none';
+                    if (factionCutContainer) factionCutContainer.style.display = 'block';
+                } else {
+                    if (payPerHitContainer) payPerHitContainer.style.display = 'block';
+                    if (factionCutContainer) factionCutContainer.style.display = 'none';
+                }
+                updatePayoutTable();
+            });
+        });
+        
+        // Add event listener for faction cut percentage input
+        const factionCutPercentageInput = document.getElementById('hitFactionCutPercentage');
+        if (factionCutPercentageInput) {
+            factionCutPercentageInput.addEventListener('input', updatePayoutTable);
+        }
         
         
         // Add event listeners for Advanced Payout Options checkboxes and multipliers
@@ -2034,7 +2059,23 @@ function renderPayoutTable() {
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
     const cacheSales = parseInt(cacheSalesInput?.dataset.raw || cacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
-    const payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d.]/g, '') || '1000000');
+    
+    // Check calculation mode (Pay Per Hit vs Faction Cut %)
+    const calculationMode = document.querySelector('input[name="hitCalculationMode"]:checked')?.value || 'payPerHit';
+    let payPerHit;
+    
+    if (calculationMode === 'factionCut') {
+        // In Faction Cut mode, calculate payPerHit from percentage
+        const factionCutPercentageInput = document.getElementById('hitFactionCutPercentage');
+        const factionCutPercentage = factionCutPercentageInput ? parseFloat(factionCutPercentageInput.value) / 100 : 0.3;
+        
+        // We'll calculate payPerHit after we know the total effective hits
+        // For now, set a placeholder - will be calculated later
+        payPerHit = 0;
+    } else {
+        // Pay Per Hit mode - use input value
+        payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d.]/g, '') || '1000000');
+    }
 
     // Get war name and dates for summary
     let warName = '';
@@ -2078,6 +2119,117 @@ function renderPayoutTable() {
     const otherAttacksMultiplier = parseFloat(document.getElementById('otherAttacksMultiplier')?.value || '0.1');
     const filterLowFF = document.getElementById('filterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('minFFRating')?.value || '2.0');
+
+    // If in Faction Cut mode, calculate payPerHit from percentage
+    if (calculationMode === 'factionCut') {
+        const factionCutPercentageInput = document.getElementById('hitFactionCutPercentage');
+        const factionCutPercentage = factionCutPercentageInput ? parseFloat(factionCutPercentageInput.value) / 100 : 0.3;
+        const remaining = cacheSales * factionCutPercentage;
+        const availablePayout = cacheSales - remaining - totalCosts;
+        
+        // Check if thresholds are enabled
+        const enableThresholds = document.getElementById('hitEnableThresholds')?.checked || false;
+        const minThreshold = parseFloat(document.getElementById('hitMinThreshold')?.value || '20');
+        const maxThreshold = parseFloat(document.getElementById('hitMaxThreshold')?.value || '50');
+        const payoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio';
+        
+        // Use iterative approach to calculate payPerHit that accounts for thresholds
+        // Start with an initial estimate
+        let estimatedPayPerHit = 1000000; // Start with 1M as initial estimate
+        let iterations = 0;
+        const maxIterations = 20;
+        const tolerance = 1; // $1 tolerance
+        
+        while (iterations < maxIterations) {
+            // Calculate total effective hits with thresholds applied
+            let totalEffectiveHits = 0;
+            
+            Object.values(playerStats).forEach(player => {
+                // Count low FF hits for this player
+                let lowFFHits = 0;
+                let qualifiedWarHits = player.warHits || 0;
+                
+                if (filterLowFF) {
+                    const playerAttacks = warData.allAttacks.filter(attack => 
+                        String(attack.attacker?.id) === String(player.id) &&
+                        attack.modifiers?.war === 2 &&
+                        !attack.is_interrupted
+                    );
+                    
+                    lowFFHits = playerAttacks.filter(attack => 
+                        attack.modifiers?.fair_fight !== undefined && 
+                        attack.modifiers.fair_fight < minFFRating &&
+                        !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
+                    ).length;
+                    
+                    qualifiedWarHits = (player.warHits || 0) - lowFFHits;
+                }
+                
+                const combinedHits = (player.warHits || 0) + (player.warAssists || 0);
+                
+                if (enableThresholds) {
+                    if (combinedHits < minThreshold) {
+                        // Below minimum threshold - war hits don't count, but other modifiers might be capped
+                        let otherModifiersEffectiveHits = 0;
+                        if (payRetals) otherModifiersEffectiveHits += (player.warRetals || 0) * retalMultiplier;
+                        if (payAssists) otherModifiersEffectiveHits += (player.warAssists || 0) * assistMultiplier;
+                        if (payOverseas) otherModifiersEffectiveHits += (player.overseasHits || 0) * overseasMultiplier;
+                        if (payOtherAttacks) otherModifiersEffectiveHits += ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * otherAttacksMultiplier);
+                        if (filterLowFF && lowFFHits > 0) otherModifiersEffectiveHits += lowFFHits * otherAttacksMultiplier;
+                        
+                        // Cap at minThreshold effective hits (this simulates the proportional scaling)
+                        let minThresholdEffectiveHits;
+                        if (payoutMode === 'equal') {
+                            minThresholdEffectiveHits = minThreshold;
+                        } else {
+                            minThresholdEffectiveHits = Math.min(minThreshold, maxThreshold);
+                        }
+                        
+                        // If other modifiers exceed the cap, they get scaled down proportionally
+                        // So effective hits = min(otherModifiersEffectiveHits, minThresholdEffectiveHits)
+                        totalEffectiveHits += Math.min(otherModifiersEffectiveHits, minThresholdEffectiveHits);
+                    } else {
+                        // Above minimum threshold - war hits are capped, other modifiers don't count
+                        if (payoutMode === 'equal') {
+                            totalEffectiveHits += minThreshold;
+                        } else {
+                            totalEffectiveHits += Math.min(combinedHits, maxThreshold);
+                        }
+                    }
+                } else {
+                    // No thresholds - calculate effective hits normally
+                    let effectiveHits = qualifiedWarHits;
+                    if (payRetals) effectiveHits += (player.warRetals || 0) * retalMultiplier;
+                    if (payAssists) effectiveHits += (player.warAssists || 0) * assistMultiplier;
+                    if (payOverseas) effectiveHits += (player.overseasHits || 0) * overseasMultiplier;
+                    if (payOtherAttacks) effectiveHits += ((player.totalAttacks - (player.warHits || 0) - (player.warAssists || 0)) * otherAttacksMultiplier);
+                    if (filterLowFF && lowFFHits > 0) effectiveHits += lowFFHits * otherAttacksMultiplier;
+                    
+                    totalEffectiveHits += effectiveHits;
+                }
+            });
+            
+            // Calculate new payPerHit
+            const newPayPerHit = totalEffectiveHits > 0 ? Math.round(availablePayout / totalEffectiveHits) : 0;
+            
+            // Check if converged
+            if (Math.abs(newPayPerHit - estimatedPayPerHit) <= tolerance) {
+                estimatedPayPerHit = newPayPerHit;
+                break;
+            }
+            
+            estimatedPayPerHit = newPayPerHit;
+            iterations++;
+        }
+        
+        payPerHit = estimatedPayPerHit;
+        
+        // Update the calculated pay per hit display
+        const calculatedPayPerHitInput = document.getElementById('calculatedPayPerHit');
+        if (calculatedPayPerHitInput) {
+            calculatedPayPerHitInput.value = payPerHit.toLocaleString();
+        }
+    }
 
     // Process attacks to count low FF hits and calculate filtered payouts
     const playersWithPayouts = Object.values(playerStats).map(player => {
@@ -2224,8 +2376,18 @@ function renderPayoutTable() {
     // Calculate totals
     const totalPayout = playersWithPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
     const totalWarHits = playersWithPayouts.reduce((sum, p) => sum + (p.warHits || 0), 0);
-    const remaining = cacheSales - totalPayout - totalCosts;
-    const remainingPercent = cacheSales !== 0 ? ((remaining / cacheSales) * 100).toFixed(2) : '0.00';
+    
+    // In Faction Cut mode, use the percentage directly to ensure exact remaining amount
+    let remaining, remainingPercent;
+    if (calculationMode === 'factionCut') {
+        const factionCutPercentageInput = document.getElementById('hitFactionCutPercentage');
+        const factionCutPercentage = factionCutPercentageInput ? parseFloat(factionCutPercentageInput.value) / 100 : 0.3;
+        remaining = Math.round(cacheSales * factionCutPercentage);
+        remainingPercent = (factionCutPercentage * 100).toFixed(2);
+    } else {
+        remaining = cacheSales - totalPayout - totalCosts;
+        remainingPercent = cacheSales !== 0 ? ((remaining / cacheSales) * 100).toFixed(2) : '0.00';
+    }
     const payoutTableDiv = document.getElementById('payoutTable');
     if (!payoutTableDiv) return;
     const tableHtml = `
@@ -2235,7 +2397,7 @@ function renderPayoutTable() {
             <p><strong>Total Costs:</strong> $${totalCosts.toLocaleString()}</p>
             <p><strong>Pay Per Hit:</strong> $${payPerHit.toLocaleString()}</p>
             <p><strong>Total Payout:</strong> $${totalPayout.toLocaleString()}</p>
-            <p><strong>Remaining:</strong> $${remaining.toLocaleString()} <span style=\"color:#ffd700;font-weight:normal;\">(${remainingPercent}% of cache sales)</span></p>
+            <p><strong>Remaining for Faction:</strong> $${remaining.toLocaleString()} <span style=\"color:#ffd700;font-weight:normal;\">(${remainingPercent}% of cache sales)</span></p>
             <p><strong>Total War Hits:</strong> ${totalWarHits.toLocaleString()}</p>
             <button id="exportPayoutCSV" class="btn btn-secondary">Export to CSV</button>
         </div>

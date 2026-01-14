@@ -117,8 +117,34 @@
                                 </div>
                             </div>
                             <div style="flex: 1;">
-                                <label for="payPerHit">Pay Per War Hit (PPWH):</label>
-                                                                    <div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="payPerHit" value="1000000" placeholder="e.g., 1m, 500k, 100k" style="width: 100%; padding: 8px; margin-top: 5px;"></div>
+                                <div style="margin-bottom: 10px;">
+                                    <label style="color: #fff; font-weight: normal; font-size: 1em; margin-bottom: 8px; display: block;">Calculation Mode:</label>
+                                    <div style="display: flex; gap: 15px;">
+                                        <label style="display: flex; align-items: center; color: #ccc; cursor: pointer;">
+                                            <input type="radio" name="hitCalculationMode" value="payPerHit" checked style="accent-color: #ffd700; margin-right: 6px;">
+                                            Pay Per Hit
+                                        </label>
+                                        <label style="display: flex; align-items: center; color: #ccc; cursor: pointer;">
+                                            <input type="radio" name="hitCalculationMode" value="factionCut" style="accent-color: #ffd700; margin-right: 6px;">
+                                            Faction Cut %
+                                        </label>
+                                    </div>
+                                </div>
+                                <div id="payPerHitContainer">
+                                    <label for="payPerHit">Pay Per War Hit (PPWH):</label>
+                                    <div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="payPerHit" value="1000000" placeholder="e.g., 1m, 500k, 100k" style="width: 100%; padding: 8px; margin-top: 5px;"></div>
+                                </div>
+                                <div id="factionCutContainer" style="display: none;">
+                                    <label for="hitFactionCutPercentage">Faction Cut Percentage:</label>
+                                    <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
+                                        <input type="number" id="hitFactionCutPercentage" min="0" max="100" value="30" step="0.1" style="width: 100px; padding: 8px;">
+                                        <span style="color: #fff; font-weight: normal;">%</span>
+                                    </div>
+                                    <div style="margin-top: 5px;">
+                                        <label for="calculatedPayPerHit" style="color: #ccc; font-size: 0.9em;">Calculated Pay Per Hit:</label>
+                                        <div style="display: flex; align-items: center; margin-top: 5px;"><span style="color: #ccc; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="calculatedPayPerHit" readonly style="width: 100%; padding: 8px; background-color: #1a1a1a; border: 1px solid #404040; color: #ccc; cursor: not-allowed;"></div>
+                                    </div>
+                                </div>
                                 <h3 style="color: #fff; font-weight: normal; font-size: 1em; margin: 18px 0 8px 0;">Advanced Payout Options:</h3>
                                 <div style="margin-top: 15px; display: grid; grid-template-columns: 1.5fr 1fr; gap: 8px 12px; align-items: center;">
                                     <label style="display: flex; align-items: center;" title="Pay for assist attacks"><input type="checkbox" id="payAssists" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Assists</label>
