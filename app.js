@@ -2825,15 +2825,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName}</h2>
                 
                 <!-- Table Wrapper (SCROLLABLE) -->
+                <div style="position: relative; margin-bottom: 5px;">
+                    <button id="copyTableBtn" class="btn" style="background-color: rgba(42, 42, 42, 0.9); color: #ccc; border: 1px solid #555; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Copy table to clipboard">
+                        📋 Copy
+                    </button>
+                </div>
                 <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
                     <table id="membersTable" style="min-width: 600px; font-size: 13px;">
                         <thead>
                             <tr>
-                                <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
-                                <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
-                                <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
-                                <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
-                                <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">Last Updated <span class="sort-indicator"></span></th>
+                                <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left; user-select: text;">Member <span class="sort-indicator"></span></th>
+                                <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left; user-select: text;">Level <span class="sort-indicator"></span></th>
+                                <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">Estimated Stats <span class="sort-indicator"></span></th>
+                                <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left; user-select: text;">FF Score <span class="sort-indicator"></span></th>
+                                <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">Last Updated <span class="sort-indicator"></span></th>
                             </tr>
                         </thead>
                         <tbody>`;
@@ -2977,7 +2982,144 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // Add CSV export functionality
+            // Copy Table button functionality
+            const copyTableBtn = document.getElementById('copyTableBtn');
+            if (copyTableBtn) {
+                copyTableBtn.addEventListener('click', async () => {
+                    try {
+                        // Get the table element (respects current sort order)
+                        const table = document.getElementById('membersTable');
+                        if (!table) {
+                            alert('Table not found');
+                            return;
+                        }
+
+                        // Clone the table to preserve structure
+                        const tableClone = table.cloneNode(true);
+                        
+                        // Remove FF Score column (data-column="ffscore")
+                        const ffScoreHeaders = tableClone.querySelectorAll('thead th[data-column="ffscore"]');
+                        const ffScoreCells = tableClone.querySelectorAll('tbody td[data-column="ffscore"]');
+                        ffScoreHeaders.forEach(th => th.remove());
+                        ffScoreCells.forEach(td => td.remove());
+                        
+                        // Remove sort indicators from headers
+                        const headerCells = tableClone.querySelectorAll('thead th');
+                        headerCells.forEach(th => {
+                            const indicator = th.querySelector('.sort-indicator');
+                            if (indicator) {
+                                indicator.remove();
+                            }
+                        });
+
+                        // Create HTML table with faction name (matching game's format)
+                        const htmlTable = `
+                            <div>
+                                <span style="font-size: 18px;"><strong>${factionName}:</strong></span>
+                            </div>
+                            <div>&nbsp;</div>
+                            ${tableClone.outerHTML}
+                        `;
+
+                        // Create plain text fallback (excluding FF Score column)
+                        const headerRow = table.querySelector('thead tr');
+                        const headers = Array.from(headerRow.querySelectorAll('th[data-column]'))
+                            .filter(th => th.getAttribute('data-column') !== 'ffscore')
+                            .map(th => {
+                                const text = th.textContent.replace(/[↑↓\s]+$/, '').trim();
+                                return text;
+                            });
+
+                        const rows = Array.from(table.querySelectorAll('tbody tr'));
+                        const rowData = rows.map(row => {
+                            return Array.from(row.querySelectorAll('td'))
+                                .filter(td => td.getAttribute('data-column') !== 'ffscore')
+                                .map((cell) => {
+                                    let text = cell.textContent.trim();
+                                    const link = cell.querySelector('a');
+                                    if (link) {
+                                        text = link.textContent.trim();
+                                    }
+                                    return text;
+                                });
+                        });
+
+                        let textTable = `${factionName}\n\n`;
+                        textTable += headers.join('\t') + '\n';
+                        rowData.forEach(row => {
+                            textTable += row.join('\t') + '\n';
+                        });
+
+                        // Copy both HTML and plain text formats
+                        const clipboardItem = new ClipboardItem({
+                            'text/html': new Blob([htmlTable], { type: 'text/html' }),
+                            'text/plain': new Blob([textTable], { type: 'text/plain' })
+                        });
+
+                        await navigator.clipboard.write([clipboardItem]);
+                        
+                        // Show feedback
+                        const originalText = copyTableBtn.textContent;
+                        const originalBgColor = copyTableBtn.style.backgroundColor;
+                        copyTableBtn.textContent = '✓ Copied!';
+                        copyTableBtn.style.backgroundColor = 'rgba(76, 175, 80, 0.9)';
+                        copyTableBtn.style.opacity = '1';
+                        setTimeout(() => {
+                            copyTableBtn.textContent = originalText;
+                            copyTableBtn.style.backgroundColor = originalBgColor;
+                            copyTableBtn.style.opacity = '0.7';
+                        }, 2000);
+                    } catch (error) {
+                        console.error('Error copying table:', error);
+                        // Fallback to plain text if ClipboardItem is not supported
+                        try {
+                            const table = document.getElementById('membersTable');
+                            const headerRow = table.querySelector('thead tr');
+                            const headers = Array.from(headerRow.querySelectorAll('th[data-column]'))
+                                .filter(th => th.getAttribute('data-column') !== 'ffscore')
+                                .map(th => {
+                                    const text = th.textContent.replace(/[↑↓\s]+$/, '').trim();
+                                    return text;
+                                });
+                            const rows = Array.from(table.querySelectorAll('tbody tr'));
+                            const rowData = rows.map(row => {
+                                return Array.from(row.querySelectorAll('td'))
+                                    .filter(td => td.getAttribute('data-column') !== 'ffscore')
+                                    .map((cell) => {
+                                        let text = cell.textContent.trim();
+                                        const link = cell.querySelector('a');
+                                        if (link) {
+                                            text = link.textContent.trim();
+                                        }
+                                        return text;
+                                    });
+                            });
+                            let textTable = `${factionName}\n\n`;
+                            textTable += headers.join('\t') + '\n';
+                            rowData.forEach(row => {
+                                textTable += row.join('\t') + '\n';
+                            });
+                            await navigator.clipboard.writeText(textTable);
+                            
+                            // Show feedback
+                            const originalText = copyTableBtn.textContent;
+                            const originalBgColor = copyTableBtn.style.backgroundColor;
+                            copyTableBtn.textContent = '✓ Copied!';
+                            copyTableBtn.style.backgroundColor = 'rgba(76, 175, 80, 0.9)';
+                            copyTableBtn.style.opacity = '1';
+                            setTimeout(() => {
+                                copyTableBtn.textContent = originalText;
+                                copyTableBtn.style.backgroundColor = originalBgColor;
+                                copyTableBtn.style.opacity = '0.7';
+                            }, 2000);
+                        } catch (fallbackError) {
+                            console.error('Fallback copy also failed:', fallbackError);
+                            alert('Failed to copy table. Please try again.');
+                        }
+                    }
+                });
+            }
+
             document.getElementById('exportCsvBtn').addEventListener('click', () => {
                 // 1. Create a list of members with all their data
                 const memberExportData = memberIDs.map(memberID => {
