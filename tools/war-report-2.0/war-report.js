@@ -234,7 +234,8 @@ function saveRespectPayoutSettings() {
         enableThresholds: document.getElementById('respectEnableThresholds')?.checked || false,
         minThreshold: document.getElementById('respectMinThreshold')?.value || '100',
         maxThreshold: document.getElementById('respectMaxThreshold')?.value || '300',
-        payoutMode: document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio'
+        payoutMode: document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio',
+        ignoreChainDeductions: document.getElementById('respectIgnoreChainDeductions')?.checked || false
     };
     localStorage.setItem('respectPayoutSettings', JSON.stringify(settings));
 
@@ -378,6 +379,7 @@ function loadRespectPayoutSettings() {
                     updateChainButtonState(optionId);
                 });
             }
+            // Ignore chain deductions checkbox is in the table (only exists when chain bonuses present); applied on next render via localStorage
 
         } catch (error) {
             console.error('Error loading respect payout settings:', error);
@@ -2785,6 +2787,17 @@ function renderRespectPayoutTable() {
     const removeModifiers = document.getElementById('respectRemoveModifiers')?.checked;
     const includeOutsideRespect = document.getElementById('respectIncludeOutside')?.checked;
 
+    // Ignore chain deductions: from checkbox if present (after re-render), else from saved settings
+    let ignoreChainDeductions = document.getElementById('respectIgnoreChainDeductions')?.checked;
+    if (ignoreChainDeductions === undefined) {
+        try {
+            const s = JSON.parse(localStorage.getItem('respectPayoutSettings') || '{}');
+            ignoreChainDeductions = s.ignoreChainDeductions === true;
+        } catch (e) {
+            ignoreChainDeductions = false;
+        }
+    }
+
     // OPTIMIZATION: Process all attacks ONCE and cache player respect data
     const factionId = parseInt(document.getElementById('factionId').value);
     const playerRespectData = {};
@@ -2890,6 +2903,27 @@ function renderRespectPayoutTable() {
             }
         }
     });
+
+    // If "ignore chain deductions" is checked, add back chain bonus points so payouts use full respect
+    if (ignoreChainDeductions) {
+        let warDeductionsAdded = 0;
+        let outsideDeductionsAdded = 0;
+        Object.keys(playerRespectData).forEach(playerId => {
+            const data = playerRespectData[playerId];
+            if (!data.chainBonuses || data.chainBonuses.length === 0) return;
+            data.chainBonuses.forEach(bonus => {
+                if (bonus.hitType === 'War Hit') {
+                    data.warRespect += bonus.deduction;
+                    warDeductionsAdded += bonus.deduction;
+                } else if (bonus.hitType === 'Outside Hit') {
+                    data.outsideRespect += bonus.deduction;
+                    outsideDeductionsAdded += bonus.deduction;
+                }
+            });
+        });
+        totalBaseRespect += warDeductionsAdded;
+        totalOutsideRespect += outsideDeductionsAdded;
+    }
 
     
     // Get Other Costs (calculate this before pay per hit calculation)
@@ -3363,6 +3397,10 @@ function renderRespectPayoutTable() {
                     <p style="color: #ccc; margin: 0 0 10px 0; font-size: 14px;">
                         <strong>Total Deductions from Full Respect:</strong> <span style="color: #ff6b6b;">${totalDeductions.toLocaleString()}</span> points
                     </p>
+                    <label style="display: inline-flex; align-items: center; gap: 8px; margin: 0 0 10px 0; cursor: pointer; color: #ccc; font-size: 14px;">
+                        <input type="checkbox" id="respectIgnoreChainDeductions" ${ignoreChainDeductions ? 'checked' : ''} style="cursor: pointer;">
+                        Ignore deductions (use full respect for chain hits in payouts)
+                    </label>
                     <table style="width: auto; border-collapse: collapse; margin: 0;">
                         <tbody>
                             ${allChainBonuses.map(bonus => `
@@ -3384,6 +3422,15 @@ function renderRespectPayoutTable() {
         })()}
     `;
     respectPayoutTableDiv.innerHTML = tableHtml;
+    
+    // Wire "Ignore chain deductions" checkbox to re-render and save
+    const ignoreChainDeductionsCb = document.getElementById('respectIgnoreChainDeductions');
+    if (ignoreChainDeductionsCb) {
+        ignoreChainDeductionsCb.addEventListener('change', () => {
+            saveRespectPayoutSettings();
+            renderRespectPayoutTable();
+        });
+    }
     
     // Add click event listeners for respect payout table sorting
     const respectTable = document.getElementById('respectPayoutTable');
