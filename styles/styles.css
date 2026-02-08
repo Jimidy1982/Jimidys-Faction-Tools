@@ -523,11 +523,71 @@ nav a:hover::after {
     color: var(--accent-color);
 }
 
-.api-key-item label {
-    display: block;
+.api-key-label-wrap {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
     margin-bottom: 8px;
+}
+
+.api-key-item label {
+    margin-bottom: 0;
     font-weight: bold;
     color: #ecf0f1;
+}
+
+.api-key-help {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    color: var(--accent-color);
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.api-key-help:hover,
+.api-key-help:focus {
+    color: #ffeb3b;
+    outline: none;
+}
+
+.api-key-help-icon {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+.api-key-help-tooltip {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 8px);
+    padding: 10px 12px;
+    width: 280px;
+    max-width: min(280px, calc(100vw - 24px));
+    background-color: #2a2a2a;
+    border: 1px solid #404040;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: normal;
+    color: #ccc;
+    line-height: 1.45;
+    white-space: normal;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    z-index: 1000;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.15s ease, visibility 0.15s ease;
+    pointer-events: none;
+}
+
+.api-key-help:hover .api-key-help-tooltip,
+.api-key-help.is-visible .api-key-help-tooltip {
+    visibility: visible;
+    opacity: 1;
 }
 
 .api-key-item input {
@@ -542,14 +602,6 @@ nav a:hover::after {
 .api-key-item input:focus {
     outline: none;
     border-color: var(--accent-color);
-}
-
-.api-key-item .api-key-note {
-    margin-top: 8px;
-    font-size: 0.85rem;
-    color: #95a5a6;
-    line-height: 1.4;
-    font-style: italic;
 }
 
 .welcome-message {
@@ -590,6 +642,15 @@ nav a:hover::after {
     color: #888;
     font-size: 0.85em;
     margin-top: 5px;
+}
+
+.page-footer .contact-link {
+    margin-top: 10px;
+    font-size: 0.9em;
+}
+
+.page-footer .contact-link a {
+    font-weight: 500;
 }
 
 /* Tab styles */

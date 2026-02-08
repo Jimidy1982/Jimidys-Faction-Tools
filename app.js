@@ -1,6 +1,27 @@
 document.addEventListener('DOMContentLoaded', () => {
     const appContent = document.getElementById('app-content');
 
+    // Contact link for feedback (Torn profile XID)
+    const CONTACT_TORN_PROFILE_ID = 2935825;
+    const contactLink = document.getElementById('contactProfileLink');
+    if (contactLink) {
+        contactLink.href = `https://www.torn.com/profiles.php?XID=${CONTACT_TORN_PROFILE_ID}`;
+    }
+
+    // API key help tooltip: show on hover (CSS) and toggle on click/tap for mobile
+    const apiKeyHelp = document.getElementById('apiKeyHelp');
+    if (apiKeyHelp) {
+        apiKeyHelp.addEventListener('click', (e) => {
+            e.preventDefault();
+            apiKeyHelp.classList.toggle('is-visible');
+        });
+        document.addEventListener('click', (e) => {
+            if (apiKeyHelp.classList.contains('is-visible') && !apiKeyHelp.contains(e.target)) {
+                apiKeyHelp.classList.remove('is-visible');
+            }
+        });
+    }
+
     // Admin system
     const ADMIN_USER_IDS = [2935825, 2093859]; // Admin user IDs (Jimidy, Havean)
     const ADMIN_USER_NAMES = ['Jimidy', 'Havean']; // Admin usernames to exclude from results
@@ -2360,8 +2381,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const welcomeMessage = document.getElementById('welcomeMessage');
         if (!welcomeMessage) return;
         
-        const apiKey = localStorage.getItem('tornApiKey');
-        if (!apiKey || apiKey.trim() === '') {
+        const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+        if (!apiKey || apiKey.length !== 16) {
             welcomeMessage.style.display = 'none';
             // Clear cache for old API key
             if (welcomeMessageTimeout) {
@@ -2435,27 +2456,31 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const globalApiKeyInput = document.getElementById('globalApiKey');
     if (globalApiKeyInput) {
-        // Load saved API key from localStorage
-        const savedApiKey = localStorage.getItem('tornApiKey');
+        // Load saved API key from localStorage (normalize to 16 alphanumeric)
+        let savedApiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
         if (savedApiKey) {
+            localStorage.setItem('tornApiKey', savedApiKey);
             globalApiKeyInput.value = savedApiKey;
-            // Update welcome message on page load if API key exists
-            updateWelcomeMessage();
+            if (savedApiKey.length === 16) updateWelcomeMessage();
         }
 
-        // Save API key to localStorage on input change
+        // Restrict to alphanumeric and max 16 chars; only trigger API/update when length === 16
         globalApiKeyInput.addEventListener('input', () => {
-            const apiKeyValue = globalApiKeyInput.value || '';
+            let raw = globalApiKeyInput.value || '';
+            const apiKeyValue = raw.replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+            if (raw !== apiKeyValue) {
+                globalApiKeyInput.value = apiKeyValue;
+            }
             localStorage.setItem('tornApiKey', apiKeyValue);
             
-            // Update welcome message when API key changes
-            updateWelcomeMessage();
-            
-            // Dispatch custom event for War Report 2.0 to listen to
-            const event = new CustomEvent('apiKeyUpdated', {
-                detail: { apiKey: apiKeyValue }
-            });
-            window.dispatchEvent(event);
+            if (apiKeyValue.length === 16) {
+                updateWelcomeMessage();
+                const event = new CustomEvent('apiKeyUpdated', { detail: { apiKey: apiKeyValue } });
+                window.dispatchEvent(event);
+            } else {
+                const welcomeMessage = document.getElementById('welcomeMessage');
+                if (welcomeMessage) welcomeMessage.style.display = 'none';
+            }
         });
     }
 
@@ -2599,19 +2624,12 @@ document.addEventListener('DOMContentLoaded', () => {
         let adminCheckTimeout;
         
         apiKeyInput.addEventListener('input', () => {
-            // Clear any existing timeout
-            if (adminCheckTimeout) {
-                clearTimeout(adminCheckTimeout);
-            }
-            
-            // Set a new timeout to check for admin after user stops typing
+            if (adminCheckTimeout) clearTimeout(adminCheckTimeout);
+            const key = (apiKeyInput.value || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+            if (key.length !== 16) return;
             adminCheckTimeout = setTimeout(() => {
-                // Update localStorage with current API key value
-                localStorage.setItem('tornApiKey', apiKeyInput.value);
-                
-                // Check if admin menu should be shown/hidden
                 checkAndAddAdminMenu();
-            }, 500); // 0.5 second delay
+            }, 500);
         });
     }
 
@@ -5850,6 +5868,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 processRankedWarReports(warReportData, memberStats, factionID, currentMembers);
             }
 
+            // Fetch estimated battle stats from FF Scouter (same method as Faction Battle Stats)
+            let battleStatsEstimates = {};
+            const memberIDs = Object.keys(memberStats);
+            if (memberIDs.length > 0) {
+                try {
+                    const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+                    const ffData = await fetchInParallelChunks(ffScouterUrl, memberIDs, 200, 3, 1000);
+                    ffData.forEach(player => {
+                        if (player.bs_estimate != null) {
+                            battleStatsEstimates[player.player_id] = player.bs_estimate;
+                        }
+                    });
+                } catch (err) {
+                    console.warn('War & Chain Reporter: Could not fetch estimated stats (FF Scouter):', err.message);
+                }
+            }
+
             console.log('Calling updateWarReportUI...');
             // After final date range is determined and before calling updateWarReportUI:
             // Use the actual earliest war start timestamp for the range
@@ -5861,7 +5896,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const chainDateRangeLabel = `(${formatDateTime(actualStartTimestamp)} to ${formatDateTime(toTimestamp, true)})`;
             const warDateRangeLabel = `(${formatDateTime(actualStartTimestamp)} to ${formatDateTime(toTimestamp, true)})`;
-            updateWarReportUI(memberStats, startTime, 'total-summary', chainDateRangeLabel, warDateRangeLabel, currentMembers, warsToAnalyze.length);
+            window.warReportBattleStatsEstimates = battleStatsEstimates;
+            updateWarReportUI(memberStats, startTime, 'total-summary', chainDateRangeLabel, warDateRangeLabel, currentMembers, warsToAnalyze.length, battleStatsEstimates);
 
         } catch (error) {
             console.error('Failed to fetch war reports:', error);
@@ -5872,21 +5908,27 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function updateWarReportUI(memberStats, startTime, activeTabId = 'total-summary', chainDateRangeLabel = '', warDateRangeLabel = '', currentMembers = new Set(), totalWars = 0) {
+    function updateWarReportUI(memberStats, startTime, activeTabId = 'total-summary', chainDateRangeLabel = '', warDateRangeLabel = '', currentMembers = new Set(), totalWars = 0, battleStatsEstimates = null) {
         console.log('Starting updateWarReportUI...');
         
         const resultsSection = document.querySelector('.results-section');
         const totalTime = performance.now() - startTime;
         const individualWars = window.individualWarsData || [];
+        const estimates = battleStatsEstimates ?? window.warReportBattleStatsEstimates ?? {};
+        const formatEstStats = (id) => {
+            const raw = estimates[id] ?? estimates[String(id)];
+            return (raw != null && raw !== '') ? Number(raw).toLocaleString() : 'N/A';
+        };
         console.log('Individual wars data:', individualWars);
         console.log('Individual wars length:', individualWars.length);
         console.log('Member stats object:', memberStats);
         console.log('Member stats keys:', Object.keys(memberStats));
 
-        // Convert memberStats object to array for sorting
+        // Convert memberStats object to array for sorting (include estStats for Est. Stats column sort)
         const membersArray = Object.entries(memberStats).map(([id, stats]) => ({
             id,
             name: stats.name,
+            estStats: Number(estimates[id] ?? estimates[String(id)]) || -1,
             ...stats
         }));
 
@@ -5947,10 +5989,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="tab-content">
                         <div class="tab-pane" id="total-summary">
                             <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
-                                <table id="membersTable" style="min-width: 700px;">
+                                <table id="membersTable" style="min-width: 900px;">
                                 <thead>
                                     <tr>
-                                        <th rowspan="3">Member</th>
+                                        <th data-column="name" data-table-id="summary" rowspan="3" style="min-width: 140px; cursor: pointer;">Member <span class="sort-indicator">${summarySort.column === 'name' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                        <th data-column="estStats" data-table-id="summary" rowspan="3" style="min-width: 100px; cursor: pointer;">Est. Stats <span class="sort-indicator">${summarySort.column === 'estStats' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                                         <th colspan="5" class="chain-header">
                                             Chain Activity
                                             <div class="date-range-label">${chainDateRangeLabel}</div>
@@ -5994,6 +6037,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                         return `
                                         <tr>
                                             <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" class="${memberClass}">${m.name} ${participationRatio}</a></td>
+                                            <td>${formatEstStats(m.id)}</td>
                                             <td>${m.chains.total}</td><td>${m.chains.assists}</td><td>${m.chains.retaliations}</td><td>${m.chains.overseas}</td><td>${m.chains.war}</td>
                                             <td style="border-left: 2px solid var(--accent-color);">${m.wars.total}</td><td>${Math.round(m.wars.points)}</td>
                                         </tr>
@@ -6002,6 +6046,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <tfoot>
                                     <tr class="totals-row">
                                         <td><strong>TOTALS</strong></td>
+                                        <td></td>
                                         <td><strong>${totals.chains.total}</strong></td><td><strong>${totals.chains.assists}</strong></td><td><strong>${totals.chains.retaliations}</strong></td><td><strong>${totals.chains.overseas}</strong></td><td><strong>${totals.chains.war}</strong></td>
                                         <td style="border-left: 2px solid var(--accent-color);"><strong>${totals.wars.total}</strong></td><td><strong>${Math.round(totals.wars.points)}</strong></td>
                                     </tr>
@@ -6016,9 +6061,15 @@ document.addEventListener('DOMContentLoaded', () => {
                                 warReportSortState[tableId] = { column: 'points', direction: 'desc' };
                             }
                             const warSort = warReportSortState[tableId];
-                            const sortedMembers = Object.entries(war.memberStats || {}).sort(([,a],[,b]) => {
-                                const aValue = getNestedValue(a, warSort.column);
-                                const bValue = getNestedValue(b, warSort.column);
+                            const sortedMembers = Object.entries(war.memberStats || {}).sort(([idA, a],[idB, b]) => {
+                                let aValue, bValue;
+                                if (warSort.column === 'eststats') {
+                                    aValue = estimates[idA] ?? estimates[String(idA)] ?? -1;
+                                    bValue = estimates[idB] ?? estimates[String(idB)] ?? -1;
+                                } else {
+                                    aValue = getNestedValue(a, warSort.column);
+                                    bValue = getNestedValue(b, warSort.column);
+                                }
                                 if (typeof aValue === 'string') {
                                     return warSort.direction === 'asc' ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
                                 }
@@ -6033,10 +6084,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                     ${Object.values(war.factions || {}).map(f => `<p>${f.name}: ${f.score} points</p>`).join('')}
                                 </div>
                                 <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
-                                    <table class="war-table" style="min-width: 600px;">
+                                    <table class="war-table" style="min-width: 800px;">
                                     <thead>
                                         <tr>
-                                            <th data-column="name" data-table-id="${tableId}">Member <span class="sort-indicator">${warSort.column === 'name' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                            <th data-column="name" data-table-id="${tableId}" style="min-width: 140px; cursor: pointer;">Member <span class="sort-indicator">${warSort.column === 'name' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                                            <th data-column="eststats" data-table-id="${tableId}" style="min-width: 100px; cursor: pointer;">Est. Stats <span class="sort-indicator">${warSort.column === 'eststats' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                                             <th data-column="level" data-table-id="${tableId}">Level <span class="sort-indicator">${warSort.column === 'level' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                                             <th data-column="points" data-table-id="${tableId}">Points Scored <span class="sort-indicator">${warSort.column === 'points' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                                             <th data-column="attacks" data-table-id="${tableId}">Attacks <span class="sort-indicator">${warSort.column === 'attacks' ? (warSort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -6049,6 +6101,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             return `
                                                 <tr>
                                                     <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" class="${memberClass}">${m.name}</a></td>
+                                                    <td>${formatEstStats(id)}</td>
                                                     <td>${m.level || 'N/A'}</td>
                                                     <td>${Math.round(m.points || 0)}</td>
                                                     <td>${m.attacks || 0}</td>
@@ -6067,10 +6120,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // Fallback to single table if no individual wars
             html += `
                 <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
-                    <table id="membersTable" style="min-width: 700px;">
+                    <table id="membersTable" style="min-width: 900px;">
                     <thead>
                         <tr>
-                            <th rowspan="3">Member</th>
+                            <th data-column="name" data-table-id="summary" rowspan="3" style="min-width: 140px; cursor: pointer;">Member <span class="sort-indicator">${summarySort.column === 'name' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                            <th data-column="estStats" data-table-id="summary" rowspan="3" style="min-width: 100px; cursor: pointer;">Est. Stats <span class="sort-indicator">${summarySort.column === 'estStats' ? (summarySort.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                             <th colspan="5" class="chain-header">
                                 Chain Activity
                                 <div class="date-range-label">${chainDateRangeLabel}</div>
@@ -6114,6 +6168,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             return `
                             <tr>
                                 <td><a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" class="${memberClass}">${m.name} ${participationRatio}</a></td>
+                                <td>${formatEstStats(m.id)}</td>
                                 <td>${m.chains.total}</td><td>${m.chains.assists}</td><td>${m.chains.retaliations}</td><td>${m.chains.overseas}</td><td>${m.chains.war}</td>
                                 <td style="border-left: 2px solid var(--accent-color);">${m.wars.total}</td><td>${Math.round(m.wars.points)}</td>
                             </tr>
@@ -6122,6 +6177,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <tfoot>
                         <tr class="totals-row">
                             <td><strong>TOTALS</strong></td>
+                            <td></td>
                             <td><strong>${totals.chains.total}</strong></td><td><strong>${totals.chains.assists}</strong></td><td><strong>${totals.chains.retaliations}</strong></td><td><strong>${totals.chains.overseas}</strong></td><td><strong>${totals.chains.war}</strong></td>
                             <td style="border-left: 2px solid var(--accent-color);"><strong>${totals.wars.total}</strong></td><td><strong>${Math.round(totals.wars.points)}</strong></td>
                         </tr>
@@ -6184,7 +6240,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // Determine the active tab directly from the sorted table's ID
                 const activeTabId = tableId === 'summary' ? 'total-summary' : tableId;
-                updateWarReportUI(memberStats, startTime, activeTabId, chainDateRangeLabel, warDateRangeLabel, currentMembers, totalWars);
+                updateWarReportUI(memberStats, startTime, activeTabId, chainDateRangeLabel, warDateRangeLabel, currentMembers, totalWars, window.warReportBattleStatsEstimates);
             });
         });
         

@@ -22,9 +22,17 @@
             <ul>
                 <li class="api-key-item">
                     <div id="welcomeMessage" class="welcome-message" style="display: none;"></div>
-                    <label for="globalApiKey">API Key:</label>
-                    <input type="text" id="globalApiKey" placeholder="Enter your Torn API key">
-                    <p class="api-key-note">A limited key is recommended. Faction API permissions required for some tools.</p>
+                    <div class="api-key-label-wrap">
+                        <label for="globalApiKey">API Key:</label>
+                        <span class="api-key-help" id="apiKeyHelp" role="button" tabindex="0" aria-label="API key help">
+                            <span class="api-key-help-icon" aria-hidden="true">ⓘ</span>
+                            <span class="api-key-help-tooltip">
+                                A limited key is recommended. Faction API permissions required for some tools.<br><br>
+                                Your key is stored only in your browser and is never sent to our servers. It is used only to request data from Torn and FFScouter.
+                            </span>
+                        </span>
+                    </div>
+                    <input type="text" id="globalApiKey" placeholder="16-character key" maxlength="16" pattern="[A-Za-z0-9]*" autocomplete="off" inputmode="text">
                 </li>
                 <li><a href="#" class="nav-link">Home</a></li>
                 <li><a href="#consumption-tracker" class="nav-link">Consumption Tracker</a></li>
@@ -40,11 +48,13 @@
     <footer class="page-footer">
         <p class="api-attribution">
             This tool uses the <a href="https://www.torn.com" target="_blank" rel="noopener noreferrer">Torn City</a> API. 
-            <a href="https://www.torn.com/api.html" target="_blank" rel="noopener noreferrer">API Access</a> • 
             <a href="https://wiki.torn.com/wiki/API" target="_blank" rel="noopener noreferrer">API Documentation</a>
         </p>
         <p class="disclaimer">
             <em>Unofficial tool - Not affiliated with Torn City</em>
+        </p>
+        <p class="contact-link">
+            Questions or feedback? <a href="#" id="contactProfileLink" target="_blank" rel="noopener noreferrer">Contact Jimidy on Torn</a>
         </p>
     </footer>
     <script src="app.js"></script>
