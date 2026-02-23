@@ -40,7 +40,16 @@
                         <option value="30">Last 30 days</option>
                         <option value="90">Last 90 days</option>
                         <option value="365">Last Year</option>
+                        <option value="custom">Custom</option>
                     </select>
+                    <span id="difficultyCustomRange" style="display: none; margin-left: 4px;">
+                        <input type="number" id="difficultyCustomAmount" min="1" value="30" style="width: 52px; padding: 6px 6px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--primary-color); color: var(--text-color); font-size: 0.9em;">
+                        <select id="difficultyCustomUnit" style="padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--primary-color); color: var(--text-color); font-size: 0.9em;">
+                            <option value="days">days</option>
+                            <option value="months">months</option>
+                            <option value="years">years</option>
+                        </select>
+                    </span>
                 </div>
             </div>
             <div id="difficultyStatsTable"></div>
@@ -48,9 +57,9 @@
 
         <!-- Player Participation Section -->
         <div class="members-list" style="margin-top: 30px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                 <h2 style="margin: 0;">Player Participation Stats</h2>
-                <div style="display: flex; gap: 10px; align-items: center;">
+                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                     <label for="playerDateFilter" style="color: var(--text-color); font-weight: bold; font-size: 0.9em;">Filter:</label>
                     <select id="playerDateFilter" style="padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--primary-color); color: var(--text-color); font-size: 0.9em;">
                         <option value="all">All Time</option>
@@ -59,9 +68,19 @@
                         <option value="30">Last 30 days</option>
                         <option value="90">Last 90 days</option>
                         <option value="365">Last Year</option>
+                        <option value="custom">Custom</option>
                     </select>
+                    <span id="playerCustomRange" style="display: none; margin-left: 4px;">
+                        <input type="number" id="playerCustomAmount" min="1" value="30" style="width: 52px; padding: 6px 6px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--primary-color); color: var(--text-color); font-size: 0.9em;">
+                        <select id="playerCustomUnit" style="padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--primary-color); color: var(--text-color); font-size: 0.9em;">
+                            <option value="days">days</option>
+                            <option value="months">months</option>
+                            <option value="years">years</option>
+                        </select>
+                    </span>
                 </div>
             </div>
+            <p style="color: #888; font-size: 0.85em; margin: -8px 0 12px 0;">Player rewards = (100% − faction cut) ÷ participants per crime. The API does not provide split data; this is an estimate.</p>
             <div id="playerStatsTable"></div>
         </div>
     </div>

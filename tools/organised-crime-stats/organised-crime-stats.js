@@ -66,6 +66,25 @@ function initOrganisedCrimeStats() {
         });
     }
     
+    // Custom timeframe: when amount or unit changes, re-apply filter if Custom is selected
+    const difficultyCustomAmount = document.getElementById('difficultyCustomAmount');
+    const difficultyCustomUnit = document.getElementById('difficultyCustomUnit');
+    if (difficultyCustomAmount) difficultyCustomAmount.addEventListener('change', () => { if (document.getElementById('difficultyDateFilter')?.value === 'custom') handleDateFilterChange('difficulty'); });
+    if (difficultyCustomUnit) difficultyCustomUnit.addEventListener('change', () => { if (document.getElementById('difficultyDateFilter')?.value === 'custom') handleDateFilterChange('difficulty'); });
+    const playerCustomAmount = document.getElementById('playerCustomAmount');
+    const playerCustomUnit = document.getElementById('playerCustomUnit');
+    if (playerCustomAmount) playerCustomAmount.addEventListener('change', () => { if (document.getElementById('playerDateFilter')?.value === 'custom') handleDateFilterChange('player'); });
+    if (playerCustomUnit) playerCustomUnit.addEventListener('change', () => { if (document.getElementById('playerDateFilter')?.value === 'custom') handleDateFilterChange('player'); });
+    
+    const factionCutInput = document.getElementById('ocFactionCutPercent');
+    if (factionCutInput) {
+        factionCutInput.addEventListener('change', () => {
+            if (ocStatsData.allCrimes && ocStatsData.allCrimes.length > 0) {
+                handleDateFilterChange('player');
+            }
+        });
+    }
+    
     console.log('[ORGANISED CRIME STATS] Initialization complete - waiting for user interaction');
 }
 
@@ -181,7 +200,21 @@ const handleOCDataFetch = async () => {
         if (progressDetails) progressDetails.textContent = 'Analyzing crimes (filtering by current members)...';
         
         // Process the data, filtering by current members only
-        const { difficultyStats, playerStats } = processCrimeData(allCrimes, playerNames, currentMemberIds);
+        const factionCutInput = document.getElementById('ocFactionCutPercent');
+        const factionCutPercent = factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 20)) : 20;
+        const { difficultyStats, playerStats } = processCrimeData(allCrimes, playerNames, currentMemberIds, factionCutPercent);
+        
+        // Fetch Torn items (names, market_value, image) for reward display
+        if (progressMessage) progressMessage.textContent = 'Loading item details...';
+        if (progressDetails) progressDetails.textContent = 'Fetching item names and values...';
+        try {
+            const itemsResponse = await fetch(`https://api.torn.com/torn/?selections=items&key=${apiKey}`);
+            const itemsData = await itemsResponse.json();
+            ocStatsData.itemsMap = (itemsData && itemsData.items) ? itemsData.items : {};
+        } catch (e) {
+            console.warn('[ORGANISED CRIME STATS] Could not fetch Torn items:', e);
+            ocStatsData.itemsMap = {};
+        }
         
         // Calculate total crimes from the processed data
         const totalSuccessful = difficultyStats.reduce((sum, stat) => sum + stat.successful, 0);
@@ -231,7 +264,135 @@ const handleOCDataFetch = async () => {
     }
 };
 
-function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()) {
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Parse crime.rewards (money and/or items) into { money, itemCount, items }
+function parseCrimeRewards(rewards) {
+    if (!rewards) return { money: 0, itemCount: 0, items: [] };
+    if (typeof rewards === 'number') return { money: rewards, itemCount: 0, items: [] };
+    const money = typeof rewards.money === 'number' ? rewards.money : 0;
+    const rawItems = Array.isArray(rewards.items) ? rewards.items : [];
+    let itemCount = 0;
+    const items = rawItems.map(it => {
+        const qty = typeof it.quantity === 'number' ? it.quantity : 1;
+        itemCount += qty;
+        const id = it.id != null ? it.id : it.name || '?';
+        const name = it.name || it.label || `Item #${id}`;
+        return { id, name, quantity: qty };
+    });
+    return { money, itemCount, items };
+}
+
+// Merge parsed items into a breakdown object keyed by item id: { [id]: { name, quantity } }
+function mergeItemBreakdown(breakdown, items) {
+    (items || []).forEach(it => {
+        const key = String(it.id != null ? it.id : (it.name || it.label || '?'));
+        const name = it.name || it.label || `Item #${key}`;
+        const qty = it.quantity || 1;
+        if (!breakdown[key]) breakdown[key] = { name, quantity: 0 };
+        breakdown[key].quantity += qty;
+        if (name && !breakdown[key].name) breakdown[key].name = name;
+    });
+}
+
+// Compute total item value from breakdown using itemsMap (current market value)
+function getTotalItemsValue(breakdown, itemsMap) {
+    if (!breakdown || !itemsMap) return 0;
+    let total = 0;
+    Object.entries(breakdown).forEach(([id, v]) => {
+        if (!v || !v.quantity) return;
+        const item = itemsMap[id] || itemsMap[String(id)];
+        const marketVal = (item && item.market_value != null) ? item.market_value : 0;
+        total += (v.quantity || 0) * marketVal;
+    });
+    return total;
+}
+
+// Sum total reward value (cash + items) across difficulty stats for the summary
+function getTotalRewardValue(difficultyStats) {
+    const itemsMap = ocStatsData.itemsMap || {};
+    return (difficultyStats || []).reduce((sum, stat) => {
+        const cash = stat.totalRewardMoney || 0;
+        const itemsVal = getTotalItemsValue(stat.rewardItemsBreakdown, itemsMap);
+        return sum + cash + itemsVal;
+    }, 0);
+}
+
+// Player's total reward value: their share of cash (already stored) + their share of item value per crime (faction cut and split)
+function getPlayerTotalRewardValue(player) {
+    const cashShare = player.totalRewardMoney || 0;
+    const itemsMap = ocStatsData.itemsMap || {};
+    const factionCutInput = document.getElementById('ocFactionCutPercent');
+    const factionCutPct = factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 0)) : 0;
+    const afterCutMultiplier = 1 - factionCutPct / 100;
+    let itemsShare = 0;
+    (player.rewardParticipations || []).forEach(part => {
+        const crimeItemsValue = getTotalItemsValue(part.itemsBreakdown, itemsMap);
+        const participants = part.participantsInCrime || 1;
+        itemsShare += crimeItemsValue * afterCutMultiplier / participants;
+    });
+    return cashShare + itemsShare;
+}
+
+// Format amount as whole dollars (no decimals)
+function formatDollars(n) {
+    return '$' + Math.round(Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0, minimumFractionDigits: 0 });
+}
+
+// Format reward summary text (money + item count) — used for CSV export
+function formatRewardsSummary(record) {
+    const money = record.totalRewardMoney || 0;
+    const itemCount = record.totalRewardItemCount || 0;
+    const lines = [];
+    if (money > 0) lines.push(formatDollars(money));
+    if (itemCount > 0) lines.push(itemCount + ' item' + (itemCount !== 1 ? 's' : ''));
+    return lines.length ? lines.join(' · ') : '—';
+}
+
+// Build rewards cell: for difficulty stats show total + Details (Cash + items). For players show only total value (their share after faction cut and split).
+function formatRewardsCell(record) {
+    // Player: only ever receive a monetary value — show their share of total crime value (cash + items) after faction cut and participant split
+    if (Array.isArray(record.rewardParticipations)) {
+        const totalValue = getPlayerTotalRewardValue(record);
+        return totalValue > 0 ? formatDollars(totalValue) : '—';
+    }
+
+    // Difficulty stat: total value with Details (Cash + item breakdown)
+    const cash = record.totalRewardMoney || 0;
+    const breakdown = record.rewardItemsBreakdown || {};
+    const itemsMap = ocStatsData.itemsMap || {};
+    const itemsValue = getTotalItemsValue(breakdown, itemsMap);
+    const totalValue = cash + itemsValue;
+
+    const totalDisplay = totalValue > 0 ? formatDollars(totalValue) : '—';
+    const entries = Object.entries(breakdown).filter(([, v]) => v && v.quantity > 0);
+    const hasDetails = cash > 0 || entries.length > 0;
+
+    if (!hasDetails) return totalDisplay;
+
+    const cashLine = cash > 0 ? `<div>Cash: <span style="color: var(--accent-color);">(${formatDollars(cash)})</span></div>` : '';
+    const listHtml = entries.map(([id, v]) => {
+        const item = itemsMap[id] || itemsMap[String(id)];
+        const name = (item && item.name) ? item.name : (v.name || `Item #${id}`);
+        const qty = v.quantity || 1;
+        const marketVal = (item && item.market_value != null) ? item.market_value : null;
+        const totalVal = (marketVal != null && marketVal > 0) ? marketVal * qty : null;
+        const imgSrc = (item && item.image) ? String(item.image).replace(/"/g, '&quot;') : '';
+        const img = imgSrc ? `<img src="${imgSrc}" alt="" class="reward-item-img" style="width:20px;height:20px;vertical-align:middle;margin-right:4px;">` : '';
+        const valueStr = totalVal != null ? ` <span style="color: var(--accent-color);">(${formatDollars(totalVal)})</span>` : '';
+        return img + `${qty}× ${name}` + valueStr;
+    }).join('<br>');
+    const itemsBlock = listHtml ? (cashLine ? '<br>' : '') + listHtml : '';
+
+    const detailsContent = `<div style="margin-top: 4px; padding: 6px 8px; background: var(--secondary-color); border-radius: 4px; font-size: 0.85em; max-width: 320px;">${cashLine}${itemsBlock}</div>`;
+    return totalDisplay + ' <details class="reward-details" style="display: inline; margin-left: 6px;"><summary style="cursor: pointer; color: var(--accent-color); font-size: 0.85em;">Details</summary>' + detailsContent + '</details>';
+}
+
+function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set(), factionCutPercent = 20) {
     console.log('[ORGANISED CRIME STATS] Processing crime data...');
     console.log(`[ORGANISED CRIME STATS] Filtering by ${currentMemberIds.size} current members`);
     
@@ -243,7 +404,11 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             total: 0,
             successful: 0,
             failed: 0,
-            successRate: 0
+            successRate: 0,
+            totalRewardMoney: 0,
+            totalRewardItemCount: 0,
+            rewardItemsBreakdown: {},
+            crimeTypes: {} // { [crimeId]: { crimeId, crimeName, total, successful, failed, totalRewardMoney, rewardItemsBreakdown } }
         };
     }
     
@@ -258,7 +423,12 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             failedParticipations: 0,
             totalScore: 0,
             successRate: 0,
-            difficultyBreakdown: {} // Track stats per difficulty level
+            totalRewardMoney: 0,
+            totalRewardItemCount: 0,
+            rewardItemsBreakdown: {},
+            rewardParticipations: [], // Per-crime: { itemsBreakdown, participantsInCrime } for computing player share of total value
+            difficultyBreakdown: {},
+            difficultyCrimeTypeBreakdown: {} // { [difficulty]: { [crimeTypeKey]: { crimeName, total, successful, failed } } }
         };
         
         // Initialize difficulty breakdown
@@ -284,6 +454,19 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             );
         }
         
+        // Rewards only for successful crimes
+        const rewardParsed = (status === 'Successful' && crime.rewards) ? parseCrimeRewards(crime.rewards) : { money: 0, itemCount: 0, items: [] };
+        
+        // Count current members in this crime (for splitting player share)
+        let participantsInCrime = 0;
+        if (crime.slots && Array.isArray(crime.slots)) {
+            participantsInCrime = crime.slots.filter(slot => slot.user && slot.user.id && currentMemberIds.has(slot.user.id.toString())).length;
+        }
+        
+        // Group by subtype name (used for both difficulty stats and player breakdown)
+        const crimeName = crime.crime_name ?? crime.name ?? crime.title ?? ('Crime #' + (crime.crime_id ?? crime.type ?? 'unknown'));
+        const crimeTypeKey = String(crimeName).trim().toLowerCase();
+        
         // Only count this crime if at least one current member participated
         if (hasCurrentMember) {
             // Update difficulty stats
@@ -291,14 +474,41 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                 difficultyMap[difficulty].total++;
                 if (status === 'Successful') {
                     difficultyMap[difficulty].successful++;
+                    difficultyMap[difficulty].totalRewardMoney += rewardParsed.money;
+                    difficultyMap[difficulty].totalRewardItemCount += rewardParsed.itemCount;
+                    mergeItemBreakdown(difficultyMap[difficulty].rewardItemsBreakdown, rewardParsed.items);
                 } else {
                     difficultyMap[difficulty].failed++;
+                }
+                // Per–crime-type stats under this difficulty
+                if (!difficultyMap[difficulty].crimeTypes[crimeTypeKey]) {
+                    difficultyMap[difficulty].crimeTypes[crimeTypeKey] = {
+                        crimeId: crimeTypeKey,
+                        crimeName,
+                        total: 0,
+                        successful: 0,
+                        failed: 0,
+                        totalRewardMoney: 0,
+                        totalRewardItemCount: 0,
+                        rewardItemsBreakdown: {}
+                    };
+                }
+                const ct = difficultyMap[difficulty].crimeTypes[crimeTypeKey];
+                ct.total++;
+                if (status === 'Successful') {
+                    ct.successful++;
+                    ct.totalRewardMoney += rewardParsed.money;
+                    ct.totalRewardItemCount += rewardParsed.itemCount;
+                    mergeItemBreakdown(ct.rewardItemsBreakdown, rewardParsed.items);
+                } else {
+                    ct.failed++;
                 }
             }
         }
         
         // Process player participations (only for current members)
         if (crime.slots && Array.isArray(crime.slots)) {
+            const playerShareMultiplier = participantsInCrime > 0 ? (1 - Math.min(100, Math.max(0, factionCutPercent)) / 100) / participantsInCrime : 0;
             crime.slots.forEach(slot => {
                 if (slot.user && slot.user.id) {
                     const playerId = slot.user.id.toString();
@@ -315,12 +525,32 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                                 successfulParticipations: 0,
                                 failedParticipations: 0,
                                 totalScore: 0,
-                                successRate: 0
+                                successRate: 0,
+                                totalRewardMoney: 0,
+                                totalRewardItemCount: 0,
+                                rewardItemsBreakdown: {},
+                                rewardParticipations: [],
+                                difficultyBreakdown: {},
+                                difficultyCrimeTypeBreakdown: {}
                             };
+                            for (let i = 1; i <= 10; i++) playerMap[playerId].difficultyBreakdown[i] = { successful: 0, failed: 0, total: 0 };
                         }
                     
                         // Count participation
                         playerMap[playerId].totalParticipations++;
+                        
+                        // Credit this player with their share of rewards (faction takes cut, rest split between participants)
+                        if (status === 'Successful' && (rewardParsed.money > 0 || rewardParsed.items.length > 0)) {
+                            playerMap[playerId].totalRewardMoney += rewardParsed.money * playerShareMultiplier;
+                            playerMap[playerId].totalRewardItemCount += rewardParsed.itemCount;
+                            // Store per-crime item breakdown and participant count so we can compute their share of item value when itemsMap is available
+                            const crimeItemsBreakdown = {};
+                            mergeItemBreakdown(crimeItemsBreakdown, rewardParsed.items);
+                            playerMap[playerId].rewardParticipations.push({
+                                itemsBreakdown: crimeItemsBreakdown,
+                                participantsInCrime
+                            });
+                        }
                         
                         // Calculate participation-based score
                         const difficulty = crime.difficulty;
@@ -338,6 +568,14 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                                 playerMap[playerId].difficultyBreakdown[difficulty].failed++;
                             }
                         }
+                        // Track per-difficulty per-crime-type for player details
+                        if (!playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty]) {
+                            playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty] = {};
+                        }
+                        const pct = playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty];
+                        if (!pct[crimeTypeKey]) pct[crimeTypeKey] = { crimeName, total: 0, successful: 0, failed: 0 };
+                        pct[crimeTypeKey].total++;
+                        if (outcome === 'Successful') pct[crimeTypeKey].successful++; else pct[crimeTypeKey].failed++;
                         
                         // Count outcome
                         if (outcome === 'Successful') {
@@ -383,6 +621,8 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
     const totalFailed = difficultyStats.reduce((sum, stat) => sum + stat.failed, 0);
     const overallSuccessRate = totalCrimes > 0 ? Math.round((totalSuccessful / totalCrimes) * 100) : 0;
     const totalPlayers = playerStats.length;
+    const totalValue = getTotalRewardValue(difficultyStats);
+    const factionCutVal = (document.getElementById('ocFactionCutPercent') && document.getElementById('ocFactionCutPercent').value !== '') ? document.getElementById('ocFactionCutPercent').value : '20';
     
     // Update difficulty stats table with summary
     const difficultyTableContainer = document.getElementById('difficultyStatsTable');
@@ -407,10 +647,26 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                         <span class="summary-label">Failed:</span>
                         <span class="summary-value" style="color: #ff6b6b;">${totalFailed}</span>
                     </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Total value:</span>
+                        <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Faction cut %:</span>
+                        <input type="number" id="ocFactionCutPercent" value="${factionCutVal}" min="0" max="100" step="1" style="width: 56px; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--primary-color); color: var(--text-color); font-size: 0.9em;" title="Faction takes this %; remainder is split between participating players. Change to update player rewards.">
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Faction share:</span>
+                        <span class="summary-value" id="ocFactionShareAmount" style="color: var(--accent-color);">${formatDollars(totalValue * (Math.min(100, Math.max(0, parseFloat(factionCutVal) || 0)) / 100))}</span>
+                    </div>
                 </div>
-                <p style="text-align: center; color: #888; font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
-                    Only counting crimes where at least one current member participated.
-                </p>
+                <div style="text-align: center; color: #888; font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
+                    <div style="display: block; margin-bottom: 4px;">Please note:</div>
+                    <ul style="margin: 0; padding-left: 20px; text-align: left; display: inline-block;">
+                        <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
+                        <li>Reward item values are based on current market value, not the value at the time of the crime.</li>
+                    </ul>
+                </div>
             </div>
             
             <!-- Table Wrapper (SCROLLABLE) -->
@@ -423,6 +679,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                             <th data-column="successful" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                             <th data-column="failed" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                             <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
+                            <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes at this difficulty">Rewards <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -431,15 +688,34 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         difficultyStats.forEach(stat => {
             const rateColor = stat.successRate >= 70 ? '#4ecdc4' : 
                              stat.successRate >= 50 ? '#ffd700' : '#ff6b6b';
+            const hasSubtypes = Object.keys(stat.crimeTypes || {}).length > 0;
+            const arrow = hasSubtypes ? `<span class="difficulty-expand-toggle" data-difficulty="${stat.difficulty}" data-expanded="0" style="cursor:pointer;margin-left:6px;user-select:none;font-size:0.75em;color:#ffd700;" title="Show subtypes">▶</span>` : '';
             html += `
-                <tr style="border-bottom: 1px solid var(--border-color);">
-                    <td style="padding: 12px; text-align: center; font-weight: bold;">${stat.difficulty}/10</td>
+                <tr class="difficulty-main-row" data-difficulty="${stat.difficulty}" style="border-bottom: 1px solid var(--border-color);">
+                    <td style="padding: 12px; text-align: center; font-weight: bold;">${stat.difficulty}/10 ${arrow}</td>
                     <td style="padding: 12px; text-align: center;">${stat.total}</td>
                     <td style="padding: 12px; text-align: center; color: #4ecdc4; font-weight: bold;">${stat.successful}</td>
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${stat.failed}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${stat.successRate}%</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(stat)}</td>
                 </tr>
             `;
+            (Object.values(stat.crimeTypes || {})).forEach(ct => {
+                const ctTotal = ct.total || 0;
+                const ctRate = ctTotal > 0 ? Math.round(((ct.successful || 0) / ctTotal) * 100) : 0;
+                const ctRateColor = ctRate >= 70 ? '#4ecdc4' : ctRate >= 50 ? '#ffd700' : '#ff6b6b';
+                const ctDisplay = { ...ct, successRate: ctRate };
+                html += `
+                <tr class="crime-type-row" data-difficulty="${stat.difficulty}" style="display: none; border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.03);">
+                    <td style="padding: 8px 12px 8px 24px; font-size: 0.9em; color: var(--text-color);">${escapeHtml(ct.crimeName || 'Unknown crime')}</td>
+                    <td style="padding: 8px 12px; text-align: center;">${ctTotal}</td>
+                    <td style="padding: 8px 12px; text-align: center; color: #4ecdc4;">${ct.successful || 0}</td>
+                    <td style="padding: 8px 12px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
+                    <td style="padding: 8px 12px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
+                    <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(ctDisplay)}</td>
+                </tr>
+            `;
+            });
         });
         
         html += `
@@ -449,6 +725,22 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         `;
         
         difficultyTableContainer.innerHTML = html;
+        
+        difficultyTableContainer.addEventListener('click', (e) => {
+            const toggle = e.target.closest('.difficulty-expand-toggle');
+            if (!toggle) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const d = toggle.getAttribute('data-difficulty');
+            const expanded = toggle.getAttribute('data-expanded') === '1';
+            const rows = difficultyTableContainer.querySelectorAll(`tr.crime-type-row[data-difficulty="${d}"]`);
+            rows.forEach(r => { r.style.display = expanded ? 'none' : 'table-row'; });
+            toggle.setAttribute('data-expanded', expanded ? '0' : '1');
+            toggle.textContent = expanded ? '▶' : '▼';
+            toggle.setAttribute('title', expanded ? 'Show subtypes' : 'Hide subtypes');
+        });
+        
+        attachFactionCutListener();
         
         // Add sort handlers for difficulty table
         const difficultyHeaders = difficultyTableContainer.querySelectorAll('th[data-column]');
@@ -483,9 +775,6 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                         <span class="summary-value">${participatingMembers}</span>
                     </div>
                 </div>
-                <p style="text-align: center; color: #888; font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
-                    Showing current faction members only. Stats include crimes where at least one current member participated.
-                </p>
             </div>
             
             <!-- Table Wrapper (SCROLLABLE) -->
@@ -499,6 +788,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                             <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                             <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                             <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
+                            <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes this player participated in">Rewards <span class="sort-indicator"></span></th>
                             <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
                         </tr>
                     </thead>
@@ -522,6 +812,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     <td style="padding: 12px; text-align: center; color: #4ecdc4; font-weight: bold;">${player.successfulParticipations}</td>
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${player.failedParticipations}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${player.successRate}%</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(player)}</td>
                     <td style="padding: 12px; text-align: center;">
                         ${player.totalParticipations > 0 ? `
                             <button class="details-toggle" data-player-id="${player.id}" style="background-color: var(--accent-color); color: var(--primary-color); border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: bold;">
@@ -536,7 +827,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
             if (player.totalParticipations > 0) {
                 html += `
                     <tr class="details-row" data-player-id="${player.id}" style="display: none; background-color: rgba(255, 215, 0, 0.05);">
-                        <td colspan="7" style="padding: 20px;">
+                        <td colspan="8" style="padding: 20px;">
                             <div style="background-color: var(--secondary-color); padding: 15px; border-radius: 8px; border-left: 3px solid var(--accent-color);">
                                 <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">Difficulty Breakdown for ${player.name}</h4>
                                 <table style="width: 100%; border-collapse: collapse;">
@@ -552,7 +843,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                                     <tbody>
                 `;
                 
-                // Add rows for each difficulty level that has participation
+                // Add rows for each difficulty level that has participation, then subtype rows
                 for (let diff = 1; diff <= 10; diff++) {
                     const breakdown = player.difficultyBreakdown[diff];
                     if (breakdown && breakdown.total > 0) {
@@ -568,6 +859,21 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                                 <td style="padding: 8px; text-align: center; font-weight: bold; color: ${diffRateColor};">${diffSuccessRate}%</td>
                             </tr>
                         `;
+                        const crimeTypes = player.difficultyCrimeTypeBreakdown && player.difficultyCrimeTypeBreakdown[diff] ? Object.values(player.difficultyCrimeTypeBreakdown[diff]) : [];
+                        crimeTypes.forEach(ct => {
+                            const ctTotal = ct.total || 0;
+                            const ctRate = ctTotal > 0 ? Math.round(((ct.successful || 0) / ctTotal) * 100) : 0;
+                            const ctRateColor = ctRate >= 70 ? '#4ecdc4' : ctRate >= 50 ? '#ffd700' : '#ff6b6b';
+                            html += `
+                            <tr style="border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.03);">
+                                <td style="padding: 6px 8px 6px 20px; font-size: 0.9em; color: var(--text-color);">${escapeHtml(ct.crimeName || 'Unknown crime')}</td>
+                                <td style="padding: 6px 8px; text-align: center;">${ctTotal}</td>
+                                <td style="padding: 6px 8px; text-align: center; color: #4ecdc4;">${ct.successful || 0}</td>
+                                <td style="padding: 6px 8px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
+                                <td style="padding: 6px 8px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
+                            </tr>
+                        `;
+                        });
                     }
                 }
                 
@@ -799,15 +1105,15 @@ function exportOCStatsToCSV() {
     
     // Difficulty stats (using filtered and sorted data)
     csvContent += 'SUCCESS RATES BY DIFFICULTY\n';
-    csvContent += 'Difficulty,Total Crimes,Successful,Failed,Success Rate\n';
+    csvContent += 'Difficulty,Total Crimes,Successful,Failed,Success Rate,Rewards\n';
     sortedDifficultyStats.forEach(stat => {
-        csvContent += `${stat.difficulty}/10,${stat.total},${stat.successful},${stat.failed},${stat.successRate}%\n`;
+        csvContent += `${stat.difficulty}/10,${stat.total},${stat.successful},${stat.failed},${stat.successRate}%,"${formatRewardsSummary(stat)}"\n`;
     });
     
     csvContent += '\n\nPLAYER PARTICIPATION STATS\n';
-    csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate\n';
+    csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate,Rewards\n';
     sortedPlayerStats.forEach(player => {
-        csvContent += `"${player.name}",${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%\n`;
+        csvContent += `"${player.name}",${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%,"${Array.isArray(player.rewardParticipations) ? formatDollars(getPlayerTotalRewardValue(player)) : formatRewardsSummary(player)}"\n`;
     });
     
     csvContent += '\n\nPLAYER DIFFICULTY BREAKDOWN\n';
@@ -836,25 +1142,72 @@ function exportOCStatsToCSV() {
     document.body.removeChild(link);
 }
 
+// Convert custom amount + unit to days (for custom timeframe)
+function getCustomDays(section) {
+    const amountId = section === 'difficulty' ? 'difficultyCustomAmount' : 'playerCustomAmount';
+    const unitId = section === 'difficulty' ? 'difficultyCustomUnit' : 'playerCustomUnit';
+    const amountInput = document.getElementById(amountId);
+    const unitSelect = document.getElementById(unitId);
+    const amount = Math.max(1, parseInt(amountInput?.value, 10) || 1);
+    const unit = unitSelect?.value || 'days';
+    if (unit === 'months') return Math.round(amount * 30.44);
+    if (unit === 'years') return Math.round(amount * 365.25);
+    return amount;
+}
+
+// Update the "Faction share" amount in the summary (total value × faction cut %)
+function updateFactionShareDisplay() {
+    const span = document.getElementById('ocFactionShareAmount');
+    if (!span) return;
+    const difficultyStats = getCurrentFilteredData('difficulty');
+    const totalValue = getTotalRewardValue(difficultyStats);
+    const cutInput = document.getElementById('ocFactionCutPercent');
+    const cutPct = cutInput ? Math.min(100, Math.max(0, parseFloat(cutInput.value) || 0)) : 0;
+    span.textContent = formatDollars(totalValue * (cutPct / 100));
+}
+
+// Attach faction cut % change listener (element is inside difficulty summary, recreated when table is built)
+function attachFactionCutListener() {
+    const factionCutInput = document.getElementById('ocFactionCutPercent');
+    if (factionCutInput) {
+        const newInput = factionCutInput.cloneNode(true);
+        factionCutInput.parentNode.replaceChild(newInput, factionCutInput);
+        newInput.addEventListener('change', () => {
+            if (ocStatsData.allCrimes && ocStatsData.allCrimes.length > 0) {
+                updateFactionShareDisplay();
+                handleDateFilterChange('player');
+            }
+        });
+    }
+}
+
+// Toggle visibility of custom range inputs when filter select changes
+function toggleCustomRangeVisibility(section) {
+    const rangeId = section === 'difficulty' ? 'difficultyCustomRange' : 'playerCustomRange';
+    const filterId = section === 'difficulty' ? 'difficultyDateFilter' : 'playerDateFilter';
+    const rangeEl = document.getElementById(rangeId);
+    const selectEl = document.getElementById(filterId);
+    if (rangeEl && selectEl) rangeEl.style.display = selectEl.value === 'custom' ? 'inline' : 'none';
+}
+
 // Date filtering functions
 function handleDateFilterChange(section) {
     const filterId = section === 'difficulty' ? 'difficultyDateFilter' : 'playerDateFilter';
     const dateRangeSelect = document.getElementById(filterId);
-    const selectedDays = dateRangeSelect.value;
+    const selectedValue = dateRangeSelect.value;
     
     // Store the active filter
-    ocStatsData.activeFilters[section] = selectedDays;
+    ocStatsData.activeFilters[section] = selectedValue;
+    toggleCustomRangeVisibility(section);
     
-    if (selectedDays === 'all') {
-        // Show all data for this section
+    if (selectedValue === 'all') {
         if (section === 'difficulty') {
             updateDifficultyStatsUI(ocStatsData.difficultyStats);
         } else {
             updatePlayerStatsUI(ocStatsData.playerStats);
         }
     } else {
-        // Filter by date range
-        const days = parseInt(selectedDays);
+        const days = selectedValue === 'custom' ? getCustomDays(section) : parseInt(selectedValue, 10);
         const cutoffDate = new Date();
         cutoffDate.setDate(cutoffDate.getDate() - days);
         
@@ -888,7 +1241,9 @@ function filterDataByDateRange(cutoffDate) {
     const currentMemberIds = new Set(ocStatsData.currentMemberIds || []);
     const playerNames = ocStatsData.playerNames || {};
     
-    const { difficultyStats, playerStats } = processCrimeData(filteredCrimes, playerNames, currentMemberIds);
+    const factionCutInput = document.getElementById('ocFactionCutPercent');
+    const factionCutPercent = factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 20)) : 20;
+    const { difficultyStats, playerStats } = processCrimeData(filteredCrimes, playerNames, currentMemberIds, factionCutPercent);
     
     // Calculate totals
     const totalSuccessful = difficultyStats.reduce((sum, stat) => sum + stat.successful, 0);
@@ -905,7 +1260,7 @@ function getCurrentFilteredData(section) {
     if (activeFilter === 'all') {
         return section === 'difficulty' ? ocStatsData.difficultyStats : ocStatsData.playerStats;
     } else {
-        const days = parseInt(activeFilter);
+        const days = activeFilter === 'custom' ? getCustomDays(section) : parseInt(activeFilter, 10);
         const cutoffDate = new Date();
         cutoffDate.setDate(cutoffDate.getDate() - days);
         
@@ -923,6 +1278,8 @@ function updateDifficultyStatsUI(difficultyStats) {
         const totalFailed = difficultyStats.reduce((sum, stat) => sum + stat.failed, 0);
         const totalCrimes = totalSuccessful + totalFailed;
         const overallSuccessRate = totalCrimes > 0 ? Math.round((totalSuccessful / totalCrimes) * 100) : 0;
+        const totalValue = getTotalRewardValue(difficultyStats);
+        const factionCutVal = (document.getElementById('ocFactionCutPercent') && document.getElementById('ocFactionCutPercent').value !== '') ? document.getElementById('ocFactionCutPercent').value : '20';
         
         let html = `
             <div class="summary-section" style="margin-bottom: 20px;">
@@ -945,10 +1302,26 @@ function updateDifficultyStatsUI(difficultyStats) {
                         <span class="summary-label">Failed:</span>
                         <span class="summary-value" style="color: #ff6b6b;">${totalFailed}</span>
                     </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Total value:</span>
+                        <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Faction cut %:</span>
+                        <input type="number" id="ocFactionCutPercent" value="${factionCutVal}" min="0" max="100" step="1" style="width: 56px; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--primary-color); color: var(--text-color); font-size: 0.9em;" title="Faction takes this %; remainder is split between participating players. Change to update player rewards.">
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Faction share:</span>
+                        <span class="summary-value" id="ocFactionShareAmount" style="color: var(--accent-color);">${formatDollars(totalValue * (Math.min(100, Math.max(0, parseFloat(factionCutVal) || 0)) / 100))}</span>
+                    </div>
                 </div>
-                <p style="text-align: center; color: #888; font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
-                    Only counting crimes where at least one current member participated.
-                </p>
+                <div style="text-align: center; color: #888; font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
+                    <div style="display: block; margin-bottom: 4px;">Please note:</div>
+                    <ul style="margin: 0; padding-left: 20px; text-align: left; display: inline-block;">
+                        <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
+                        <li>Reward item values are based on current market value, not the value at the time of the crime.</li>
+                    </ul>
+                </div>
             </div>
             <table id="difficultyTable" style="width: 100%; border-collapse: collapse;">
                 <thead>
@@ -958,6 +1331,7 @@ function updateDifficultyStatsUI(difficultyStats) {
                         <th data-column="successful" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                         <th data-column="failed" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                         <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
+                        <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Rewards <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -966,16 +1340,34 @@ function updateDifficultyStatsUI(difficultyStats) {
         difficultyStats.forEach(stat => {
             const rateColor = stat.successRate >= 70 ? '#4ecdc4' : 
                             stat.successRate >= 50 ? '#ffd700' : '#ff6b6b';
-            
+            const hasSubtypes = Object.keys(stat.crimeTypes || {}).length > 0;
+            const arrow = hasSubtypes ? `<span class="difficulty-expand-toggle" data-difficulty="${stat.difficulty}" data-expanded="0" style="cursor:pointer;margin-left:6px;user-select:none;font-size:0.75em;color:#ffd700;" title="Show subtypes">▶</span>` : '';
             html += `
-                <tr style="border-bottom: 1px solid var(--border-color);">
-                    <td style="padding: 12px; text-align: center; font-weight: bold;">${stat.difficulty}/10</td>
+                <tr class="difficulty-main-row" data-difficulty="${stat.difficulty}" style="border-bottom: 1px solid var(--border-color);">
+                    <td style="padding: 12px; text-align: center; font-weight: bold;">${stat.difficulty}/10 ${arrow}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold;">${stat.total}</td>
                     <td style="padding: 12px; text-align: center; color: #4ecdc4; font-weight: bold;">${stat.successful}</td>
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${stat.failed}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${stat.successRate}%</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(stat)}</td>
                 </tr>
             `;
+            (Object.values(stat.crimeTypes || {})).forEach(ct => {
+                const ctTotal = ct.total || 0;
+                const ctRate = ctTotal > 0 ? Math.round(((ct.successful || 0) / ctTotal) * 100) : 0;
+                const ctRateColor = ctRate >= 70 ? '#4ecdc4' : ctRate >= 50 ? '#ffd700' : '#ff6b6b';
+                const ctDisplay = { ...ct, successRate: ctRate };
+                html += `
+                <tr class="crime-type-row" data-difficulty="${stat.difficulty}" style="display: none; border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.03);">
+                    <td style="padding: 8px 12px 8px 24px; font-size: 0.9em; color: var(--text-color);">${escapeHtml(ct.crimeName || 'Unknown crime')}</td>
+                    <td style="padding: 8px 12px; text-align: center;">${ctTotal}</td>
+                    <td style="padding: 8px 12px; text-align: center; color: #4ecdc4;">${ct.successful || 0}</td>
+                    <td style="padding: 8px 12px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
+                    <td style="padding: 8px 12px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
+                    <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(ctDisplay)}</td>
+                </tr>
+            `;
+            });
         });
         
         html += `
@@ -984,6 +1376,23 @@ function updateDifficultyStatsUI(difficultyStats) {
         `;
         
         difficultyTable.innerHTML = html;
+        
+        difficultyTable.addEventListener('click', (e) => {
+            const toggle = e.target.closest('.difficulty-expand-toggle');
+            if (!toggle) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const d = toggle.getAttribute('data-difficulty');
+            const expanded = toggle.getAttribute('data-expanded') === '1';
+            const container = document.getElementById('difficultyStatsTable');
+            const rows = container ? container.querySelectorAll(`tr.crime-type-row[data-difficulty="${d}"]`) : [];
+            rows.forEach(r => { r.style.display = expanded ? 'none' : 'table-row'; });
+            toggle.setAttribute('data-expanded', expanded ? '0' : '1');
+            toggle.textContent = expanded ? '▶' : '▼';
+            toggle.setAttribute('title', expanded ? 'Show subtypes' : 'Hide subtypes');
+        });
+        
+        attachFactionCutListener();
         
         // Add sorting functionality
         const difficultyTableElement = document.getElementById('difficultyTable');
@@ -1028,9 +1437,6 @@ function updatePlayerStatsUI(playerStats) {
                         <span class="summary-value">${participatingMembers}</span>
                     </div>
                 </div>
-                <p style="text-align: center; color: #888; font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
-                    Showing current faction members only. Stats include crimes where at least one current member participated.
-                </p>
             </div>
         `;
         
@@ -1045,6 +1451,7 @@ function updatePlayerStatsUI(playerStats) {
                         <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                         <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                         <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
+                        <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;">Rewards <span class="sort-indicator"></span></th>
                         <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
                     </tr>
                 </thead>
@@ -1067,6 +1474,7 @@ function updatePlayerStatsUI(playerStats) {
                     <td style="padding: 12px; text-align: center; color: #4ecdc4; font-weight: bold;">${player.successfulParticipations}</td>
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${player.failedParticipations}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${player.successRate}%</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(player)}</td>
                     <td style="padding: 12px; text-align: center;">
                         ${player.totalParticipations > 0 ? `
                             <button class="details-toggle" data-player-id="${player.id}" style="background-color: var(--accent-color); color: var(--primary-color); border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: bold;">
@@ -1081,7 +1489,7 @@ function updatePlayerStatsUI(playerStats) {
             if (player.totalParticipations > 0) {
                 html += `
                     <tr class="details-row" data-player-id="${player.id}" style="display: none; background-color: rgba(255, 215, 0, 0.05);">
-                        <td colspan="7" style="padding: 20px;">
+                        <td colspan="8" style="padding: 20px;">
                             <div style="background-color: var(--secondary-color); padding: 15px; border-radius: 8px; border-left: 3px solid var(--accent-color);">
                                 <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">Difficulty Breakdown for ${player.name}</h4>
                                 <table style="width: 100%; border-collapse: collapse;">
@@ -1112,6 +1520,21 @@ function updatePlayerStatsUI(playerStats) {
                                 <td style="padding: 8px; text-align: center; font-weight: bold; color: ${diffRateColor};">${diffSuccessRate}%</td>
                             </tr>
                         `;
+                        const crimeTypes = player.difficultyCrimeTypeBreakdown && player.difficultyCrimeTypeBreakdown[diff] ? Object.values(player.difficultyCrimeTypeBreakdown[diff]) : [];
+                        crimeTypes.forEach(ct => {
+                            const ctTotal = ct.total || 0;
+                            const ctRate = ctTotal > 0 ? Math.round(((ct.successful || 0) / ctTotal) * 100) : 0;
+                            const ctRateColor = ctRate >= 70 ? '#4ecdc4' : ctRate >= 50 ? '#ffd700' : '#ff6b6b';
+                            html += `
+                            <tr style="border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.03);">
+                                <td style="padding: 6px 8px 6px 20px; font-size: 0.9em; color: var(--text-color);">${escapeHtml(ct.crimeName || 'Unknown crime')}</td>
+                                <td style="padding: 6px 8px; text-align: center;">${ctTotal}</td>
+                                <td style="padding: 6px 8px; text-align: center; color: #4ecdc4;">${ct.successful || 0}</td>
+                                <td style="padding: 6px 8px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
+                                <td style="padding: 6px 8px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
+                            </tr>
+                        `;
+                        });
                     }
                 }
                 
