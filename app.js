@@ -175,14 +175,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (progressMessage) {
                         progressMessage.textContent = 'Waiting for API Limit...';
                     }
-                    if (progressDetails) {
-                        progressDetails.textContent = 'Rate limit detected, waiting 30 seconds...';
+                    const waitSeconds = Math.ceil(retryDelay / 1000);
+                    for (let j = waitSeconds; j > 0; j--) {
+                        if (progressDetails) {
+                            progressDetails.textContent = `API rate limit reached, waiting ${j} seconds...`;
+                        }
+                        await sleep(1000);
                     }
-                    await sleep(retryDelay);
                     if (progressMessage) {
                         progressMessage.textContent = 'Fetching data...';
                     }
-                    
+                    if (progressDetails) {
+                        progressDetails.textContent = 'Resuming data collection...';
+                    }
+
                     // Retry once
                     const retryResponse = await fetch(url);
                     const retryData = await retryResponse.json();
@@ -349,14 +355,20 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (progressMessage) {
                             progressMessage.textContent = 'Waiting for API Limit...';
                         }
-                        if (progressDetails) {
-                            progressDetails.textContent = 'Rate limit detected, waiting 30 seconds...';
+                        const waitSeconds = Math.ceil(retryDelay / 1000);
+                        for (let j = waitSeconds; j > 0; j--) {
+                            if (progressDetails) {
+                                progressDetails.textContent = `API rate limit reached, waiting ${j} seconds...`;
+                            }
+                            await sleep(1000);
                         }
-                        await sleep(retryDelay);
                         if (progressMessage) {
                             progressMessage.textContent = 'Fetching data...';
                         }
-                        
+                        if (progressDetails) {
+                            progressDetails.textContent = 'Resuming data collection...';
+                        }
+
                         // Retry once
                         const retryResponse = await fetch(url);
                         const retryData = await retryResponse.json();
@@ -2659,10 +2671,39 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window.logToolUsage) {
             window.logToolUsage('faction-battle-stats');
         }
-        
+
         const fetchBtn = document.getElementById('fetchBattleStatsBtn');
         if (fetchBtn) {
             fetchBtn.addEventListener('click', handleBattleStatsFetch);
+        }
+
+        const myFactionBtn = document.getElementById('myFactionBtn');
+        const factionIdInput = document.getElementById('factionId');
+        if (myFactionBtn && factionIdInput) {
+            myFactionBtn.addEventListener('click', async () => {
+                const apiKey = localStorage.getItem('tornApiKey');
+                if (!apiKey) {
+                    alert('Please enter your API key in the sidebar first.');
+                    return;
+                }
+                const userData = await getUserData(apiKey);
+                if (!userData || userData.factionId == null || userData.factionId === '') {
+                    alert('Could not load your faction (you may not be in a faction).');
+                    return;
+                }
+                factionIdInput.value = userData.factionId;
+                const label = userData.factionName ? `My Faction [${userData.factionName}]` : 'My Faction';
+                myFactionBtn.textContent = label;
+                handleBattleStatsFetch();
+            });
+            const apiKey = localStorage.getItem('tornApiKey');
+            if (apiKey) {
+                getUserData(apiKey).then(ud => {
+                    if (ud && ud.factionId != null && ud.factionId !== '' && myFactionBtn) {
+                        myFactionBtn.textContent = ud.factionName ? `My Faction [${ud.factionName}]` : 'My Faction';
+                    }
+                });
+            }
         }
     }
 
@@ -2671,6 +2712,47 @@ document.addEventListener('DOMContentLoaded', () => {
         const base = Math.sqrt(myTotalStats) * ((fairFightScore - 1) / (8 / 3));
         return Math.round(Math.pow(base, 2));
     };
+
+    // Local cache for Faction Battle Stats (localStorage, different TTLs)
+    const BATTLE_STATS_MAIN_PREFIX = 'battle_stats_main_';
+    const BATTLE_STATS_ACTIVITY_PAST_PREFIX = 'battle_stats_activity_past_';
+    const BATTLE_STATS_ACTIVITY_NOW_PREFIX = 'battle_stats_activity_now_';
+    const BATTLE_STATS_MAIN_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
+    const BATTLE_STATS_ACTIVITY_PAST_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
+    const BATTLE_STATS_ACTIVITY_NOW_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
+
+    function getBattleStatsMainCache(factionID) {
+        try {
+            const raw = localStorage.getItem(BATTLE_STATS_MAIN_PREFIX + factionID);
+            if (!raw) return null;
+            const obj = JSON.parse(raw);
+            if (!obj.cachedAt || (Date.now() - obj.cachedAt) > BATTLE_STATS_MAIN_TTL_MS) return null;
+            return obj;
+        } catch (e) { return null; }
+    }
+    function setBattleStatsMainCache(factionID, data) {
+        try {
+            localStorage.setItem(BATTLE_STATS_MAIN_PREFIX + factionID, JSON.stringify({
+                cachedAt: Date.now(),
+                ...data
+            }));
+        } catch (e) { /* ignore */ }
+    }
+
+    function getBattleStatsActivityCache(keyPrefix, keySuffix, ttlMs) {
+        try {
+            const raw = localStorage.getItem(keyPrefix + keySuffix);
+            if (!raw) return null;
+            const obj = JSON.parse(raw);
+            if (!obj.cachedAt || (Date.now() - obj.cachedAt) > ttlMs) return null;
+            return obj.data || null;
+        } catch (e) { return null; }
+    }
+    function setBattleStatsActivityCache(keyPrefix, keySuffix, data) {
+        try {
+            localStorage.setItem(keyPrefix + keySuffix, JSON.stringify({ cachedAt: Date.now(), data }));
+        } catch (e) { /* ignore */ }
+    }
 
     const fetchInChunks = async (url, items, chunkSize) => {
         let results = [];
@@ -2716,92 +2798,126 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsContainer.style.display = 'none';
 
         try {
-            // Use batched API calls for better performance
-            const tornStartTime = performance.now();
-            const apiRequests = [
-                {
-                    name: 'userStats',
-                    url: 'https://api.torn.com/user/',
-                    params: 'selections=personalstats'
-                },
-                {
-                    name: 'factionInfo',
-                    url: `https://api.torn.com/v2/faction/${factionID}`,
-                    params: ''
-                },
-                {
-                    name: 'factionMembers',
-                    url: `https://api.torn.com/v2/faction/${factionID}/members`,
-                    params: 'striptags=true'
+            let tornData, factionName, membersArray, memberIDs, membersObject, ffScores, battleStatsEstimates, lastUpdated, hasVipLevel1, ffData;
+            const cachedMain = getBattleStatsMainCache(factionID);
+
+            if (cachedMain) {
+                tornData = cachedMain.tornData;
+                factionName = cachedMain.factionName;
+                membersArray = cachedMain.membersArray;
+                memberIDs = cachedMain.memberIDs;
+                membersObject = cachedMain.membersObject;
+                ffScores = cachedMain.ffScores;
+                battleStatsEstimates = cachedMain.battleStatsEstimates;
+                lastUpdated = cachedMain.lastUpdated;
+                ffData = cachedMain.ffData;
+                const userData = await getUserData(apiKey);
+                const userPlayerId = userData?.playerId;
+                hasVipLevel1 = false;
+                if (userPlayerId) {
+                    const vipData = await getVipBalance(userPlayerId, true);
+                    hasVipLevel1 = vipData && vipData.vipLevel >= 1;
                 }
-            ];
+            } else {
+                const tornStartTime = performance.now();
+                const apiRequests = [
+                    {
+                        name: 'userStats',
+                        url: 'https://api.torn.com/user/',
+                        params: 'selections=personalstats'
+                    },
+                    {
+                        name: 'factionInfo',
+                        url: `https://api.torn.com/v2/faction/${factionID}`,
+                        params: ''
+                    },
+                    {
+                        name: 'factionMembers',
+                        url: `https://api.torn.com/v2/faction/${factionID}/members`,
+                        params: 'striptags=true'
+                    }
+                ];
 
-            console.log('Fetching Torn API data using batched requests...');
-            const tornData = await batchTornApiCalls(apiKey, apiRequests);
-            const tornEndTime = performance.now();
-            console.log(`Torn API calls completed in ${(tornEndTime - tornStartTime).toFixed(2)}ms`);
-            
-            const myTotalStats = tornData.userStats.personalstats.totalstats;
-            const userData = await getUserData(apiKey);
-            const userPlayerId = userData?.playerId;
-            
-            // Check VIP level for "Check Activity" feature
-            let hasVipLevel1 = false;
-            if (userPlayerId) {
-                const vipData = await getVipBalance(userPlayerId, true);
-                hasVipLevel1 = vipData && vipData.vipLevel >= 1;
-            }
-            
-            console.log('Faction info object:', tornData.factionInfo);
-            let factionName = tornData.factionInfo?.basic?.name;
-            if (!factionName && tornData.factionInfo?.name) {
-                factionName = tornData.factionInfo.name;
-            }
-            if (!factionName && tornData.factionInfo?.faction_name) {
-                factionName = tornData.factionInfo.faction_name;
-            }
-            if (!factionName) {
-                factionName = `[Name not available] (ID: ${factionID})`;
-            }
-            const membersArray = tornData.factionMembers?.members || [];
-            const memberIDs = membersArray.map(member => member.id.toString());
-            const membersObject = {};
-            membersArray.forEach(member => {
-                membersObject[member.id] = { 
-                    name: member.name,
-                    level: member.level || 'Unknown'
-                };
-            });
-            
-            console.log(`Successfully fetched ${memberIDs.length} members.`);
+                console.log('Fetching Torn API data using batched requests...');
+                tornData = await batchTornApiCalls(apiKey, apiRequests);
+                const tornEndTime = performance.now();
+                console.log(`Torn API calls completed in ${(tornEndTime - tornStartTime).toFixed(2)}ms`);
 
-            // Use parallel batching for FF Scouter API
-            const ffStartTime = performance.now();
-            const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
-            console.log(`Fetching FF Scouter data for ${memberIDs.length} members using parallel batching...`);
-            const ffData = await fetchInParallelChunks(ffScouterUrl, memberIDs, 200, 3, 1000);
-            const ffEndTime = performance.now();
-            console.log(`FF Scouter API calls completed in ${(ffEndTime - ffStartTime).toFixed(2)}ms`);
+                const userData = await getUserData(apiKey);
+                const userPlayerId = userData?.playerId;
 
-            const ffScores = {};
-            const battleStatsEstimates = {};
-            const lastUpdated = {};
-            ffData.forEach(player => {
-                if (player.fair_fight) {
-                    ffScores[player.player_id] = player.fair_fight;
-                    battleStatsEstimates[player.player_id] = player.bs_estimate; // Store FF Scouter's precise battle stats estimate
-                    lastUpdated[player.player_id] = player.last_updated;
+                hasVipLevel1 = false;
+                if (userPlayerId) {
+                    const vipData = await getVipBalance(userPlayerId, true);
+                    hasVipLevel1 = vipData && vipData.vipLevel >= 1;
                 }
-            });
+
+                console.log('Faction info object:', tornData.factionInfo);
+                factionName = tornData.factionInfo?.basic?.name;
+                if (!factionName && tornData.factionInfo?.name) {
+                    factionName = tornData.factionInfo.name;
+                }
+                if (!factionName && tornData.factionInfo?.faction_name) {
+                    factionName = tornData.factionInfo.faction_name;
+                }
+                if (!factionName) {
+                    factionName = `[Name not available] (ID: ${factionID})`;
+                }
+                membersArray = tornData.factionMembers?.members || [];
+                memberIDs = membersArray.map(member => member.id.toString());
+                membersObject = {};
+                membersArray.forEach(member => {
+                    membersObject[member.id] = {
+                        name: member.name,
+                        level: member.level || 'Unknown'
+                    };
+                });
+
+                console.log(`Successfully fetched ${memberIDs.length} members.`);
+
+                const ffStartTime = performance.now();
+                const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+                console.log(`Fetching FF Scouter data for ${memberIDs.length} members using parallel batching...`);
+                ffData = await fetchInParallelChunks(ffScouterUrl, memberIDs, 200, 3, 1000);
+                const ffEndTime = performance.now();
+                console.log(`FF Scouter API calls completed in ${(ffEndTime - ffStartTime).toFixed(2)}ms`);
+
+                ffScores = {};
+                battleStatsEstimates = {};
+                lastUpdated = {};
+                ffData.forEach(player => {
+                    if (player.fair_fight) {
+                        ffScores[player.player_id] = player.fair_fight;
+                        battleStatsEstimates[player.player_id] = player.bs_estimate;
+                        lastUpdated[player.player_id] = player.last_updated;
+                    }
+                });
+
+                setBattleStatsMainCache(factionID, {
+                    tornData,
+                    ffData,
+                    factionName,
+                    membersArray,
+                    memberIDs,
+                    membersObject,
+                    ffScores,
+                    battleStatsEstimates,
+                    lastUpdated
+                });
+            }
+
+            const myTotalStats = tornData?.userStats?.personalstats?.totalstats;
 
             const totalTime = performance.now() - startTime;
             const cacheStats = getCacheStats();
             console.log(`🎉 Total fetch time: ${totalTime.toFixed(2)}ms (${(totalTime / 1000).toFixed(2)}s)`);
-            console.log(`📊 Performance breakdown:`);
-            console.log(`   - Torn API: ${(tornEndTime - tornStartTime).toFixed(2)}ms`);
-            console.log(`   - FF Scouter: ${(ffEndTime - ffStartTime).toFixed(2)}ms`);
-            console.log(`   - Processing: ${(totalTime - (ffEndTime - ffStartTime) - (tornEndTime - tornStartTime)).toFixed(2)}ms`);
-            console.log(`💾 Cache stats: ${cacheStats.hits} hits, ${cacheStats.misses} misses (${cacheStats.hitRate}% hit rate)`);
+            if (!cachedMain) {
+                console.log(`📊 Performance breakdown:`);
+                console.log(`   - Torn API / FF Scouter / Processing`);
+                console.log(`💾 Cache stats: ${cacheStats.hits} hits, ${cacheStats.misses} misses (${cacheStats.hitRate}% hit rate)`);
+            } else {
+                console.log(`💾 Battle stats loaded from cache (1-day TTL)`);
+            }
 
             // Hide the form and show the results section
             // toolContainer.style.display = 'none'; // Don't hide the input fields
@@ -3262,55 +3378,99 @@ document.addEventListener('DOMContentLoaded', () => {
             const periodDays = periodMonths * 30;
             const nowTimestamp = Math.floor(Date.now() / 1000);
             const pastTimestamp = Math.floor((Date.now() - (periodDays * 24 * 60 * 60 * 1000)) / 1000);
-            
-            console.log(`Fetching activity data for ${memberIDs.length} members...`);
-            console.log(`Period: ${periodMonths} month(s)`);
-            console.log(`Now timestamp: ${nowTimestamp} (${new Date(nowTimestamp * 1000).toISOString()})`);
-            console.log(`${periodMonths} month(s) ago timestamp: ${pastTimestamp} (${new Date(pastTimestamp * 1000).toISOString()})`);
-            
-            // Create API requests (2 per player: now and X months ago)
-            const activityRequests = [];
-            memberIDs.forEach(memberID => {
-                // Request for current time
-                activityRequests.push({
-                    playerId: memberID,
-                    timestamp: nowTimestamp,
-                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
-                });
-                // Request for X months ago
-                activityRequests.push({
-                    playerId: memberID,
-                    timestamp: pastTimestamp,
-                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
-                });
-            });
-            
-            console.log(`Created ${activityRequests.length} activity API requests (2 per player)`);
-            
-            // Fetch activity data using global batch API function with rate limiting
+            const pastTimestampDay = Math.floor(pastTimestamp / 86400) * 86400; // same day = same cache key
+            const dateKey = new Date().toISOString().split('T')[0]; // YYYY-MM-DD for "now" cache
+
+            // Load from local cache (1 week for past, 1 day for now)
+            const pastCache = getBattleStatsActivityCache(
+                BATTLE_STATS_ACTIVITY_PAST_PREFIX,
+                `${factionID}_${periodMonths}_${pastTimestampDay}`,
+                BATTLE_STATS_ACTIVITY_PAST_TTL_MS
+            );
+            const nowCache = getBattleStatsActivityCache(
+                BATTLE_STATS_ACTIVITY_NOW_PREFIX,
+                `${factionID}_${dateKey}`,
+                BATTLE_STATS_ACTIVITY_NOW_TTL_MS
+            );
+
             const activityData = {};
-            
-            const results = await window.batchApiCallsWithRateLimit(activityRequests, {
-                progressMessage,
-                progressDetails,
-                progressPercentage,
-                progressFill,
-                onSuccess: (data, request) => {
-                    // Store successful response - extract value from personalstats array
-                    const timeplayed = data.personalstats?.[0]?.value || 0;
-                    if (!activityData[request.playerId]) {
-                        activityData[request.playerId] = {};
-                    }
-                    activityData[request.playerId][request.timestamp] = timeplayed;
-                },
-                onError: (error, request) => {
-                    console.error(`Error fetching activity for player ${request.playerId} at timestamp ${request.timestamp}:`, error);
+            memberIDs.forEach(memberID => {
+                activityData[memberID] = {};
+                if (pastCache && pastCache[memberID] !== undefined) {
+                    activityData[memberID][pastTimestamp] = pastCache[memberID];
+                }
+                if (nowCache && nowCache[memberID] !== undefined) {
+                    activityData[memberID][nowTimestamp] = nowCache[memberID];
                 }
             });
-            
-            // Store timestamp of when this fetch completed for rate limit tracking
+
+            // Only request (playerId, timestamp) pairs we don't have
+            const activityRequests = [];
+            memberIDs.forEach(memberID => {
+                if (activityData[memberID][nowTimestamp] === undefined) {
+                    activityRequests.push({
+                        playerId: memberID,
+                        timestamp: nowTimestamp,
+                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+                    });
+                }
+                if (activityData[memberID][pastTimestamp] === undefined) {
+                    activityRequests.push({
+                        playerId: memberID,
+                        timestamp: pastTimestamp,
+                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
+                    });
+                }
+            });
+
+            if (activityRequests.length > 0) {
+                if (progressDetails) progressDetails.textContent = activityRequests.length < memberIDs.length * 2
+                    ? `Fetching activity... (${activityRequests.length} of ${memberIDs.length * 2} from API, rest from cache)`
+                    : `Fetching activity data for ${memberIDs.length} members...`;
+                await window.batchApiCallsWithRateLimit(activityRequests, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    onSuccess: (data, request) => {
+                        const timeplayed = data.personalstats?.[0]?.value || 0;
+                        if (!activityData[request.playerId]) {
+                            activityData[request.playerId] = {};
+                        }
+                        activityData[request.playerId][request.timestamp] = timeplayed;
+                    },
+                    onError: (error, request) => {
+                        console.error(`Error fetching activity for player ${request.playerId} at timestamp ${request.timestamp}:`, error);
+                    }
+                });
+            }
+
+            // Persist to local cache for next time (past: 1 week, now: 1 day)
+            const pastDataToSave = {};
+            const nowDataToSave = {};
+            memberIDs.forEach(memberID => {
+                if (activityData[memberID][pastTimestamp] !== undefined) {
+                    pastDataToSave[memberID] = activityData[memberID][pastTimestamp];
+                }
+                if (activityData[memberID][nowTimestamp] !== undefined) {
+                    nowDataToSave[memberID] = activityData[memberID][nowTimestamp];
+                }
+            });
+            if (Object.keys(pastDataToSave).length > 0) {
+                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_PAST_PREFIX, `${factionID}_${periodMonths}_${pastTimestampDay}`, pastDataToSave);
+            }
+            if (Object.keys(nowDataToSave).length > 0) {
+                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_NOW_PREFIX, `${factionID}_${dateKey}`, nowDataToSave);
+            }
+
             window.lastActivityFetchTime = Date.now();
-            
+
+            if (activityRequests.length === 0 && progressContainer) {
+                if (progressPercentage) progressPercentage.textContent = '100%';
+                if (progressFill) progressFill.style.width = '100%';
+                if (progressDetails) progressDetails.textContent = 'Activity data loaded from cache.';
+            }
+
             // Hide progress bar
             if (progressContainer) {
                 progressContainer.style.display = 'none';
@@ -3654,48 +3814,95 @@ document.addEventListener('DOMContentLoaded', () => {
             
             console.log(`Fetched ${ownMemberIDs.length} members from own faction`);
             
-            if (progressDetails) progressDetails.textContent = `Fetching activity data for ${ownMemberIDs.length} members...`;
-            
-            // Fetch activity data for own faction (same process, using same period)
+            // Fetch activity data for own faction (use same local cache as activity checker: 1 week past, 1 day now)
             const periodDays = period * 30;
             const nowTimestamp = Math.floor(Date.now() / 1000);
             const pastTimestamp = Math.floor((Date.now() - (periodDays * 24 * 60 * 60 * 1000)) / 1000);
-            
-            const ownActivityRequests = [];
-            ownMemberIDs.forEach(memberID => {
-                ownActivityRequests.push({
-                    playerId: memberID,
-                    timestamp: nowTimestamp,
-                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
-                });
-                ownActivityRequests.push({
-                    playerId: memberID,
-                    timestamp: pastTimestamp,
-                    url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
-                });
-            });
-            
-            // Fetch own faction activity data using global batch API function with rate limiting
+            const pastTimestampDay = Math.floor(pastTimestamp / 86400) * 86400;
+            const dateKey = new Date().toISOString().split('T')[0];
+
+            const pastCache = getBattleStatsActivityCache(
+                BATTLE_STATS_ACTIVITY_PAST_PREFIX,
+                `${ownFactionId}_${period}_${pastTimestampDay}`,
+                BATTLE_STATS_ACTIVITY_PAST_TTL_MS
+            );
+            const nowCache = getBattleStatsActivityCache(
+                BATTLE_STATS_ACTIVITY_NOW_PREFIX,
+                `${ownFactionId}_${dateKey}`,
+                BATTLE_STATS_ACTIVITY_NOW_TTL_MS
+            );
+
             const ownActivityData = {};
-            
-            const ownResults = await window.batchApiCallsWithRateLimit(ownActivityRequests, {
-                progressMessage,
-                progressDetails,
-                progressPercentage,
-                progressFill,
-                onSuccess: (data, request) => {
-                    // Store successful response - extract value from personalstats array
-                    const timeplayed = data.personalstats?.[0]?.value || 0;
-                    if (!ownActivityData[request.playerId]) {
-                        ownActivityData[request.playerId] = {};
-                    }
-                    ownActivityData[request.playerId][request.timestamp] = timeplayed;
-                },
-                onError: (error, request) => {
-                    console.error(`Error fetching activity for own faction member ${request.playerId}:`, error);
+            ownMemberIDs.forEach(memberID => {
+                ownActivityData[memberID] = {};
+                if (pastCache && pastCache[memberID] !== undefined) {
+                    ownActivityData[memberID][pastTimestamp] = pastCache[memberID];
+                }
+                if (nowCache && nowCache[memberID] !== undefined) {
+                    ownActivityData[memberID][nowTimestamp] = nowCache[memberID];
                 }
             });
-            
+
+            const ownActivityRequests = [];
+            ownMemberIDs.forEach(memberID => {
+                if (ownActivityData[memberID][nowTimestamp] === undefined) {
+                    ownActivityRequests.push({
+                        playerId: memberID,
+                        timestamp: nowTimestamp,
+                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+                    });
+                }
+                if (ownActivityData[memberID][pastTimestamp] === undefined) {
+                    ownActivityRequests.push({
+                        playerId: memberID,
+                        timestamp: pastTimestamp,
+                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
+                    });
+                }
+            });
+
+            if (ownActivityRequests.length > 0) {
+                if (progressDetails) progressDetails.textContent = ownActivityRequests.length < ownMemberIDs.length * 2
+                    ? `Fetching activity for your faction... (${ownActivityRequests.length} of ${ownMemberIDs.length * 2} from API, rest from cache)`
+                    : `Fetching activity data for ${ownMemberIDs.length} members...`;
+                await window.batchApiCallsWithRateLimit(ownActivityRequests, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    onSuccess: (data, request) => {
+                        const timeplayed = data.personalstats?.[0]?.value || 0;
+                        if (!ownActivityData[request.playerId]) {
+                            ownActivityData[request.playerId] = {};
+                        }
+                        ownActivityData[request.playerId][request.timestamp] = timeplayed;
+                    },
+                    onError: (error, request) => {
+                        console.error(`Error fetching activity for own faction member ${request.playerId}:`, error);
+                    }
+                });
+            } else if (progressDetails) {
+                progressDetails.textContent = 'Activity data loaded from cache.';
+            }
+
+            // Persist to cache for next time
+            const pastDataToSave = {};
+            const nowDataToSave = {};
+            ownMemberIDs.forEach(memberID => {
+                if (ownActivityData[memberID][pastTimestamp] !== undefined) {
+                    pastDataToSave[memberID] = ownActivityData[memberID][pastTimestamp];
+                }
+                if (ownActivityData[memberID][nowTimestamp] !== undefined) {
+                    nowDataToSave[memberID] = ownActivityData[memberID][nowTimestamp];
+                }
+            });
+            if (Object.keys(pastDataToSave).length > 0) {
+                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_PAST_PREFIX, `${ownFactionId}_${period}_${pastTimestampDay}`, pastDataToSave);
+            }
+            if (Object.keys(nowDataToSave).length > 0) {
+                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_NOW_PREFIX, `${ownFactionId}_${dateKey}`, nowDataToSave);
+            }
+
             // Calculate own faction activity hours
             // Store with both string and number keys to ensure matching works
             const ownActivityHours = {};

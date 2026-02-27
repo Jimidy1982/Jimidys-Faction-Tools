@@ -1,5 +1,3 @@
-console.log('[CONSUMPTION TRACKER] consumption-tracker.js LOADED');
-
 // Global state for consumption tracker (use window to avoid redeclaration errors when script is reloaded)
 if (!window.consumptionTrackerData) {
     window.consumptionTrackerData = {
@@ -118,8 +116,6 @@ async function fetchNewsForRange(fromTimestamp, toTimestamp, apiKey, delayBetwee
 }
 
 function initConsumptionTracker() {
-    console.log('[CONSUMPTION TRACKER] initConsumptionTracker CALLED');
-    
     // Log tool usage
     if (window.logToolUsage) {
         window.logToolUsage('consumption-tracker');
@@ -382,8 +378,6 @@ const handleConsumptionFetch = async () => {
         let cachedEntries = getCachedEntriesForRange(cache.segments, fromTimestamp, toTimestamp);
         const gaps = getGapsForRange(cache.segments, fromTimestamp, toTimestamp);
 
-        console.log(`[CONSUMPTION CACHE] Requested range: ${fromTimestamp}-${toTimestamp}. Cached entries: ${cachedEntries.length}. Gaps to fetch: ${gaps.length}`);
-
         let allNews = cachedEntries;
         const newSegments = [];
 
@@ -427,8 +421,6 @@ const handleConsumptionFetch = async () => {
         }
         if (cachedEntries.length > 0 && gaps.length === 0) wasCached = true;
 
-        console.log(`Total: ${allNews.length} armory action entries (${cachedEntries.length} from cache, ${allNews.length - cachedEntries.length} newly fetched). Cache segments: ${cache.segments.length} → +${newSegments.length} new.`);
-
         if (progressContainer) {
             progressMessage.textContent = 'Processing consumption data...';
             progressPercentage.textContent = '100%';
@@ -441,37 +433,19 @@ const handleConsumptionFetch = async () => {
         const playerConsumption = {};
         let processedCount = 0;
         
-        // Debug tracking for ingine's xanax usage
-        const ingineXanaxEntries = [];
-        
         for (const newsEntry of allNews) {
             processedCount++;
-            if (processedCount % 10 === 0) {
-                console.log(`Processed ${processedCount}/${allNews.length} entries...`);
-                
-                // Update processing progress
-                if (progressContainer) {
-                    const processingProgress = (processedCount / allNews.length) * 100;
-                    progressDetails.textContent = `Processing ${processedCount}/${allNews.length} entries...`;
-                }
+            if (processedCount % 10 === 0 && progressContainer) {
+                progressDetails.textContent = `Processing ${processedCount}/${allNews.length} entries...`;
             }
             
             const logText = newsEntry.text || '';
             const timestamp = newsEntry.timestamp;
             
-            // Debug: Log a few entries to see the format
-            if (processedCount <= 3) {
-                console.log(`Sample entry ${processedCount}:`, logText);
-            }
-            
-            
             // Extract player name and ID from the log text (handles HTML tags)
             // Format: "<a href="http://www.torn.com/profiles.php?XID=1234567">PlayerName</a> used one of the faction's ItemName items"
             const playerMatch = logText.match(/<a href[^>]*XID=(\d+)[^>]*>([^<]+)<\/a>/);
-            if (!playerMatch) {
-                console.log(`Skipping entry - no player match:`, logText);
-                continue;
-            }
+            if (!playerMatch) continue;
             
             const playerId = playerMatch[1];
             const playerName = playerMatch[2];
@@ -518,18 +492,6 @@ const handleConsumptionFetch = async () => {
             // Only count "used" events, not "gave" events
             if (logText.includes('used one of the faction\'s Xanax items')) {
                 playerConsumption[playerName].xanax++;
-                
-                // Debug: Track ingine's xanax usage
-                if (playerName.toLowerCase() === 'ingine') {
-                    ingineXanaxEntries.push({
-                        entryId: newsEntry.id,
-                        timestamp: newsEntry.timestamp,
-                        date: new Date(newsEntry.timestamp * 1000).toLocaleString(),
-                        logText: logText,
-                        currentCount: playerConsumption[playerName].xanax
-                    });
-                    console.log(`[INGINE DEBUG] Xanax #${playerConsumption[playerName].xanax}: Entry ID ${newsEntry.id}, Date: ${new Date(newsEntry.timestamp * 1000).toLocaleString()}, Text: "${logText}"`);
-                }
             } else if (logText.includes('used one of the faction\'s Vicodin items')) {
                 playerConsumption[playerName].vicodin++;
             } else if (logText.includes('used one of the faction\'s Ketamine items')) {
@@ -606,47 +568,12 @@ const handleConsumptionFetch = async () => {
             }
         }
         
-        console.log(`Finished processing ${processedCount} entries. Found ${Object.keys(playerConsumption).length} players with consumption.`);
-        
-        // Debug: Log some sample consumption data
-        const playerNames = Object.keys(playerConsumption);
-        if (playerNames.length > 0) {
-            console.log('Sample player consumption data:');
-            const samplePlayer = playerNames[0];
-            console.log(`${samplePlayer}:`, playerConsumption[samplePlayer]);
-        }
-        
-        // Debug: Summary of ingine's xanax usage
-        if (ingineXanaxEntries.length > 0) {
-            console.log(`\n[INGINE DEBUG SUMMARY] Found ${ingineXanaxEntries.length} xanax entries for ingine:`);
-            ingineXanaxEntries.forEach((entry, index) => {
-                console.log(`  ${index + 1}. Entry ID: ${entry.entryId}, Date: ${entry.date}, Count: ${entry.currentCount}`);
-                console.log(`     Text: "${entry.logText}"`);
-            });
-            
-            // Check for duplicate entry IDs
-            const entryIds = ingineXanaxEntries.map(e => e.entryId);
-            const uniqueIds = new Set(entryIds);
-            if (entryIds.length !== uniqueIds.size) {
-                console.log(`[INGINE DEBUG WARNING] Found ${entryIds.length - uniqueIds.size} duplicate entry IDs!`);
-                const duplicates = entryIds.filter((id, index) => entryIds.indexOf(id) !== index);
-                console.log(`[INGINE DEBUG] Duplicate IDs:`, duplicates);
-            } else {
-                console.log(`[INGINE DEBUG] All ${entryIds.length} entry IDs are unique.`);
-            }
-        } else {
-            console.log('[INGINE DEBUG] No xanax entries found for ingine.');
-        }
-        
         const consumptionMembers = Object.values(playerConsumption);
-        console.log(`Final consumption members array length: ${consumptionMembers.length}`);
         
         // Store the fetched data
         consumptionTrackerData.fetchedMembers = consumptionMembers;
         
         const totalTime = performance.now() - startTime;
-        
-        console.log(`About to update UI with ${consumptionMembers.length} members, total time: ${totalTime.toFixed(2)}ms`);
         
         // Store item values for UI
         consumptionTrackerData.itemValues = itemValues;
@@ -703,10 +630,6 @@ function sortConsumptionMembers(members, sortColumn, sortDirection) {
 }
 
 function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValues = {}, fromTimestamp = null, toTimestamp = null, itemTypes = {}) {
-    console.log(`updateConsumptionUI called with ${members.length} members`);
-    console.log('Sample member data:', members[0]);
-    console.log('Item types:', itemTypes);
-    
     // Store data globally for CSV export
     consumptionTrackerData = {
         members: members,
@@ -730,9 +653,7 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
         return;
     }
     
-    console.log('Table container found:', !!tableContainer);
-    
-               // Define columns for the table
+    // Define columns for the table
            const columns = [
                { id: 'xanax', label: 'Xanax', itemName: 'Xanax' },
                { id: 'vicodin', label: 'Vicodin', itemName: 'Vicodin' },
@@ -776,8 +697,6 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
         }
         groupedItems[itemType].push(col);
     });
-    
-    console.log('Grouped items:', groupedItems);
     
     // Calculate totals and costs
     const totals = {};
@@ -958,12 +877,9 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
            });
     
                if (tableContainer) {
-               console.log('Table container before clearing:', tableContainer.innerHTML.length, 'characters');
                tableContainer.innerHTML = '';
                tableContainer.appendChild(summarySection);
                tableContainer.appendChild(groupedContainer);
-               console.log('Grouped interface added to container successfully');
-               console.log('Table container after adding:', tableContainer.innerHTML.length, 'characters');
            } else {
                console.error('Table container not found!');
            }
@@ -1388,6 +1304,4 @@ function exportPlayersToCSV() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-}
-
-console.log('[CONSUMPTION TRACKER] Script loaded'); 
+} 
