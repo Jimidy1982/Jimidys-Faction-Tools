@@ -369,6 +369,14 @@ button:hover {
     color: var(--text-color);
 }
 
+/* Month dropdown: force light background + dark text so options are readable when open */
+.flatpickr-current-month .flatpickr-monthDropdown-months,
+.flatpickr-current-month .flatpickr-monthDropdown-months option,
+.flatpickr-current-month .flatpickr-monthDropdown-month {
+    background: #fff !important;
+    color: #1a1a1a !important;
+}
+
 /* Header and Navigation Styles */
 nav {
     display: flex;

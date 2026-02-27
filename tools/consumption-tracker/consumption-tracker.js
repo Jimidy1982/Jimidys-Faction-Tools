@@ -10,6 +10,113 @@ if (!window.consumptionTrackerData) {
 // Create local reference for convenience (use var to allow redeclaration on script reload)
 var consumptionTrackerData = window.consumptionTrackerData;
 
+// --- Local cache for faction news (reduces API reads across different date ranges) ---
+const CONSUMPTION_CACHE_KEY = 'consumption_news_cache';
+const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function getConsumptionCache() {
+    try {
+        const raw = localStorage.getItem(CONSUMPTION_CACHE_KEY);
+        if (!raw) return { segments: [] };
+        const data = JSON.parse(raw);
+        const now = Date.now();
+        const segments = (data.segments || []).filter(s => s.cachedAt && (now - s.cachedAt) < CACHE_MAX_AGE_MS);
+        return { segments };
+    } catch (e) {
+        console.warn('[CONSUMPTION CACHE] Failed to read cache:', e);
+        return { segments: [] };
+    }
+}
+
+function saveConsumptionCache(segments) {
+    try {
+        const toSave = segments.filter(s => s.fromTs != null && s.toTs != null && Array.isArray(s.entries));
+        localStorage.setItem(CONSUMPTION_CACHE_KEY, JSON.stringify({ segments: toSave }));
+    } catch (e) {
+        console.warn('[CONSUMPTION CACHE] Failed to save cache:', e);
+    }
+}
+
+/** Get all cached entries that fall within [rangeFrom, rangeTo]. Deduped by entry.id. */
+function getCachedEntriesForRange(segments, rangeFrom, rangeTo) {
+    const byId = new Map();
+    for (const seg of segments) {
+        if (seg.toTs < rangeFrom || seg.fromTs > rangeTo) continue;
+        for (const entry of seg.entries || []) {
+            const ts = entry.timestamp;
+            if (ts >= rangeFrom && ts <= rangeTo && !byId.has(entry.id)) byId.set(entry.id, entry);
+        }
+    }
+    return Array.from(byId.values());
+}
+
+/** Compute gaps in [rangeFrom, rangeTo] not covered by segments. Returns [{ fromTs, toTs }]. */
+function getGapsForRange(segments, rangeFrom, rangeTo) {
+    const overlapping = segments
+        .filter(s => s.toTs >= rangeFrom && s.fromTs <= rangeTo)
+        .map(s => ({ from: Math.max(s.fromTs, rangeFrom), to: Math.min(s.toTs, rangeTo) }))
+        .sort((a, b) => a.from - b.from);
+    if (overlapping.length === 0) return [{ fromTs: rangeFrom, toTs: rangeTo }];
+    const gaps = [];
+    let cur = rangeFrom;
+    for (const seg of overlapping) {
+        if (seg.from > cur) gaps.push({ fromTs: cur, toTs: seg.from - 1 });
+        cur = Math.max(cur, seg.to + 1);
+    }
+    if (cur <= rangeTo) gaps.push({ fromTs: cur, toTs: rangeTo });
+    return gaps;
+}
+
+/** Fetch all armory news for a single date range from the API. Returns array of entries.
+ *  progressCallback(page, count, rangeProgressFraction) — fraction is 0–1 for how much of this range is covered.
+ */
+async function fetchNewsForRange(fromTimestamp, toTimestamp, apiKey, delayBetweenCalls, progressCallback) {
+    const allNews = [];
+    const seenEntryIds = new Set();
+    let lastTimestamp = toTimestamp;
+    let currentPage = 0;
+    let hasMorePages = true;
+    const rangeSpan = toTimestamp - fromTimestamp;
+
+    while (hasMorePages) {
+        currentPage++;
+        if (currentPage > 100) break;
+
+        const newsResponse = await fetch(`https://api.torn.com/v2/faction/news?striptags=false&limit=100&sort=DESC&to=${lastTimestamp}&from=${fromTimestamp}&cat=armoryAction&key=${apiKey}`);
+        const newsData = await newsResponse.json();
+
+        if (newsData.error) throw new Error(`Faction news API error: ${newsData.error.error}`);
+
+        const news = newsData.news || [];
+        if (news.length === 0) {
+            hasMorePages = false;
+            if (progressCallback) progressCallback(currentPage, allNews.length, 1);
+        } else {
+            const newEntries = news.filter(entry => {
+                const isInRange = entry.timestamp >= fromTimestamp && entry.timestamp <= toTimestamp;
+                const isDuplicate = seenEntryIds.has(entry.id);
+                if (isInRange && !isDuplicate) {
+                    seenEntryIds.add(entry.id);
+                    return true;
+                }
+                return false;
+            });
+            if (newEntries.length === 0) hasMorePages = false;
+            else {
+                allNews.push(...newEntries);
+                const oldestTimestamp = Math.min(...news.map(e => e.timestamp));
+                lastTimestamp = oldestTimestamp - 1;
+                const fraction = rangeSpan > 0 ? Math.min(1, (toTimestamp - lastTimestamp) / rangeSpan) : 1;
+                if (progressCallback) progressCallback(currentPage, allNews.length, fraction);
+                if (oldestTimestamp < fromTimestamp) hasMorePages = false;
+                else await new Promise(r => setTimeout(r, delayBetweenCalls));
+            }
+        }
+    }
+    if (progressCallback) progressCallback(currentPage, allNews.length, 1);
+    return allNews;
+}
+
 function initConsumptionTracker() {
     console.log('[CONSUMPTION TRACKER] initConsumptionTracker CALLED');
     
@@ -257,112 +364,71 @@ const handleConsumptionFetch = async () => {
         
         console.log(`Using global rate limit: ${delayBetweenCalls}ms between calls`);
         
-        // Step 1: Fetch faction news (armory actions) for the date range with proper pagination
-        console.log('Fetching faction armory actions...');
-        
-        // Show progress bar
+        // Step 1: Fetch faction news — use local cache, then fetch only gaps
         const progressContainer = document.getElementById('progressContainer');
         const progressMessage = document.getElementById('progressMessage');
         const progressPercentage = document.getElementById('progressPercentage');
         const progressFill = document.getElementById('progressFill');
         const progressDetails = document.getElementById('progressDetails');
-        
-        // Calculate date range in days
         const daysDiff = Math.ceil((toTimestamp - fromTimestamp) / (24 * 60 * 60));
-        
+
         if (progressContainer) {
             progressContainer.style.display = 'block';
-            if (daysDiff > 30) {
-                progressMessage.textContent = `Fetching consumption data for ${daysDiff} days (this may take a while)...`;
-            } else if (daysDiff > 7) {
-                progressMessage.textContent = `Fetching consumption data for ${daysDiff} days...`;
-            } else {
-                progressMessage.textContent = 'Fetching consumption data...';
-            }
-            progressDetails.textContent = 'Initializing...';
+            progressMessage.textContent = daysDiff > 30 ? `Fetching consumption data for ${daysDiff} days (this may take a while)...` : daysDiff > 7 ? `Fetching consumption data for ${daysDiff} days...` : 'Fetching consumption data...';
+            progressDetails.textContent = 'Checking cache...';
         }
-        
-        let allNews = [];
-        let seenEntryIds = new Set(); // Track unique entry IDs to prevent duplicates
-        let currentPage = 0;
-        let hasMorePages = true;
-        let lastTimestamp = toTimestamp; // Start from the end timestamp
-        
-        while (hasMorePages) { // Continue until no more pages
-            currentPage++;
-            console.log(`Fetching page ${currentPage}...`);
-            
-            // Update progress
+
+        const cache = getConsumptionCache();
+        let cachedEntries = getCachedEntriesForRange(cache.segments, fromTimestamp, toTimestamp);
+        const gaps = getGapsForRange(cache.segments, fromTimestamp, toTimestamp);
+
+        console.log(`[CONSUMPTION CACHE] Requested range: ${fromTimestamp}-${toTimestamp}. Cached entries: ${cachedEntries.length}. Gaps to fetch: ${gaps.length}`);
+
+        let allNews = cachedEntries;
+        const newSegments = [];
+
+        const totalGaps = gaps.length;
+        for (let g = 0; g < totalGaps; g++) {
+            const gap = gaps[g];
             if (progressContainer) {
-                const timeProgress = Math.max(0, Math.min(100, ((toTimestamp - lastTimestamp) / (toTimestamp - fromTimestamp)) * 100));
-                progressPercentage.textContent = `${Math.round(timeProgress)}%`;
-                progressFill.style.width = `${timeProgress}%`;
-                progressDetails.textContent = `Processing page ${currentPage}... (${allNews.length} entries found)`;
+                const pct = totalGaps > 0 ? Math.round((g / totalGaps) * 100) : 0;
+                progressPercentage.textContent = `${pct}%`;
+                progressFill.style.width = `${pct}%`;
+                progressDetails.textContent = totalGaps > 1 ? `Fetching date range ${g + 1} of ${totalGaps}...` : 'Fetching from API...';
             }
-            
-            // Safety check to prevent infinite loops (max 100 pages = 10,000 entries)
-            if (currentPage > 100) {
-                console.warn(`Reached maximum page limit (100), stopping pagination. This might indicate an issue with the API response.`);
-                break;
-            }
-            
-            const newsResponse = await fetch(`https://api.torn.com/v2/faction/news?striptags=false&limit=100&sort=DESC&to=${lastTimestamp}&from=${fromTimestamp}&cat=armoryAction&key=${apiKey}`);
-            const newsData = await newsResponse.json();
-            
-            if (newsData.error) {
-                throw new Error(`Faction news API error: ${newsData.error.error}`);
-            }
-            
-            const news = newsData.news || [];
-            console.log(`Page ${currentPage}: Found ${news.length} armory action entries`);
-            
-            if (news.length === 0) {
-                console.log(`Page ${currentPage}: No more entries found, stopping pagination`);
-                hasMorePages = false;
-            } else {
-                // Filter out entries we've already seen (older than our date range) and deduplicate
-                const newEntries = news.filter(entry => {
-                    const entryTimestamp = entry.timestamp;
-                    const isInDateRange = entryTimestamp >= fromTimestamp && entryTimestamp <= toTimestamp;
-                    
-                    // Check if we've already seen this entry ID
-                    const isDuplicate = seenEntryIds.has(entry.id);
-                    
-                    if (isInDateRange && !isDuplicate) {
-                        seenEntryIds.add(entry.id);
-                        return true;
-                    }
-                    return false;
-                });
-                
-                console.log(`Page ${currentPage}: ${newEntries.length} unique entries within date range`);
-                
-                if (newEntries.length === 0) {
-                    hasMorePages = false;
-                } else {
-                    allNews = allNews.concat(newEntries);
-                    
-                    // Update lastTimestamp to the oldest timestamp in this batch for next page
-                    const oldestTimestamp = Math.min(...news.map(entry => entry.timestamp));
-                    lastTimestamp = oldestTimestamp - 1; // Go back one second to avoid overlap
-                    
-                    // Check if we've gone past our date range
-                    if (oldestTimestamp < fromTimestamp) {
-                        console.log(`Page ${currentPage}: Oldest timestamp ${new Date(oldestTimestamp * 1000).toLocaleString()} is before our date range, stopping pagination`);
-                        hasMorePages = false;
-                    } else {
-                        // Rate limiting: wait based on user's rate limit setting
-                        await new Promise(resolve => setTimeout(resolve, delayBetweenCalls));
-                    }
+            const gapEntries = await fetchNewsForRange(gap.fromTs, gap.toTs, apiKey, delayBetweenCalls, (page, count, rangeFraction) => {
+                if (progressContainer) {
+                    const frac = typeof rangeFraction === 'number' ? rangeFraction : 0;
+                    const overall = totalGaps > 0 ? ((g + frac) / totalGaps) * 100 : 100;
+                    progressPercentage.textContent = `${Math.round(overall)}%`;
+                    progressFill.style.width = `${overall}%`;
+                    progressDetails.textContent = totalGaps > 1 ? `Fetching date range ${g + 1} of ${totalGaps} (page ${page}, ${count} entries)...` : `Fetching data... (page ${page}, ${count} entries)`;
                 }
+            });
+            if (gapEntries.length > 0) {
+                newSegments.push({
+                    fromTs: gap.fromTs,
+                    toTs: gap.toTs,
+                    entries: gapEntries,
+                    cachedAt: Date.now()
+                });
             }
+            const byId = new Map(allNews.map(e => [e.id, e]));
+            gapEntries.forEach(e => { if (!byId.has(e.id)) byId.set(e.id, e); });
+            allNews = Array.from(byId.values());
         }
-        
-        console.log(`Total: Found ${allNews.length} unique armory action entries across ${currentPage} pages`);
-        console.log(`Unique entry IDs tracked: ${seenEntryIds.size}`);
-        console.log(`Date range covered: ${new Date(Math.min(...allNews.map(n => n.timestamp)) * 1000).toLocaleString()} to ${new Date(Math.max(...allNews.map(n => n.timestamp)) * 1000).toLocaleString()}`);
-        
-        // Update progress for processing phase
+
+        allNews.sort((a, b) => a.timestamp - b.timestamp);
+
+        if (newSegments.length > 0) {
+            const now = Date.now();
+            const kept = cache.segments.filter(s => s.cachedAt && (now - s.cachedAt) < CACHE_MAX_AGE_MS);
+            saveConsumptionCache(kept.concat(newSegments));
+        }
+        if (cachedEntries.length > 0 && gaps.length === 0) wasCached = true;
+
+        console.log(`Total: ${allNews.length} armory action entries (${cachedEntries.length} from cache, ${allNews.length - cachedEntries.length} newly fetched). Cache segments: ${cache.segments.length} → +${newSegments.length} new.`);
+
         if (progressContainer) {
             progressMessage.textContent = 'Processing consumption data...';
             progressPercentage.textContent = '100%';
