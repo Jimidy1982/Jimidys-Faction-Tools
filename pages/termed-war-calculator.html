@@ -144,6 +144,16 @@
         
         <!-- Cache Swapping Tab -->
         <div class="tab-pane" id="cache-swap">
+            <!-- Your faction's 3 most recent wars (like payout calculator) -->
+            <div id="cacheSwapRecentWarsContainer" style="display: none; margin-bottom: 20px;">
+                <h3 style="color: #e0e0e0; margin-bottom: 12px;">Your faction's recent wars</h3>
+                <div id="cacheSwapRecentWarsList" style="display: flex; flex-direction: column; gap: 10px;">
+                    <!-- War cards inserted by JS -->
+                </div>
+            </div>
+            <div id="cacheSwapRecentWarsMessage" style="padding: 12px; background-color: #2a2a2a; border-radius: 4px; margin-bottom: 15px; color: #b0b0b0; font-size: 14px;">
+                Enter your API key in the sidebar to see your faction's recent wars, or enter a War ID below.
+            </div>
             <div class="war-id-section">
                 <table class="war-id-table">
                     <tr>

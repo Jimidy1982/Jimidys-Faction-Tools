@@ -21,6 +21,9 @@ let cacheSwapData = {
     factionBPercentage: 50
 };
 
+// Display order for cache types under each faction: Heavy, Armour, Medium, Melee, Small
+const CACHE_DISPLAY_ORDER = ['Heavy Arms Cache', 'Armor Cache', 'Medium Arms Cache', 'Melee Cache', 'Small Arms Cache'];
+
 function initTermedWarCalculator() {
     console.log('[TERMED WAR CALCULATOR] initTermedWarCalculator CALLED');
     
@@ -456,6 +459,107 @@ function switchTab(tabId) {
     
     if (selectedButton) selectedButton.classList.add('active');
     if (selectedContent) selectedContent.classList.add('active');
+
+    if (tabId === 'cache-swap' && typeof loadCacheSwapRecentWars === 'function') {
+        loadCacheSwapRecentWars();
+    }
+}
+
+// Cache Swapping – recent wars for user's faction (like payout calculator)
+function formatCacheSwapWarDate(timestamp) {
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+}
+
+function getCacheSwapWarStatus(war) {
+    const now = Date.now() / 1000;
+    if (now < war.start) return 'Upcoming';
+    if (war.end && now > war.end) return 'Ended';
+    return 'Ongoing';
+}
+
+async function loadCacheSwapRecentWars() {
+    const container = document.getElementById('cacheSwapRecentWarsContainer');
+    const listEl = document.getElementById('cacheSwapRecentWarsList');
+    const messageEl = document.getElementById('cacheSwapRecentWarsMessage');
+    if (!container || !listEl || !messageEl) return;
+
+    const apiKey = localStorage.getItem('tornApiKey');
+    if (!apiKey || apiKey.length < 10) {
+        container.style.display = 'none';
+        messageEl.style.display = 'block';
+        messageEl.textContent = 'Enter your API key in the sidebar to see your faction\'s recent wars, or enter a War ID below.';
+        return;
+    }
+
+    messageEl.style.display = 'none';
+    listEl.innerHTML = '<div style="color: #b0b0b0;">Loading recent wars...</div>';
+    container.style.display = 'block';
+
+    try {
+        const profileRes = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+        const profile = await profileRes.json();
+        if (profile.error) {
+            listEl.innerHTML = '<div style="color: #b0b0b0;">Could not load profile.</div>';
+            return;
+        }
+        const factionId = profile.faction_id || profile.faction?.faction_id;
+        if (!factionId) {
+            listEl.innerHTML = '<div style="color: #b0b0b0;">You are not in a faction.</div>';
+            return;
+        }
+
+        const warsRes = await fetch(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`);
+        const warsData = await warsRes.json();
+        if (warsData.error) {
+            listEl.innerHTML = '<div style="color: #f44336;">Error loading wars.</div>';
+            return;
+        }
+        const wars = (warsData.rankedwars || []).sort((a, b) => (b.start || 0) - (a.start || 0)).slice(0, 3);
+        if (wars.length === 0) {
+            listEl.innerHTML = '<div style="color: #b0b0b0;">No recent wars found.</div>';
+            return;
+        }
+
+        listEl.innerHTML = '';
+        wars.forEach(war => {
+            const enemy = war.factions && war.factions.find(f => String(f.id) !== String(factionId));
+            const enemyName = (enemy && enemy.name) ? enemy.name : 'Unknown';
+            const status = getCacheSwapWarStatus(war);
+            const startStr = formatCacheSwapWarDate(war.start);
+            const endStr = war.end ? formatCacheSwapWarDate(war.end) : '—';
+            const statusColor = status === 'Ongoing' ? '#4CAF50' : status === 'Ended' ? '#999' : '#ffd700';
+            const isEnded = status === 'Ended';
+
+            const card = document.createElement('div');
+            card.style.cssText = 'padding: 12px; background-color: #2a2a2a; border-left: 4px solid ' + statusColor + '; border-radius: 4px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px;';
+            card.innerHTML = `
+                <div>
+                    <div style="color: #ffd700; font-weight: bold; margin-bottom: 4px;">vs ${enemyName}</div>
+                    <div style="color: #b0b0b0; font-size: 13px;">Start: ${startStr} | End: ${endStr} | <span style="color: ${statusColor};">${status}</span></div>
+                </div>
+                <button type="button" class="fetch-button cache-swap-fetch-war-btn" data-war-id="${war.id}" ${!isEnded ? 'disabled' : ''} style="white-space: nowrap; ${!isEnded ? 'opacity: 0.6; cursor: not-allowed;' : ''}">${isEnded ? 'Fetch War Data' : status}</button>
+            `;
+            const btn = card.querySelector('.cache-swap-fetch-war-btn');
+            if (btn && isEnded) {
+                btn.addEventListener('click', () => {
+                    const warIdInput = document.getElementById('warIdInput');
+                    if (warIdInput) warIdInput.value = war.id;
+                    handleFetchWarData();
+                });
+            }
+            listEl.appendChild(card);
+        });
+    } catch (err) {
+        console.error('[CACHE SWAP] Error loading recent wars:', err);
+        listEl.innerHTML = '<div style="color: #f44336;">Error loading wars.</div>';
+    }
 }
 
 // Cache Swapping Functions
@@ -502,7 +606,10 @@ function initCacheSwapping() {
                 if (cacheSwapData.cacheValues && Object.keys(cacheSwapData.cacheValues).length > 0) {
                     // Re-fetch cache values with new adjustment
                     fetchCacheValues().then(() => {
-                        // Recalculate cache swaps with updated values
+                        // Redraw faction cache lists and totals with new adjusted prices
+                        displayWarData();
+                        // Recalculate cache swaps and percentage labels with updated values
+                        updatePercentageLabels();
                         calculateCacheSwaps();
                     }).catch(error => {
                         console.error('[CACHE SWAP] Error recalculating with new adjustment:', error);
@@ -531,6 +638,8 @@ function initCacheSwapping() {
     if (factionBPercentage) {
         factionBPercentage.addEventListener('input', handlePercentageChange);
     }
+
+    loadCacheSwapRecentWars();
 }
 
 async function handleFetchWarData() {
@@ -697,12 +806,12 @@ async function fetchCacheValues() {
     // Map item IDs to cache names and get market values
     const itemIdToCache = {
         '1118': 'Armor Cache',
-        '1119': 'Melee Cache', 
+        '1119': 'Melee Cache',
         '1120': 'Small Arms Cache',
         '1121': 'Medium Arms Cache',
         '1122': 'Heavy Arms Cache'
     };
-    
+
     const cacheValues = {};
     
     // Extract market values for each cache type and apply adjustment
@@ -743,8 +852,10 @@ function displayWarData() {
     if (factionACachesDiv) {
         factionACachesDiv.innerHTML = '';
         let factionATotal = 0;
-        
-        Object.entries(cacheSwapData.factionACaches).forEach(([cacheType, quantity]) => {
+
+        CACHE_DISPLAY_ORDER.forEach(cacheType => {
+            const quantity = cacheSwapData.factionACaches[cacheType];
+            if (quantity === undefined) return;
             const value = quantity * (cacheSwapData.cacheValues[cacheType] || 0);
             factionATotal += value;
             const cacheItem = document.createElement('div');
@@ -774,8 +885,10 @@ function displayWarData() {
     if (factionBCachesDiv) {
         factionBCachesDiv.innerHTML = '';
         let factionBTotal = 0;
-        
-        Object.entries(cacheSwapData.factionBCaches).forEach(([cacheType, quantity]) => {
+
+        CACHE_DISPLAY_ORDER.forEach(cacheType => {
+            const quantity = cacheSwapData.factionBCaches[cacheType];
+            if (quantity === undefined) return;
             const value = quantity * (cacheSwapData.cacheValues[cacheType] || 0);
             factionBTotal += value;
             const cacheItem = document.createElement('div');
