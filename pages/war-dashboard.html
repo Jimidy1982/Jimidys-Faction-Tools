@@ -1,0 +1,141 @@
+<div class="container">
+    <h1>War Dashboard</h1>
+    <p class="war-dashboard-beta-notice" style="margin: -0.5rem 0 1rem 0; font-size: 13px; color: #b0b0b0; text-align: center;">This tool is currently in <strong>Beta</strong> and free to try. It will revert to <strong>VIP 2</strong> status from April 1st.</p>
+
+    <div id="war-dashboard-tool-container">
+        <!-- FFScouter notice (dismissible) -->
+        <div id="war-dashboard-ff-notice" class="war-dashboard-notice" style="padding: 15px; background-color: #2a2a2a; border-left: 4px solid #FFD700; border-radius: 4px; margin-bottom: 15px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;">
+            <p style="margin: 0; color: #e0e0e0; font-size: 14px; flex: 1;">
+                <strong>FF / battle stats:</strong> Register your API key at <a href="https://ffscouter.com" target="_blank" rel="noopener" style="color: #FFD700;">FFScouter</a> to see enemy FF and colour coding.
+            </p>
+            <button type="button" id="war-dashboard-hide-ff-notice" class="btn" style="flex-shrink: 0; padding: 4px 10px; font-size: 12px;">Hide</button>
+        </div>
+
+        <!-- Enemy faction picker (minimisable) -->
+        <div id="war-dashboard-enemy-picker" class="war-dashboard-picker" style="margin-bottom: 12px; border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden;">
+            <button type="button" id="war-dashboard-enemy-picker-toggle" class="war-dashboard-picker-header" style="width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--secondary-color); border: none; color: var(--accent-color); font-weight: bold; cursor: pointer; text-align: left;">
+                <span><span id="war-dashboard-enemy-picker-title">Enemy faction</span><span id="war-dashboard-enemy-picker-summary" style="color: #888; font-weight: normal; margin-left: 6px;"></span></span>
+                <span id="war-dashboard-enemy-picker-arrow" aria-hidden="true">▼</span>
+            </button>
+            <div id="war-dashboard-enemy-picker-body" class="war-dashboard-picker-body" style="padding: 12px;">
+                <label for="war-dashboard-enemy-faction-id">Enemy faction ID</label>
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px;">
+                    <input type="text" id="war-dashboard-enemy-faction-id" placeholder="Enter faction ID" style="flex: 0 1 140px;">
+                    <button type="button" id="war-dashboard-apply-enemy" class="btn">Apply</button>
+                    <button type="button" id="war-dashboard-use-current-war" class="btn" style="white-space: nowrap;">Use current ranked war</button>
+                </div>
+                <p id="war-dashboard-enemy-label" style="margin-top: 8px; color: #b0b0b0; font-size: 13px;"></p>
+            </div>
+        </div>
+
+        <!-- Auto-refresh (minimisable) -->
+        <div id="war-dashboard-refresh-picker" class="war-dashboard-picker" style="margin-bottom: 12px; border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden;">
+            <button type="button" id="war-dashboard-refresh-picker-toggle" class="war-dashboard-picker-header" style="width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--secondary-color); border: none; color: var(--accent-color); font-weight: bold; cursor: pointer; text-align: left;">
+                <span>Auto-refresh</span>
+                <span id="war-dashboard-refresh-picker-arrow" aria-hidden="true">▼</span>
+            </button>
+            <div id="war-dashboard-refresh-picker-body" class="war-dashboard-picker-body" style="padding: 12px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                    <label for="war-dashboard-refresh-interval">Interval (seconds)</label>
+                    <input type="number" id="war-dashboard-refresh-interval" min="5" max="300" value="15" style="width: 80px;">
+                    <span id="war-dashboard-refresh-countdown" style="font-size: 12px; color: #888; min-width: 120px;">Next refresh in —s</span>
+                    <button type="button" id="war-dashboard-refresh-now" class="btn" style="padding: 4px 10px; font-size: 12px;">Refresh now</button>
+                    <button type="button" id="war-dashboard-refresh-battle-stats" class="btn" style="padding: 4px 10px; font-size: 12px;" title="Re-fetch FF and estimated battle stats from FF Scouter (same as Faction Battle Stats)">Refresh battle stats</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- FF thresholds (minimisable) -->
+        <div id="war-dashboard-ff-picker" class="war-dashboard-picker" style="margin-bottom: 12px; border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden;">
+            <button type="button" id="war-dashboard-ff-picker-toggle" class="war-dashboard-picker-header" style="width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--secondary-color); border: none; color: var(--accent-color); font-weight: bold; cursor: pointer; text-align: left;">
+                <span>FF thresholds (colour)</span>
+                <span id="war-dashboard-ff-picker-arrow" aria-hidden="true">▼</span>
+            </button>
+            <div id="war-dashboard-ff-picker-body" class="war-dashboard-picker-body" style="padding: 12px;">
+                <span>Blue &lt;</span>
+                <input type="number" id="war-dashboard-ff-blue" min="0" max="10" step="0.1" value="2.5" style="width: 50px;">
+                <span>Green &lt;</span>
+                <input type="number" id="war-dashboard-ff-green" min="0" max="10" step="0.1" value="3.5" style="width: 50px;">
+                <span>Orange &lt;</span>
+                <input type="number" id="war-dashboard-ff-orange" min="0" max="10" step="0.1" value="4.5" style="width: 50px;">
+                <span>Red</span>
+            </div>
+        </div>
+
+        <div id="war-dashboard-loading" class="loading-bar" style="display: none;">
+            <div class="loading-spinner"></div>
+            <span class="loading-text">Loading<span class="loading-dots"></span></span>
+        </div>
+
+        <div id="war-dashboard-error" style="display: none; color: #f44336; margin-bottom: 16px;"></div>
+
+        <!-- Enemy (first) -->
+        <section id="war-dashboard-enemy-section" style="display: none; margin-top: 12px; margin-bottom: 24px;">
+            <!-- Our Chain | Enemy Chain side by side (above title and filters) -->
+            <div id="war-dashboard-chains-row" class="war-dashboard-chains-row">
+                <div id="war-dashboard-our-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
+                <div id="war-dashboard-enemy-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
+            </div>
+            <h2 style="color: var(--accent-color); margin: 0 0 12px 0;">Enemy</h2>
+            <div style="margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center;">
+                <span style="color: var(--accent-color); font-weight: bold;">Activity:</span>
+                <label><input type="checkbox" id="war-dashboard-filter-online" checked> Online</label>
+                <label><input type="checkbox" id="war-dashboard-filter-offline" checked> Offline</label>
+                <label><input type="checkbox" id="war-dashboard-filter-idle" checked> Idle</label>
+                <span style="color: var(--accent-color); font-weight: bold;">Status:</span>
+                <label><input type="checkbox" id="war-dashboard-filter-okay"> Okay</label>
+                <label><input type="checkbox" id="war-dashboard-filter-hospital"> Hospital</label>
+                <label><input type="checkbox" id="war-dashboard-filter-abroad"> Abroad</label>
+                <span style="color: #888; font-size: 12px;">(Leave all unchecked to show all)</span>
+                <label style="white-space: nowrap;"><span style="color: var(--accent-color); font-weight: bold;">Recommended:</span> <input type="checkbox" id="war-dashboard-filter-recommended"> Top 5 targets (Okay, FF 2.5–3.5)</label>
+            </div>
+            <div class="table-scroll-wrapper" style="overflow-x: auto;">
+                <table id="war-dashboard-enemy-table" class="war-dashboard-table">
+                    <colgroup>
+                        <col style="width: 18%"><col style="width: 6%"><col style="width: 6%"><col style="width: 10%"><col style="width: 8%"><col style="width: 28%"><col style="width: 14%">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th data-column="member" class="war-dashboard-th-sort">Member <span class="war-dashboard-sort"></span></th>
+                            <th data-column="level" class="war-dashboard-th-sort">Level <span class="war-dashboard-sort"></span></th>
+                            <th data-column="ff" class="war-dashboard-th-sort">FF <span class="war-dashboard-sort"></span></th>
+                            <th data-column="eststats" class="war-dashboard-th-sort">Est. stats <span class="war-dashboard-sort"></span></th>
+                            <th data-column="status" class="war-dashboard-th-sort">Status <span class="war-dashboard-sort"></span></th>
+                            <th data-column="location" class="war-dashboard-th-sort">Location / state <span class="war-dashboard-sort"></span></th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Our team (collapsible, below Enemy; when collapsed we skip fetching it on auto-refresh) -->
+        <section id="war-dashboard-our-team" style="display: none;">
+            <button type="button" id="war-dashboard-our-team-toggle" class="war-dashboard-our-team-toggle" aria-expanded="false" style="width: 100%; text-align: left; padding: 10px 0; background: none; border: none; color: var(--accent-color); font-size: 1.1rem; font-weight: bold; cursor: pointer;">
+                <span class="war-dashboard-our-team-arrow" aria-hidden="true">▶</span> Our team
+            </button>
+            <div id="war-dashboard-our-team-body" class="war-dashboard-our-team-body" style="display: none;">
+                <p id="war-dashboard-our-average" style="color: #b0b0b0; font-size: 14px; margin-bottom: 8px;"></p>
+                <div class="table-scroll-wrapper" style="overflow-x: auto;">
+                    <table id="war-dashboard-our-table" class="war-dashboard-table">
+                        <colgroup>
+                            <col style="width: 22%"><col style="width: 10%"><col style="width: 10%"><col style="width: 14%"><col style="width: 12%"><col style="width: 32%">
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th data-column="member" class="war-dashboard-th-sort">Member <span class="war-dashboard-sort"></span></th>
+                                <th data-column="level" class="war-dashboard-th-sort">Level <span class="war-dashboard-sort"></span></th>
+                                <th data-column="ff" class="war-dashboard-th-sort">FF <span class="war-dashboard-sort"></span></th>
+                                <th data-column="eststats" class="war-dashboard-th-sort">Est. stats <span class="war-dashboard-sort"></span></th>
+                                <th data-column="status" class="war-dashboard-th-sort">Status <span class="war-dashboard-sort"></span></th>
+                                <th data-column="location" class="war-dashboard-th-sort">Location / state <span class="war-dashboard-sort"></span></th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+</div>

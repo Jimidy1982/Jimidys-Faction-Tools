@@ -85,6 +85,190 @@ header h1 {
     color: var(--accent-color);
 }
 
+.dashboard-layout nav .nav-beta {
+    display: block;
+    font-size: 10px;
+    color: #888;
+    padding: 0 20px 8px 20px;
+    margin-top: -4px;
+    font-weight: normal;
+}
+
+.war-dashboard-table {
+    table-layout: fixed;
+    width: 100%;
+    min-width: 700px;
+    font-size: 13px;
+}
+
+.war-dashboard-table th,
+.war-dashboard-table td {
+    padding: 5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.war-dashboard-th-sort {
+    cursor: pointer;
+    user-select: none;
+}
+
+.war-dashboard-th-sort:hover {
+    color: var(--accent-color);
+}
+
+.war-dashboard-sort {
+    margin-left: 4px;
+    font-size: 11px;
+}
+
+#war-dashboard-enemy-table td:last-child {
+    padding: 2px 4px;
+}
+
+.war-dashboard-note-input {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 2px 4px;
+    font-size: 12px;
+    background: var(--bg-secondary, #2a2a2a);
+    border: 1px solid var(--border-color, #444);
+    color: var(--text-primary, #eee);
+    border-radius: 3px;
+}
+
+.war-dashboard-note-input::placeholder {
+    color: var(--text-muted, #888);
+}
+
+/* Chains row: Our + Enemy side by side */
+.war-dashboard-chains-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: stretch;
+    margin-top: 12px;
+    margin-bottom: 16px;
+}
+
+.war-dashboard-chains-row .war-dashboard-chain-box {
+    flex: 1;
+    min-width: 200px;
+}
+
+/* Chain boxes: big, visible; flowing animation when active */
+.war-dashboard-chain-box {
+    margin-bottom: 0;
+    padding: 20px 24px;
+    min-height: 100px;
+    background: var(--bg-secondary, #1e1e1e);
+    border: 2px solid var(--border-color, #444);
+    border-radius: 8px;
+    text-align: center;
+    position: relative;
+}
+
+.war-dashboard-chain-title {
+    font-size: 1rem;
+    font-weight: bold;
+    color: var(--accent-color);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.war-dashboard-chain-current {
+    font-size: 3rem;
+    font-weight: bold;
+    line-height: 1.1;
+    color: var(--text-primary, #eee);
+    margin-bottom: 6px;
+}
+
+.war-dashboard-chain-timer {
+    font-size: 1.1rem;
+    color: var(--text-muted, #aaa);
+    margin-bottom: 8px;
+}
+
+.war-dashboard-chain-meta {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    font-size: 0.9rem;
+    color: var(--text-muted, #888);
+}
+
+.war-dashboard-chain-max {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+/* Flowing animation when chain is active (timeout > 0): rotating border + glow */
+.war-dashboard-chain-box-active {
+    border: none;
+    overflow: hidden;
+    box-shadow: 0 0 16px rgba(255, 215, 0, 0.35);
+    background: transparent;
+}
+
+.war-dashboard-chain-box-active::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 10px;
+    background: conic-gradient(from 0deg, var(--accent-color, #FFD700), #ff9f43, var(--accent-color, #FFD700), #ff9f43, var(--accent-color, #FFD700));
+    animation: war-dashboard-chain-rotate 4s linear infinite;
+    z-index: 0;
+    will-change: transform;
+    transform: translateZ(0);
+    backface-visibility: hidden;
+}
+
+.war-dashboard-chain-box-active::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 6px;
+    background: var(--bg-secondary, #1e1e1e);
+    z-index: 0;
+}
+
+.war-dashboard-chain-box-active .war-dashboard-chain-title,
+.war-dashboard-chain-box-active .war-dashboard-chain-current,
+.war-dashboard-chain-box-active .war-dashboard-chain-timer,
+.war-dashboard-chain-box-active .war-dashboard-chain-meta {
+    position: relative;
+    z-index: 1;
+}
+
+@keyframes war-dashboard-chain-rotate {
+    from { transform: translateZ(0) rotate(0deg); }
+    to { transform: translateZ(0) rotate(360deg); }
+}
+
+/* Below 60s: red animation, bolder */
+.war-dashboard-chain-box-urgent.war-dashboard-chain-box-active {
+    box-shadow: 0 0 24px rgba(220, 53, 69, 0.5);
+}
+
+.war-dashboard-chain-box-urgent.war-dashboard-chain-box-active::before {
+    background: conic-gradient(from 0deg, #dc3545, #e4606d, #dc3545, #e4606d, #dc3545);
+    inset: -5px;
+    animation-duration: 4s;
+}
+
+.war-dashboard-chain-box-urgent.war-dashboard-chain-box-active::after {
+    inset: 3px;
+}
+
+.war-dashboard-chain-box-urgent .war-dashboard-chain-timer {
+    font-weight: 700;
+    color: #f44;
+}
+
 .container {
     max-width: 1200px;
     margin: 0 auto;

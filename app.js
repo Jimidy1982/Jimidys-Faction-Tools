@@ -2301,7 +2301,23 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     }
-    
+
+    /** Used by War Dashboard: same FF Scouter pull as Faction Battle Stats (chunks of 200, 3 concurrent, 1s delay). Returns { ff: { player_id: fair_fight }, bs: { player_id: bs_estimate } }. */
+    window.getFFAndBattleStatsForMembers = async function (apiKey, memberIds) {
+        if (!memberIds || memberIds.length === 0) return { ff: {}, bs: {} };
+        const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+        const ffData = await fetchInParallelChunks(ffScouterUrl, memberIds, 200, 3, 1000);
+        const ff = {};
+        const bs = {};
+        ffData.forEach(player => {
+            if (player.fair_fight) {
+                ff[player.player_id] = player.fair_fight;
+                bs[player.player_id] = player.bs_estimate;
+            }
+        });
+        return { ff, bs };
+    };
+
     // Smart caching with TTL (Time To Live)
     const apiCache = new Map();
     const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -2596,6 +2612,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else {
                         console.error('[APP] initTermedWarCalculator is still not available after script load!');
                     }
+                };
+                document.head.appendChild(script);
+            } else if (page.includes('war-dashboard')) {
+                const oldScript = document.getElementById('war-dashboard-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src = 'tools/war-dashboard/war-dashboard.js';
+                script.id = 'war-dashboard-script';
+                script.onload = () => {
+                    if (typeof initWarDashboard === 'function') initWarDashboard();
+                    else if (window.initWarDashboard) window.initWarDashboard();
                 };
                 document.head.appendChild(script);
             } else if (page.includes('home.html')) {
