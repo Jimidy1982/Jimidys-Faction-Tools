@@ -2625,6 +2625,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     else if (window.initWarDashboard) window.initWarDashboard();
                 };
                 document.head.appendChild(script);
+            } else if (page.includes('vault-checker')) {
+                const oldScript = document.getElementById('vault-checker-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src = 'tools/vault-checker/vault-checker.js';
+                script.id = 'vault-checker-script';
+                script.onload = () => {
+                    if (typeof initVaultChecker === 'function') initVaultChecker();
+                    else if (window.initVaultChecker) window.initVaultChecker();
+                };
+                document.head.appendChild(script);
             } else if (page.includes('home.html')) {
                 // Log home page visit
                 if (window.logToolUsage) {
@@ -2637,7 +2648,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    function setNavActive() {
+        const hash = (window.location.hash || '#').replace('#', '') || 'home';
+        const pageName = hash.split('/')[0];
+        document.querySelectorAll('#mainNav .nav-link').forEach((a) => {
+            const href = (a.getAttribute('href') || '').replace('#', '');
+            const isHome = href === '' || href === 'home';
+            const active = (pageName === 'home' && isHome) || (pageName !== 'home' && href === pageName);
+            a.classList.toggle('nav-link-active', !!active);
+        });
+    }
+
     const router = () => {
+        setNavActive();
         const hash = window.location.hash.substring(1) || 'home';
         const pageName = `${hash.split('/')[0]}`;
         

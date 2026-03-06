@@ -42,14 +42,16 @@ header h1 {
 }
 
 .dashboard-layout nav {
-    width: 250px;
+    width: 220px;
     flex-shrink: 0;
     background-color: var(--secondary-color);
-    padding: 20px 0;
+    padding: 12px 0;
     height: calc(100vh - 82px);
     position: sticky;
     top: 0;
     border-right: 1px solid var(--border-color);
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 .dashboard-layout main {
@@ -60,7 +62,7 @@ header h1 {
 
 .dashboard-layout nav ul {
     list-style: none;
-    padding: 0 20px;
+    padding: 0 12px;
     margin: 0;
     width: 100%;
 }
@@ -74,10 +76,11 @@ header h1 {
     color: var(--text-color);
     text-decoration: none;
     display: block;
-    padding: 12px 20px;
+    padding: 6px 12px;
     border-radius: 4px;
     transition: background-color 0.2s;
     font-weight: bold;
+    font-size: 0.9rem;
 }
 
 .dashboard-layout nav a:hover {
@@ -87,11 +90,45 @@ header h1 {
 
 .dashboard-layout nav .nav-beta {
     display: block;
-    font-size: 10px;
+    font-size: 9px;
     color: #888;
-    padding: 0 20px 8px 20px;
-    margin-top: -4px;
+    padding: 0 12px 4px 12px;
+    margin-top: -2px;
     font-weight: normal;
+}
+
+.dashboard-layout nav .api-key-item {
+    padding: 0 0 12px 0;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-color, #444);
+}
+
+.dashboard-layout nav .api-key-label-wrap label,
+.dashboard-layout nav .api-key-item input {
+    font-size: 0.85rem;
+}
+
+.dashboard-layout nav a.nav-link {
+    border-left: 3px solid transparent;
+    margin-left: 0;
+    transition: background-color 0.2s, color 0.2s, border-left-color 0.2s;
+}
+
+.dashboard-layout nav a.nav-link:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: var(--accent-color);
+    border-left-color: var(--accent-color);
+}
+
+.dashboard-layout nav a.nav-link:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+}
+
+.dashboard-layout nav a.nav-link-active {
+    background-color: rgba(255, 215, 0, 0.12);
+    color: var(--accent-color);
+    border-left-color: var(--accent-color);
 }
 
 .war-dashboard-table {
@@ -248,6 +285,130 @@ header h1 {
     from { transform: translateZ(0) rotate(0deg); }
     to { transform: translateZ(0) rotate(360deg); }
 }
+
+/* Vault Checker */
+.vault-checker-table-wrap {
+    overflow-x: auto;
+    margin-bottom: 8px;
+}
+
+.vault-checker-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.vault-checker-table th,
+.vault-checker-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color, #444);
+}
+
+.vault-checker-table th {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.vault-checker-table a {
+    color: var(--accent-color);
+}
+
+.vault-checker-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-color, #444);
+}
+
+.vault-checker-tab {
+    padding: 10px 16px;
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: var(--text-muted, #888);
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: -1px;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.vault-checker-tab:hover {
+    color: var(--accent-color);
+}
+
+.vault-checker-tab-active {
+    color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
+}
+
+.vault-checker-panel {
+    margin-top: 8px;
+}
+
+.vault-checker-flagged-row {
+    background-color: rgba(255, 68, 68, 0.08);
+}
+
+/* By Player: item chips and key */
+.vault-checker-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 24px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: var(--bg-secondary, #1e1e1e);
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+.vault-checker-key .vault-key-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+}
+
+.vault-checker-key .vault-key-group strong {
+    color: var(--text-muted, #888);
+    margin-right: 4px;
+}
+
+.vault-item-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px 2px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+    white-space: nowrap;
+    border-left: 3px solid;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary, #eee);
+}
+
+.vault-item-code {
+    display: inline-block;
+    margin-right: 4px;
+    color: var(--accent-color, #FFD700);
+    font-style: italic;
+}
+
+.vault-cell-chips .vault-item-chip {
+    margin: 2px 4px 2px 0;
+}
+
+/* On-brand: accent (gold) at different opacities + neutral. No garish colours. */
+.vault-wtype-primary { border-left-color: var(--accent-color, #FFD700); }
+.vault-wtype-secondary { border-left-color: rgba(255, 215, 0, 0.65); }
+.vault-wtype-melee { border-left-color: rgba(255, 215, 0, 0.4); }
+.vault-wtype-other { border-left-color: rgba(255, 255, 255, 0.2); }
+
+.vault-slot-body { border-left-color: rgba(255, 215, 0, 1); }
+.vault-slot-gloves { border-left-color: rgba(255, 215, 0, 0.82); }
+.vault-slot-helmet { border-left-color: rgba(255, 215, 0, 0.64); }
+.vault-slot-boots { border-left-color: rgba(255, 215, 0, 0.48); }
+.vault-slot-legs { border-left-color: rgba(255, 215, 0, 0.32); }
 
 /* Below 60s: red animation, bolder */
 .war-dashboard-chain-box-urgent.war-dashboard-chain-box-active {
@@ -622,7 +783,7 @@ nav a:hover::after {
 
 .tool-cards-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 32px;
     margin-top: 32px;
 }
@@ -651,6 +812,14 @@ nav a:hover::after {
     font-size: 1.35rem;
     margin-bottom: 12px;
     font-weight: bold;
+}
+
+.tool-card-beta {
+    font-size: 0.75rem;
+    font-weight: normal;
+    font-style: italic;
+    color: #888;
+    margin-left: 4px;
 }
 
 .tool-card p {

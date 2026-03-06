@@ -1,0 +1,25 @@
+<div class="container">
+    <h1>Vault Checker</h1>
+    <p class="vault-checker-intro">See what's in your faction vault and who has loaned items. We flag players who have 2+ weapons of the same type (Primary, Secondary, Melee) or multiple armour in the same slot (e.g. two pairs of gloves).</p>
+
+    <div id="vault-checker-tool-container">
+        <p style="color: #b0b0b0; font-size: 14px; margin-bottom: 16px;">A limited API key with <strong>Faction</strong> access is required.</p>
+
+        <div id="vault-checker-loading" class="loading-bar" style="display: none;">
+            <div class="loading-spinner"></div>
+            <span class="loading-text">Loading vault<span class="loading-dots"></span></span>
+        </div>
+        <div id="vault-checker-error" style="display: none; color: #f44336; margin-bottom: 16px;"></div>
+
+        <div id="vault-checker-tabs-wrap" style="display: none;">
+            <div class="vault-checker-tabs" role="tablist">
+                <button type="button" class="vault-checker-tab vault-checker-tab-active" data-tab="by-player" role="tab">By Player</button>
+                <button type="button" class="vault-checker-tab" data-tab="by-weapon" role="tab">By Weapon</button>
+                <button type="button" class="vault-checker-tab" data-tab="by-armour" role="tab">By Armour</button>
+            </div>
+            <div id="vault-checker-panel-by-player" class="vault-checker-panel" role="tabpanel"></div>
+            <div id="vault-checker-panel-by-weapon" class="vault-checker-panel" style="display: none;" role="tabpanel"></div>
+            <div id="vault-checker-panel-by-armour" class="vault-checker-panel" style="display: none;" role="tabpanel"></div>
+        </div>
+    </div>
+</div>
