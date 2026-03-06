@@ -179,6 +179,51 @@ header h1 {
     color: var(--text-muted, #888);
 }
 
+/* Recommended filter: clear label and dynamic FF range */
+.war-dashboard-recommended-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px 10px;
+    white-space: nowrap;
+    padding: 6px 12px;
+    background: rgba(255, 215, 0, 0.08);
+    border: 1px solid rgba(255, 215, 0, 0.25);
+    border-radius: 6px;
+    cursor: default;
+}
+.war-dashboard-recommended-label input[type="checkbox"] {
+    cursor: pointer;
+}
+.war-dashboard-recommended-title {
+    color: var(--accent-color, #FFD700);
+    font-weight: bold;
+    font-size: 0.95rem;
+}
+.war-dashboard-recommended-desc {
+    color: var(--text-primary, #eee);
+    font-size: 0.9rem;
+}
+.war-dashboard-recommended-desc #war-dashboard-recommended-ff-range {
+    color: var(--accent-color, #FFD700);
+    font-weight: 600;
+}
+
+/* FF thresholds: single line, compact (Blue < [input] Green < [input] …) */
+#war-dashboard-ff-picker-body {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px 10px;
+}
+#war-dashboard-ff-picker-body .war-dashboard-ff-input {
+    width: 56px;
+    min-width: 56px;
+    padding: 4px 8px;
+    box-sizing: border-box;
+    text-align: center;
+    flex-shrink: 0;
+}
+
 /* Chains row: Our + Enemy side by side */
 .war-dashboard-chains-row {
     display: flex;
@@ -279,6 +324,59 @@ header h1 {
 .war-dashboard-chain-box-active .war-dashboard-chain-meta {
     position: relative;
     z-index: 1;
+}
+
+.war-dashboard-chain-box-off {
+    opacity: 0.75;
+}
+.war-dashboard-chain-box-off .war-dashboard-chain-off-message {
+    color: var(--text-muted, #888);
+    font-size: 0.95rem;
+    margin-top: 8px;
+}
+
+/* Chain box: track toggle in corner */
+.war-dashboard-chain-track-wrap {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    z-index: 2;
+}
+.war-dashboard-chain-track-input {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+}
+.war-dashboard-chain-track-slider {
+    width: 28px;
+    height: 14px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 14px;
+    transition: background 0.2s;
+}
+.war-dashboard-chain-track-slider::before {
+    content: '';
+    display: block;
+    width: 12px;
+    height: 12px;
+    margin: 1px 0 0 1px;
+    background: var(--accent-color, #FFD700);
+    border-radius: 50%;
+    transition: transform 0.2s;
+}
+.war-dashboard-chain-track-input:checked + .war-dashboard-chain-track-slider {
+    background: rgba(255, 215, 0, 0.35);
+}
+.war-dashboard-chain-track-input:checked + .war-dashboard-chain-track-slider::before {
+    transform: translateX(14px);
+}
+.war-dashboard-chain-track-input:focus-visible + .war-dashboard-chain-track-slider {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
 }
 
 @keyframes war-dashboard-chain-rotate {

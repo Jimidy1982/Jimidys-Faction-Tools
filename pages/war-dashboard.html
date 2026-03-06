@@ -53,11 +53,11 @@
             </button>
             <div id="war-dashboard-ff-picker-body" class="war-dashboard-picker-body" style="padding: 12px;">
                 <span>Blue &lt;</span>
-                <input type="number" id="war-dashboard-ff-blue" min="0" max="10" step="0.1" value="2.5" style="width: 50px;">
+                <input type="number" id="war-dashboard-ff-blue" class="war-dashboard-ff-input" min="0" max="10" step="0.1" value="2.5">
                 <span>Green &lt;</span>
-                <input type="number" id="war-dashboard-ff-green" min="0" max="10" step="0.1" value="3.5" style="width: 50px;">
+                <input type="number" id="war-dashboard-ff-green" class="war-dashboard-ff-input" min="0" max="10" step="0.1" value="3.5">
                 <span>Orange &lt;</span>
-                <input type="number" id="war-dashboard-ff-orange" min="0" max="10" step="0.1" value="4.5" style="width: 50px;">
+                <input type="number" id="war-dashboard-ff-orange" class="war-dashboard-ff-input" min="0" max="10" step="0.1" value="4.5">
                 <span>Red</span>
             </div>
         </div>
@@ -87,7 +87,11 @@
                 <label><input type="checkbox" id="war-dashboard-filter-hospital"> Hospital</label>
                 <label><input type="checkbox" id="war-dashboard-filter-abroad"> Abroad</label>
                 <span style="color: #888; font-size: 12px;">(Leave all unchecked to show all)</span>
-                <label style="white-space: nowrap;"><span style="color: var(--accent-color); font-weight: bold;">Recommended:</span> <input type="checkbox" id="war-dashboard-filter-recommended"> Top 5 targets (Okay, FF 2.5–3.5)</label>
+                <label class="war-dashboard-recommended-label">
+                    <span class="war-dashboard-recommended-title">Recommended</span>
+                    <input type="checkbox" id="war-dashboard-filter-recommended" aria-describedby="war-dashboard-recommended-desc">
+                    <span id="war-dashboard-recommended-desc" class="war-dashboard-recommended-desc">Top 5 targets (Okay, <span id="war-dashboard-recommended-ff-range">FF 2.5–3.5</span>)</span>
+                </label>
             </div>
             <div class="table-scroll-wrapper" style="overflow-x: auto;">
                 <table id="war-dashboard-enemy-table" class="war-dashboard-table">

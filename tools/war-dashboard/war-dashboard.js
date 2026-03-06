@@ -14,8 +14,14 @@
         ffNoticeHidden: 'war_dashboard_ff_notice_hidden',
         enemyPickerMinimised: 'war_dashboard_enemy_picker_minimised',
         refreshSectionMinimised: 'war_dashboard_refresh_section_minimised',
-        ffSectionMinimised: 'war_dashboard_ff_section_minimised'
+        ffSectionMinimised: 'war_dashboard_ff_section_minimised',
+        trackOurChain: 'war_dashboard_track_our_chain',
+        trackEnemyChain: 'war_dashboard_track_enemy_chain'
     };
+
+    const CHAIN_AT_ZERO_THROTTLE_MS = 60 * 1000; // when chain at 0, only refetch once per minute
+    let lastOurChainFetchTime = 0;
+    let lastEnemyChainFetchTime = 0;
 
     const FF_CACHE_PREFIX = 'war_dashboard_ff_';
     const FF_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
@@ -271,13 +277,13 @@
         if (avgEl) avgEl.textContent = count ? `Average FF: ${(sum / count).toFixed(2)}` : 'Average FF: —';
     }
 
-    /** Tick down timeout/cooldown display state every second (called from countdown interval). */
+    /** Tick down timeout/cooldown display state every second (only when tracking is on for that chain). */
     function updateChainDisplays() {
-        if (lastOurChain) {
+        if (getTrackOurChain() && lastOurChain) {
             if (ourChainDisplay.timeout > 0) ourChainDisplay.timeout--;
             else if (ourChainDisplay.cooldown > 0) ourChainDisplay.cooldown--;
         }
-        if (lastEnemyChain) {
+        if (getTrackEnemyChain() && lastEnemyChain) {
             if (enemyChainDisplay.timeout > 0) enemyChainDisplay.timeout--;
             else if (enemyChainDisplay.cooldown > 0) enemyChainDisplay.cooldown--;
         }
@@ -290,8 +296,8 @@
         return `${m}m ${remainder}s`;
     }
 
-    /** Render one chain box (Our or Enemy). chain = API data, display = { timeout, cooldown } for tick-down. */
-    function renderChainBox(boxEl, title, chain, display) {
+    /** Render one chain box (Our or Enemy). chain = API data, display = { timeout, cooldown } for tick-down. chainKey = 'our' | 'enemy' for the track toggle. */
+    function renderChainBox(boxEl, title, chain, display, chainKey) {
         if (!boxEl) return;
         if (!chain) {
             boxEl.style.display = 'none';
@@ -309,20 +315,46 @@
         const timerLabel = timeout > 0 ? 'Timeout' : (cooldown > 0 ? 'Cooldown' : null);
         const timerText = timerLabel ? `${timerLabel}: ${formatMinutesSeconds(displaySeconds)}` : '—';
         const isUrgent = (timeout > 0 && timeout < 60) || (timeout === 0 && cooldown > 0 && cooldown < 60);
+        const trackOn = chainKey === 'our' ? getTrackOurChain() : getTrackEnemyChain();
         boxEl.className = 'war-dashboard-chain-box' +
-            (isActive ? ' war-dashboard-chain-box-active' : '') +
-            (isUrgent ? ' war-dashboard-chain-box-urgent' : '');
+            (!trackOn ? ' war-dashboard-chain-box-off' : '') +
+            (trackOn && isActive ? ' war-dashboard-chain-box-active' : '') +
+            (trackOn && isUrgent ? ' war-dashboard-chain-box-urgent' : '');
         boxEl.setAttribute('aria-hidden', 'false');
         boxEl.style.display = 'block';
-        boxEl.innerHTML = `
-            <div class="war-dashboard-chain-title">${escapeHtml(title)}</div>
-            <div class="war-dashboard-chain-current">${escapeHtml(String(current))}</div>
-            <div class="war-dashboard-chain-timer">${escapeHtml(timerText)}</div>
-            <div class="war-dashboard-chain-meta">
-                <span class="war-dashboard-chain-modifier">Modifier: ${escapeHtml(String(modifier))}</span>
-                <span class="war-dashboard-chain-max">Next: ${escapeHtml(String(max))}</span>
-            </div>
-        `;
+        if (!trackOn) {
+            boxEl.innerHTML = `
+                <label class="war-dashboard-chain-track-wrap" title="Tracking off (reduces API calls): click to turn on. Frequency changed by your auto refresh settings.">
+                    <input type="checkbox" class="war-dashboard-chain-track-input" data-chain-key="${escapeHtml(chainKey)}" aria-label="Track this chain" />
+                    <span class="war-dashboard-chain-track-slider"></span>
+                </label>
+                <div class="war-dashboard-chain-title">${escapeHtml(title)}</div>
+                <div class="war-dashboard-chain-off-message">Tracking off</div>
+            `;
+        } else {
+            boxEl.innerHTML = `
+                <label class="war-dashboard-chain-track-wrap" title="Tracking on (increases API calls): click to turn off. Frequency changed by your auto refresh settings.">
+                    <input type="checkbox" class="war-dashboard-chain-track-input" data-chain-key="${escapeHtml(chainKey)}" checked aria-label="Track this chain" />
+                    <span class="war-dashboard-chain-track-slider"></span>
+                </label>
+                <div class="war-dashboard-chain-title">${escapeHtml(title)}</div>
+                <div class="war-dashboard-chain-current">${escapeHtml(String(current))}</div>
+                <div class="war-dashboard-chain-timer">${escapeHtml(timerText)}</div>
+                <div class="war-dashboard-chain-meta">
+                    <span class="war-dashboard-chain-modifier">Modifier: ${escapeHtml(String(modifier))}</span>
+                    <span class="war-dashboard-chain-max">Next: ${escapeHtml(String(max))}</span>
+                </div>
+            `;
+        }
+        const input = boxEl.querySelector('.war-dashboard-chain-track-input');
+        if (input) {
+            input.addEventListener('change', function () {
+                const on = this.checked;
+                if (chainKey === 'our') setTrackOurChain(on); else setTrackEnemyChain(on);
+                renderChainBoxes();
+                if (on) refreshChainWhenTurningOn(chainKey);
+            });
+        }
     }
 
     function renderChainBoxes() {
@@ -330,13 +362,15 @@
             document.getElementById('war-dashboard-our-chain-box'),
             'Our Chain',
             lastOurChain,
-            ourChainDisplay
+            ourChainDisplay,
+            'our'
         );
         renderChainBox(
             document.getElementById('war-dashboard-enemy-chain-box'),
             'Enemy Chain',
             lastEnemyChain,
-            enemyChainDisplay
+            enemyChainDisplay,
+            'enemy'
         );
     }
 
@@ -374,8 +408,8 @@
                 return matchActivity;
             });
             const ffVal = (member) => ffMap[String(member.id)] != null ? Number(ffMap[String(member.id)]) : null;
-            const inRange = (v) => v != null && v >= 2.5 && v <= 3.5;
-            const belowRange = (v) => v != null && v < 2.5;
+            const inRange = (v) => v != null && v >= blue && v <= green;
+            const belowRange = (v) => v != null && v < blue;
 
             let tier1 = pool.filter(m => {
                 const status = statusFromMember(m);
@@ -457,7 +491,29 @@
                 <td><input type="text" class="war-dashboard-note-input" data-player-id="${escapeHtml(id)}" value="${noteValue}" placeholder="Note…" maxlength="500" /></td>
             </tr>`;
         }).join('');
+
+        const active = document.activeElement;
+        const noteInput = (active && active.classList && active.classList.contains('war-dashboard-note-input') && table && table.contains(active))
+            ? active
+            : null;
+        const saved = noteInput ? {
+            playerId: noteInput.getAttribute('data-player-id'),
+            value: noteInput.value,
+            start: noteInput.selectionStart,
+            end: noteInput.selectionEnd
+        } : null;
+
         tbody.innerHTML = rowHtml;
+
+        if (saved && saved.playerId) {
+            const inputs = tbody.querySelectorAll('.war-dashboard-note-input');
+            const input = Array.prototype.find.call(inputs, function (el) { return el.getAttribute('data-player-id') === saved.playerId; });
+            if (input) {
+                input.value = saved.value;
+                input.focus();
+                input.setSelectionRange(saved.start, saved.end);
+            }
+        }
     }
 
     function escapeHtml(s) {
@@ -478,6 +534,25 @@
             if (text) localStorage.setItem(NOTE_PREFIX + playerId, text);
             else localStorage.removeItem(NOTE_PREFIX + playerId);
         } catch (e) { /* ignore */ }
+    }
+
+    function getTrackOurChain() {
+        const v = localStorage.getItem(STORAGE_KEYS.trackOurChain);
+        return v === null || v === 'true';
+    }
+    function setTrackOurChain(on) {
+        try { localStorage.setItem(STORAGE_KEYS.trackOurChain, on ? 'true' : 'false'); } catch (e) { /* ignore */ }
+    }
+    function getTrackEnemyChain() {
+        const v = localStorage.getItem(STORAGE_KEYS.trackEnemyChain);
+        return v === null || v === 'true';
+    }
+    function setTrackEnemyChain(on) {
+        try { localStorage.setItem(STORAGE_KEYS.trackEnemyChain, on ? 'true' : 'false'); } catch (e) { /* ignore */ }
+    }
+
+    function isChainAtZero(chain) {
+        return chain && Number(chain.timeout || 0) === 0 && Number(chain.cooldown || 0) === 0;
     }
 
     function showLoading(show) {
@@ -510,6 +585,14 @@
         if (greenInput && green != null) greenInput.value = green || '3.5';
         const orangeInput = document.getElementById('war-dashboard-ff-orange');
         if (orangeInput && orange != null) orangeInput.value = orange || '4.5';
+        updateRecommendedLabel();
+    }
+
+    function updateRecommendedLabel() {
+        const blue = Number(document.getElementById('war-dashboard-ff-blue')?.value) || 2.5;
+        const green = Number(document.getElementById('war-dashboard-ff-green')?.value) || 3.5;
+        const el = document.getElementById('war-dashboard-recommended-ff-range');
+        if (el) el.textContent = 'FF ' + blue + ' – ' + green;
     }
 
     function saveSettings() {
@@ -628,6 +711,8 @@
 
             lastOurChain = ourChainData;
             lastEnemyChain = enemyChainData;
+            if (ourChainData) lastOurChainFetchTime = Date.now();
+            if (enemyChainData) lastEnemyChainFetchTime = Date.now();
             ourChainDisplay = lastOurChain ? { timeout: lastOurChain.timeout, cooldown: lastOurChain.cooldown } : { timeout: 0, cooldown: 0 };
             enemyChainDisplay = lastEnemyChain ? { timeout: lastEnemyChain.timeout, cooldown: lastEnemyChain.cooldown } : { timeout: 0, cooldown: 0 };
 
@@ -665,6 +750,32 @@
             body.style.display = 'block';
             btn.setAttribute('aria-expanded', 'true');
             if (arrow) arrow.textContent = '▼';
+        }
+    }
+
+    /** When user turns chain tracking back on, do a fresh pull of that chain then follow usual auto-refresh rules. */
+    async function refreshChainWhenTurningOn(chainKey) {
+        if (chainKey !== 'our' && chainKey !== 'enemy') return;
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+        const factionId = chainKey === 'our' ? lastOurFactionId : lastEnemyFactionId;
+        if (!factionId) return;
+        try {
+            const data = await fetchFactionChain(apiKey, factionId);
+            if (data) {
+                if (chainKey === 'our') {
+                    lastOurChain = data;
+                    ourChainDisplay = { timeout: data.timeout, cooldown: data.cooldown };
+                    lastOurChainFetchTime = Date.now();
+                } else {
+                    lastEnemyChain = data;
+                    enemyChainDisplay = { timeout: data.timeout, cooldown: data.cooldown };
+                    lastEnemyChainFetchTime = Date.now();
+                }
+                renderChainBoxes();
+            }
+        } catch (e) {
+            console.warn('War Dashboard refresh chain on turn on:', e);
         }
     }
 
@@ -711,7 +822,7 @@
         }
     }
 
-    /** Status-only refresh: re-fetch faction members (for online/offline status only), no FF, no full resolve. Only runs when dashboard is visible. No loading animation to avoid layout shift. */
+    /** Status-only refresh: re-fetch faction members and chains. When chain tracking is off, skip that chain. When chain is at 0, only refetch once per minute. */
     async function refreshStatusOnly() {
         const page = (window.location.hash || '').replace('#', '').split('/')[0];
         if (page !== 'war-dashboard') return;
@@ -721,10 +832,24 @@
 
         showLoading(false);
         try {
+            const now = Date.now();
+            const ourChainPromise = (() => {
+                if (!getTrackOurChain()) return Promise.resolve(lastOurChain);
+                if (lastOurFactionId && isChainAtZero(lastOurChain) && lastOurChainFetchTime && (now - lastOurChainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
+                    return Promise.resolve(lastOurChain);
+                return lastOurFactionId ? fetchFactionChain(apiKey, lastOurFactionId).then((data) => { lastOurChainFetchTime = Date.now(); return data; }).catch(() => lastOurChain) : Promise.resolve(lastOurChain);
+            })();
+            const enemyChainPromise = (() => {
+                if (!getTrackEnemyChain()) return Promise.resolve(lastEnemyChain);
+                if (isChainAtZero(lastEnemyChain) && lastEnemyChainFetchTime && (now - lastEnemyChainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
+                    return Promise.resolve(lastEnemyChain);
+                return fetchFactionChain(apiKey, lastEnemyFactionId).then((data) => { lastEnemyChainFetchTime = Date.now(); return data; }).catch(() => lastEnemyChain);
+            })();
+
             const [enemyMembers, ourChainData, enemyChainData] = await Promise.all([
                 fetchFactionMembers(apiKey, lastEnemyFactionId).catch(() => lastEnemyMembers),
-                lastOurFactionId ? fetchFactionChain(apiKey, lastOurFactionId).catch(() => lastOurChain) : Promise.resolve(lastOurChain),
-                fetchFactionChain(apiKey, lastEnemyFactionId).catch(() => lastEnemyChain)
+                ourChainPromise,
+                enemyChainPromise
             ]);
             lastEnemyMembers = enemyMembers;
             if (ourChainData) {
@@ -778,16 +903,9 @@
             countdownTick = setInterval(() => {
                 if ((window.location.hash || '').replace('#', '').split('/')[0] !== 'war-dashboard') return;
                 updateCountdownDisplay();
-                const active = document.activeElement;
-                const notePlayerId = active?.classList?.contains('war-dashboard-note-input') ? active.getAttribute('data-player-id') : null;
                 updateChainDisplays();
                 renderChainBoxes();
-                if (lastEnemyMembers.length) renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
-                if (notePlayerId) {
-                    const input = document.querySelector(`#war-dashboard-enemy-table .war-dashboard-note-input[data-player-id="${notePlayerId}"]`);
-                    if (input) input.focus();
-                }
-                if (isOurTeamExpanded() && lastOurMembers.length) renderOurTeam(lastOurMembers, lastOurFF, lastOurBS, null);
+                /* Do not re-render enemy/our tables here: it replaces the tbody and recreates note inputs, so the cursor would jump. Only chain boxes and refresh countdown need to tick. */
             }, 1000);
         }
         updateCountdownDisplay();
@@ -962,8 +1080,8 @@
             refreshBattleStatsOnly();
         });
 
-        document.getElementById('war-dashboard-ff-blue')?.addEventListener('change', () => runDashboard());
-        document.getElementById('war-dashboard-ff-green')?.addEventListener('change', () => runDashboard());
+        document.getElementById('war-dashboard-ff-blue')?.addEventListener('change', () => { updateRecommendedLabel(); runDashboard(); });
+        document.getElementById('war-dashboard-ff-green')?.addEventListener('change', () => { updateRecommendedLabel(); runDashboard(); });
         document.getElementById('war-dashboard-ff-orange')?.addEventListener('change', () => runDashboard());
 
         // Only run timer when on this page; stop when user navigates away
