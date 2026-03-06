@@ -87,11 +87,11 @@
                 <label><input type="checkbox" id="war-dashboard-filter-hospital"> Hospital</label>
                 <label><input type="checkbox" id="war-dashboard-filter-abroad"> Abroad</label>
                 <span style="color: #888; font-size: 12px;">(Leave all unchecked to show all)</span>
-                <label class="war-dashboard-recommended-label">
-                    <span class="war-dashboard-recommended-title">Recommended</span>
-                    <input type="checkbox" id="war-dashboard-filter-recommended" aria-describedby="war-dashboard-recommended-desc">
-                    <span id="war-dashboard-recommended-desc" class="war-dashboard-recommended-desc">Top 5 targets (Okay, <span id="war-dashboard-recommended-ff-range">FF 2.5–3.5</span>)</span>
-                </label>
+                <span class="war-dashboard-recommended-wrap">
+                    <input type="checkbox" id="war-dashboard-filter-recommended" class="war-dashboard-recommended-checkbox" aria-hidden="true" tabindex="-1">
+                    <button type="button" id="war-dashboard-recommended-btn" class="war-dashboard-recommended-btn" aria-pressed="false" aria-describedby="war-dashboard-recommended-desc">Recommended</button>
+                    <span id="war-dashboard-recommended-desc" class="war-dashboard-recommended-desc">Top 5 (Okay, <span id="war-dashboard-recommended-ff-range">FF 2.5 – 3.5</span>)</span>
+                </span>
             </div>
             <div class="table-scroll-wrapper" style="overflow-x: auto;">
                 <table id="war-dashboard-enemy-table" class="war-dashboard-table">

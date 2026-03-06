@@ -180,28 +180,48 @@ header h1 {
 }
 
 /* Recommended filter: clear label and dynamic FF range */
-.war-dashboard-recommended-label {
+.war-dashboard-recommended-wrap {
     display: inline-flex;
     align-items: center;
-    gap: 6px 10px;
-    white-space: nowrap;
-    padding: 6px 12px;
-    background: rgba(255, 215, 0, 0.08);
-    border: 1px solid rgba(255, 215, 0, 0.25);
-    border-radius: 6px;
-    cursor: default;
+    gap: 8px 12px;
+    flex-wrap: wrap;
 }
-.war-dashboard-recommended-label input[type="checkbox"] {
-    cursor: pointer;
+.war-dashboard-recommended-checkbox {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+    pointer-events: none;
 }
-.war-dashboard-recommended-title {
-    color: var(--accent-color, #FFD700);
-    font-weight: bold;
+.war-dashboard-recommended-btn {
+    padding: 6px 14px;
     font-size: 0.95rem;
+    font-weight: bold;
+    color: var(--accent-color, #FFD700);
+    background: rgba(255, 215, 0, 0.12);
+    border: 1px solid rgba(255, 215, 0, 0.35);
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+.war-dashboard-recommended-btn:hover {
+    background: rgba(255, 215, 0, 0.2);
+    border-color: rgba(255, 215, 0, 0.5);
+}
+.war-dashboard-recommended-btn.war-dashboard-recommended-btn-on {
+    background: var(--accent-color, #FFD700);
+    border-color: var(--accent-color, #FFD700);
+    color: #1a1a1a;
+    box-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+}
+.war-dashboard-recommended-btn.war-dashboard-recommended-btn-on:hover {
+    background: #ffdf33;
+    box-shadow: 0 0 12px rgba(255, 215, 0, 0.6);
 }
 .war-dashboard-recommended-desc {
-    color: var(--text-primary, #eee);
-    font-size: 0.9rem;
+    color: var(--text-muted, #888);
+    font-size: 0.85rem;
 }
 .war-dashboard-recommended-desc #war-dashboard-recommended-ff-range {
     color: var(--accent-color, #FFD700);

@@ -1036,9 +1036,26 @@
 
         ['war-dashboard-filter-online', 'war-dashboard-filter-offline', 'war-dashboard-filter-idle', 'war-dashboard-filter-okay', 'war-dashboard-filter-hospital', 'war-dashboard-filter-abroad', 'war-dashboard-filter-recommended'].forEach(id => {
             document.getElementById(id)?.addEventListener('change', () => {
+                if (id === 'war-dashboard-filter-recommended') syncRecommendedButton();
                 renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
             });
         });
+
+        function syncRecommendedButton() {
+            const cb = document.getElementById('war-dashboard-filter-recommended');
+            const btn = document.getElementById('war-dashboard-recommended-btn');
+            if (!cb || !btn) return;
+            const on = cb.checked;
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.classList.toggle('war-dashboard-recommended-btn-on', on);
+        }
+        document.getElementById('war-dashboard-recommended-btn')?.addEventListener('click', () => {
+            const cb = document.getElementById('war-dashboard-filter-recommended');
+            if (!cb) return;
+            cb.checked = !cb.checked;
+            cb.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        syncRecommendedButton();
 
         document.querySelectorAll('#war-dashboard-enemy-table th.war-dashboard-th-sort').forEach(th => {
             th.addEventListener('click', () => {
