@@ -7,16 +7,18 @@
         <section class="recruitment-section" aria-labelledby="recruitment-step1-heading">
             <h2 id="recruitment-step1-heading" style="color: var(--accent-color); margin-bottom: 10px;">Step 1 – Fetch wars &amp; faction list</h2>
             <div class="recruitment-step1-controls">
-                <label for="recruitment-war-count">Number of recent wars</label>
+                <label for="recruitment-war-count">Number of recent wars to fetch</label>
                 <input type="number" id="recruitment-war-count" min="1" max="500" value="50" style="width: 80px;">
+                <span class="recruitment-hint" title="Torn's API only exposes a limited number of the most recent ranked wars; the tool uses all of them.">(max set by Torn API)</span>
                 <button type="button" id="recruitment-fetch-wars" class="btn">Fetch wars &amp; faction list</button>
-                <button type="button" id="recruitment-fetch-more" class="btn" disabled title="Add more wars to the current results (same filters)">Fetch more results</button>
+                <button type="button" id="recruitment-fetch-more" class="btn" disabled title="Add more wars from Torn's quick list (same filters)">Fetch more results</button>
+                <button type="button" id="recruitment-fetch-older" class="btn" disabled title="Probe older war IDs one-by-one (slower, rate-limited). Uses same endpoint as cache swap / termed war calculator.">Fetch older wars (slower)</button>
             </div>
             <p id="recruitment-step1-status" class="recruitment-status" style="margin-top: 8px; color: #b0b0b0; font-size: 13px;"></p>
         </section>
 
-        <!-- Step 2: Filters -->
-        <section class="recruitment-section" aria-labelledby="recruitment-step2-heading">
+        <!-- Step 2: Filters (hidden until Step 1 completes) -->
+        <section id="recruitment-step2-section" class="recruitment-section" aria-labelledby="recruitment-step2-heading" style="display: none;">
             <h2 id="recruitment-step2-heading" style="color: var(--accent-color); margin-bottom: 10px;">Step 2 – Filters</h2>
             <div class="recruitment-filters">
                 <div class="recruitment-filter-group">
@@ -32,27 +34,16 @@
                     </select>
                 </div>
                 <div class="recruitment-filter-group">
-                    <label for="recruitment-min-score">Min. player score (per war)</label>
-                    <input type="number" id="recruitment-min-score" min="0" value="0" style="width: 80px;">
-                </div>
-                <div class="recruitment-filter-group">
-                    <button type="button" id="recruitment-build-list" class="btn">Load war reports &amp; build player list</button>
+                    <button type="button" id="recruitment-build-list" class="btn">Build Player List</button>
                 </div>
             </div>
-            <p id="recruitment-step2-status" class="recruitment-status" style="margin-top: 8px; color: #b0b0b0; font-size: 13px;"></p>
-        </section>
-
-        <!-- Progress -->
-        <div id="recruitment-progress" class="recruitment-progress" style="display: none;">
-            <p id="recruitment-progress-message"></p>
-            <p id="recruitment-progress-details" style="font-size: 12px; color: #888;"></p>
-        </div>
-        <div id="recruitment-error" class="recruitment-error" style="display: none; color: #f44336; margin: 10px 0;"></div>
-
-        <!-- Results -->
-        <section class="recruitment-section" aria-labelledby="recruitment-results-heading">
-            <h2 id="recruitment-results-heading" style="color: var(--accent-color); margin-bottom: 10px;">Results</h2>
-            <div class="recruitment-results-filters" style="margin-bottom: 12px;">
+            <div class="recruitment-results-filters" style="margin-top: 16px; margin-bottom: 12px;">
+                <div class="recruitment-filter-row">
+                    <label class="recruitment-filter-check">
+                        <input type="checkbox" id="recruitment-filter-ignore-contacted">
+                        <span>Ignore previously contacted</span>
+                    </label>
+                </div>
                 <div class="recruitment-filter-row">
                     <label class="recruitment-filter-check">
                         <input type="checkbox" id="recruitment-filter-leader-hits-below">
@@ -89,17 +80,30 @@
                         <input type="text" inputmode="numeric" id="recruitment-filter-min-score" value="" placeholder="e.g. 20" style="width: 72px;">
                     </span>
                 </div>
-                <div class="recruitment-filter-row" style="margin-top: 12px;">
-                    <button type="button" id="recruitment-fetch-battle-stats" class="btn" disabled>Fetch battle stats (FF Scouter)</button>
-                    <button type="button" id="recruitment-fetch-player-details" class="btn" disabled style="margin-left: 10px;">Fetch player details</button>
-                    <span id="recruitment-results-summary" style="margin-left: 12px; color: #888; font-size: 13px;"></span>
-                </div>
+            </div>
+            <p id="recruitment-step2-status" class="recruitment-status" style="margin-top: 8px; color: #b0b0b0; font-size: 13px;"></p>
+        </section>
+
+        <!-- Progress -->
+        <div id="recruitment-progress" class="recruitment-progress" style="display: none;">
+            <p id="recruitment-progress-message"></p>
+            <p id="recruitment-progress-details" style="font-size: 12px; color: #888;"></p>
+        </div>
+        <div id="recruitment-error" class="recruitment-error" style="display: none; color: #f44336; margin: 10px 0;"></div>
+
+        <!-- Results (hidden until Build Player List completes) -->
+        <section id="recruitment-results-section" class="recruitment-section" aria-labelledby="recruitment-results-heading" style="display: none;">
+            <h2 id="recruitment-results-heading" style="color: var(--accent-color); margin-bottom: 10px;">Results</h2>
+            <div class="recruitment-results-actions" style="margin-bottom: 12px;">
+                <button type="button" id="recruitment-fetch-player-details" class="btn" disabled>Fetch player details</button>
+                <span id="recruitment-results-summary" style="margin-left: 12px; color: #888; font-size: 13px;"></span>
             </div>
             <div class="table-scroll-wrapper" style="overflow-x: auto;">
                 <table id="recruitment-table" class="recruitment-table">
                     <thead>
                         <tr>
                             <th class="recruitment-sort" data-sort="name">Player</th>
+                            <th class="recruitment-sort" data-sort="lastContacted" title="When you last opened this player's profile">Last contacted</th>
                             <th class="recruitment-sort" data-sort="level">Level</th>
                             <th class="recruitment-sort" data-sort="warHits">War hits</th>
                             <th class="recruitment-sort" data-sort="warScore">War score</th>
@@ -121,6 +125,7 @@
                         <thead>
                             <tr>
                                 <th>Player</th>
+                                <th title="When you last opened this player's profile">Last contacted</th>
                                 <th>Level</th>
                                 <th>Est. stats</th>
                                 <th>War hits</th>

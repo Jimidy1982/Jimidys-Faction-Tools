@@ -542,6 +542,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Recruitment tool requires VIP 3
     const RECRUITMENT_VIP_REQUIRED = 3;
     window.currentVipLevel = window.currentVipLevel ?? 0;
+    /** True only after we've fetched VIP (welcome flow); avoids redirecting on refresh before key is validated. */
+    window.vipLevelKnown = window.vipLevelKnown ?? false;
 
     /** Apply VIP gating to Recruitment: grey out and tooltip if vipLevel < RECRUITMENT_VIP_REQUIRED. */
     function applyVipGating(vipLevel) {
@@ -2495,12 +2497,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     // If we have cached data, display it immediately
                     if (vipData) {
                         window.currentVipLevel = vipData.vipLevel ?? 0;
+                        window.vipLevelKnown = true;
                         applyVipGating(vipData.vipLevel);
                         // Temporarily set welcome message so displayVipStatus can append to it
                         welcomeMessage.innerHTML = welcomeHtml;
                         displayVipStatus(vipData, userData.name);
                     } else {
                         window.currentVipLevel = 0;
+                        window.vipLevelKnown = true;
                         applyVipGating(0);
                         // No VIP data, just show welcome + rate limit settings
                         const rateLimitHtml = getRateLimitSettingsHtml();
@@ -2518,6 +2522,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
                         if (updatedVipData) {
                             window.currentVipLevel = updatedVipData.vipLevel ?? 0;
+                            window.vipLevelKnown = true;
                             applyVipGating(updatedVipData.vipLevel);
                             // Update display with fresh VIP data (this will also add rate limit settings)
                             welcomeMessage.innerHTML = welcomeHtml;
@@ -2530,14 +2535,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 } else {
                     window.currentVipLevel = 0;
+                    window.vipLevelKnown = true;
                     applyVipGating(0);
                     welcomeMessage.style.display = 'none';
+                }
+                if (window.vipLevelKnown && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED && (window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
+                    window.location.hash = 'home';
                 }
             } catch (error) {
                 console.error('Error updating welcome message:', error);
                 window.currentVipLevel = 0;
+                window.vipLevelKnown = true;
                 applyVipGating(0);
                 welcomeMessage.style.display = 'none';
+                if ((window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
+                    window.location.hash = 'home';
+                }
+            }
+            if (window.vipLevelKnown && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED && (window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
+                window.location.hash = 'home';
             }
         }, 500);
     }
@@ -2746,8 +2762,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Recruitment requires VIP 3
-        if (pageName === 'recruitment' && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED) {
+        // Recruitment requires VIP 3 — only redirect when we know they're below VIP 3 (so refresh on #recruitment stays)
+        if (pageName === 'recruitment' && window.vipLevelKnown && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED) {
             window.location.hash = 'home';
             loadPage('pages/home.html');
             return;

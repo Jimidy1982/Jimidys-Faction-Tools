@@ -22,31 +22,129 @@
         filterMinWarHits: 'recruitment_filter_min_war_hits',
         filterMinScoreCb: 'recruitment_filter_min_score_cb',
         filterMinScore: 'recruitment_filter_min_score',
+        filterIgnoreContacted: 'recruitment_filter_ignore_contacted',
         sortKey: 'recruitment_sort_key',
         sortDir: 'recruitment_sort_dir',
-        clickedPlayers: 'recruitment_clicked_players'
+        clickedPlayers: 'recruitment_clicked_players',
+        battleStatsCache: 'recruitment_battle_stats_cache'
     };
 
-    function getClickedPlayerIds() {
+    const BATTLE_STATS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+    function getBattleStatsFromCache(playerIds) {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.battleStatsCache);
+            const cache = raw ? JSON.parse(raw) : {};
+            if (typeof cache !== 'object') return { ff: {}, bs: {}, idsToFetch: playerIds.filter(Boolean) };
+            const now = Date.now();
+            const ff = {};
+            const bs = {};
+            const idsToFetch = [];
+            playerIds.forEach(id => {
+                const sid = String(id);
+                const entry = cache[sid];
+                if (entry && (now - (entry.cachedAt || 0)) < BATTLE_STATS_CACHE_TTL_MS) {
+                    if (entry.ff != null) ff[sid] = entry.ff;
+                    if (entry.bs != null) bs[sid] = entry.bs;
+                } else if (sid && /^\d+$/.test(sid)) idsToFetch.push(sid);
+            });
+            return { ff, bs, idsToFetch };
+        } catch (e) { return { ff: {}, bs: {}, idsToFetch: playerIds.filter(id => id != null && /^\d+$/.test(String(id))) }; }
+    }
+
+    function setBattleStatsCache(ff, bs) {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.battleStatsCache);
+            const cache = raw ? JSON.parse(raw) : {};
+            if (typeof cache !== 'object') cache = {};
+            const now = Date.now();
+            const ids = new Set([...(Object.keys(ff || {})), ...(Object.keys(bs || {}))]);
+            ids.forEach(sid => {
+                cache[sid] = {
+                    ff: (ff && ff[sid]) != null ? ff[sid] : (cache[sid] && cache[sid].ff),
+                    bs: (bs && bs[sid]) != null ? bs[sid] : (cache[sid] && cache[sid].bs),
+                    cachedAt: now
+                };
+            });
+            localStorage.setItem(STORAGE_KEYS.battleStatsCache, JSON.stringify(cache));
+        } catch (e) { /* ignore */ }
+    }
+
+    /** Load battle stats from cache + FF Scouter (uncached only), apply to playerList, render. Runs after build list / fetch more / fetch older. */
+    async function ensureBattleStatsFetched() {
+        const apiKey = getApiKey();
+        if (!apiKey || !playerList.length) return;
+        const ids = playerList.map(p => p.id).filter(id => id != null && String(id).trim() !== '' && /^\d+$/.test(String(id)));
+        if (ids.length === 0) return;
+        const { ff: cachedFf, bs: cachedBs, idsToFetch } = getBattleStatsFromCache(ids);
+        let ff = { ...cachedFf };
+        let bs = { ...cachedBs };
+        if (idsToFetch.length > 0) {
+            const fn = window.getFFAndBattleStatsForMembers;
+            if (typeof fn !== 'function') return;
+            setProgress(true, 'Fetching battle stats (FF Scouter)…', idsToFetch.length + ' players');
+            try {
+                const result = await fn(apiKey, idsToFetch);
+                if (result && result.ff) Object.assign(ff, result.ff);
+                if (result && result.bs) Object.assign(bs, result.bs);
+                setBattleStatsCache(result?.ff || {}, result?.bs || {});
+            } catch (e) {
+                setError(e.message || 'FF Scouter failed.');
+            }
+            setProgress(false);
+        }
+        playerList.forEach(p => {
+            p.ff = ff[p.id] != null ? ff[p.id] : null;
+            p.bs = bs[p.id] != null ? bs[p.id] : null;
+        });
+        renderTable();
+    }
+
+    /** Contacted storage: { playerId: timestamp }. Migrate from old array format. */
+    function getContactedTimestamps() {
         try {
             const raw = localStorage.getItem(STORAGE_KEYS.clickedPlayers);
-            const arr = raw ? JSON.parse(raw) : [];
-            return new Set(Array.isArray(arr) ? arr.map(String) : []);
-        } catch (e) { return new Set(); }
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                const obj = {};
+                const now = Date.now();
+                parsed.forEach(id => { obj[String(id)] = now; });
+                try { localStorage.setItem(STORAGE_KEYS.clickedPlayers, JSON.stringify(obj)); } catch (e) { /* ignore */ }
+                return obj;
+            }
+            if (parsed && typeof parsed === 'object') return parsed;
+            return {};
+        } catch (e) { return {}; }
+    }
+
+    function getClickedPlayerIds() {
+        return new Set(Object.keys(getContactedTimestamps()));
     }
 
     function saveClickedPlayerId(id) {
-        const set = getClickedPlayerIds();
-        set.add(String(id));
+        const map = getContactedTimestamps();
+        map[String(id)] = Date.now();
         try {
-            localStorage.setItem(STORAGE_KEYS.clickedPlayers, JSON.stringify([...set]));
+            localStorage.setItem(STORAGE_KEYS.clickedPlayers, JSON.stringify(map));
         } catch (e) { /* ignore */ }
+    }
+
+    /** Short form for "last contacted" column: e.g. 2d, 3w, 2mo */
+    function formatLastContactedShort(timestamp) {
+        if (timestamp == null || !Number.isFinite(Number(timestamp))) return '—';
+        const days = Math.floor((Date.now() - Number(timestamp)) / (24 * 60 * 60 * 1000));
+        if (days < 0) return '—';
+        if (days < 7) return days + 'd';
+        if (days < 28) return Math.round(days / 7) + 'w';
+        return Math.round(days / 30) + 'mo';
     }
 
     let sortKey = 'warScore';
     let sortDir = -1; // -1 desc, 1 asc
 
     let rankedWarsList = []; // { warId, factions: { id: { name, score, chain } }, war: { start, end, target, winner } }
+    let quickListTotal = 0;  // total wars returned by Torn rankedwars API (so we know when quick list is exhausted)
     let factionMap = {};     // factionId -> { name, rank, leader, respect }
     let playerList = [];     // { id, name, level, warHits, warScore, factionId, factionName, factionRank, respect, leader, ff, bs }
 
@@ -199,6 +297,59 @@
     }
 
     const FETCH_MORE_INCREMENT = 50;
+    /** When fetching older wars by probing war IDs, stop after this many added or this many consecutive invalid IDs. */
+    const OLDER_WARS_BATCH = 30;
+    const OLDER_WARS_MAX_CONSECUTIVE_FAILS = 50;
+
+    /** Fetch older wars by probing torn/{warId}?selections=rankedwarreport one-by-one (slower, rate-limited). Returns number added. batchSize = how many to try to add (from "Number of recent wars to fetch" input). */
+    async function fetchOlderWarsByWarId(apiKey, opts, progressOpts, batchSize) {
+        const maxToAdd = Math.max(1, Math.min(500, parseInt(batchSize, 10) || OLDER_WARS_BATCH));
+        if (!rankedWarsList.length) return 0;
+        const oldest = rankedWarsList[rankedWarsList.length - 1];
+        let nextId = parseInt(String(oldest.warId), 10) - 1;
+        if (!Number.isFinite(nextId) || nextId < 1) return 0;
+
+        const progressMsg = progressOpts?.progressMessage || null;
+        const progressDet = progressOpts?.progressDetails || null;
+        const updateProgress = (msg, detail) => {
+            if (progressMsg) progressMsg.textContent = msg || '';
+            if (progressDet) progressDet.textContent = detail || '';
+        };
+
+        let added = 0;
+        let consecutiveFails = 0;
+        const existingIds = new Set(rankedWarsList.map(w => String(w.warId)));
+
+        while (added < maxToAdd && consecutiveFails < OLDER_WARS_MAX_CONSECUTIVE_FAILS) {
+            if (existingIds.has(String(nextId))) {
+                nextId--;
+                continue;
+            }
+            updateProgress('Fetching older wars by ID…', `${added} found, trying war ID ${nextId}…`);
+            try {
+                const report = await fetchWarReport(apiKey, nextId, progressOpts);
+                if (report && report.factions && report.war && (report.war.end || 0) > 0) {
+                    const entry = {
+                        warId: String(nextId),
+                        factions: report.factions,
+                        war: report.war
+                    };
+                    rankedWarsList.push(entry);
+                    rankedWarsList.sort((a, b) => (b.war.end || 0) - (a.war.end || 0));
+                    existingIds.add(String(nextId));
+                    processOneWarReport(report, opts, String(nextId));
+                    added++;
+                    consecutiveFails = 0;
+                } else {
+                    consecutiveFails++;
+                }
+            } catch (e) {
+                consecutiveFails++;
+            }
+            nextId--;
+        }
+        return added;
+    }
 
     /** Process one war report into playerMap and leaderWarHits. Mutates both. warId used for rankreport link. */
     function processOneWarReport(report, opts, warId) {
@@ -335,6 +486,14 @@
         return Array.from(checked).map(cb => cb.value);
     }
 
+    /** Min. score to use when building list / fetching more: from Results filter (Min. score) if checked, else 0. */
+    function getBuildMinScore() {
+        const cb = document.getElementById('recruitment-filter-min-score-cb');
+        const input = document.getElementById('recruitment-filter-min-score');
+        if (!cb?.checked || !input) return 0;
+        return Math.max(0, parseFloat(parseNumInput(input.value)) || 0);
+    }
+
     /** Parse respect string (e.g. "1,234,567" or "277640") to number. */
     function parseRespect(str) {
         if (str == null || str === '') return NaN;
@@ -346,6 +505,12 @@
     function getDisplayList() {
         if (!playerList.length) return [];
         let list = playerList.slice();
+
+        const ignoreContactedOn = document.getElementById('recruitment-filter-ignore-contacted')?.checked;
+        if (ignoreContactedOn) {
+            const contactedIds = getClickedPlayerIds();
+            list = list.filter(p => !contactedIds.has(String(p.id)));
+        }
 
         const leaderHitsBelowOn = document.getElementById('recruitment-filter-leader-hits-below')?.checked;
         const leaderHitsBelowVal = Math.floor(parseNumInput(document.getElementById('recruitment-leader-hits-below')?.value || '10') || 10);
@@ -383,9 +548,15 @@
 
         const key = sortKey || 'warScore';
         const dir = sortDir === 1 ? 1 : -1;
+        const contactedMap = getContactedTimestamps();
         list.sort((a, b) => {
             let va = a[key];
             let vb = b[key];
+            if (key === 'lastContacted') {
+                va = contactedMap[a.id] != null ? Number(contactedMap[a.id]) : -1;
+                vb = contactedMap[b.id] != null ? Number(contactedMap[b.id]) : -1;
+                return dir * (va - vb);
+            }
             if (key === 'respectNum') {
                 va = parseRespect(a.respect);
                 vb = parseRespect(b.respect);
@@ -412,10 +583,8 @@
     function loadSelections() {
         const warCountEl = document.getElementById('recruitment-war-count');
         const winnerEl = document.getElementById('recruitment-winner-filter');
-        const minScoreEl = document.getElementById('recruitment-min-score');
         if (warCountEl) { const v = localStorage.getItem(STORAGE_KEYS.warCount); if (v !== null) warCountEl.value = v; }
         if (winnerEl) { const v = localStorage.getItem(STORAGE_KEYS.winnerFilter); if (v !== null) winnerEl.value = v; }
-        if (minScoreEl) { const v = localStorage.getItem(STORAGE_KEYS.minScore); if (v !== null) minScoreEl.value = v; }
         const leaderHitsBelowEl = document.getElementById('recruitment-filter-leader-hits-below');
         if (leaderHitsBelowEl) { const v = localStorage.getItem(STORAGE_KEYS.filterLeaderHitsBelow); leaderHitsBelowEl.checked = v === '1'; }
         const leaderHitsBelowValEl = document.getElementById('recruitment-leader-hits-below');
@@ -432,6 +601,8 @@
         if (minScoreCb) { const v = localStorage.getItem(STORAGE_KEYS.filterMinScoreCb); minScoreCb.checked = v === '1'; }
         const minScoreFilterEl = document.getElementById('recruitment-filter-min-score');
         if (minScoreFilterEl) { const v = localStorage.getItem(STORAGE_KEYS.filterMinScore); if (v !== null) minScoreFilterEl.value = formatNumInput(v) || v; }
+        const ignoreContactedCb = document.getElementById('recruitment-filter-ignore-contacted');
+        if (ignoreContactedCb) { const v = localStorage.getItem(STORAGE_KEYS.filterIgnoreContacted); ignoreContactedCb.checked = v === '1'; }
         const sk = localStorage.getItem(STORAGE_KEYS.sortKey);
         const sd = localStorage.getItem(STORAGE_KEYS.sortDir);
         if (sk) sortKey = sk;
@@ -455,10 +626,8 @@
     function saveSelections() {
         const warCountEl = document.getElementById('recruitment-war-count');
         const winnerEl = document.getElementById('recruitment-winner-filter');
-        const minScoreEl = document.getElementById('recruitment-min-score');
         if (warCountEl) localStorage.setItem(STORAGE_KEYS.warCount, warCountEl.value);
         if (winnerEl) localStorage.setItem(STORAGE_KEYS.winnerFilter, winnerEl.value);
-        if (minScoreEl) localStorage.setItem(STORAGE_KEYS.minScore, minScoreEl.value);
         const leaderHitsBelowEl = document.getElementById('recruitment-filter-leader-hits-below');
         if (leaderHitsBelowEl) localStorage.setItem(STORAGE_KEYS.filterLeaderHitsBelow, leaderHitsBelowEl.checked ? '1' : '0');
         const leaderHitsBelowValEl = document.getElementById('recruitment-leader-hits-below');
@@ -475,6 +644,8 @@
         if (minScoreCb) localStorage.setItem(STORAGE_KEYS.filterMinScoreCb, minScoreCb.checked ? '1' : '0');
         const minScoreFilterEl = document.getElementById('recruitment-filter-min-score');
         if (minScoreFilterEl) localStorage.setItem(STORAGE_KEYS.filterMinScore, String(minScoreFilterEl.value).replace(/,/g, ''));
+        const ignoreContactedCb = document.getElementById('recruitment-filter-ignore-contacted');
+        if (ignoreContactedCb) localStorage.setItem(STORAGE_KEYS.filterIgnoreContacted, ignoreContactedCb.checked ? '1' : '0');
         localStorage.setItem(STORAGE_KEYS.sortKey, sortKey);
         localStorage.setItem(STORAGE_KEYS.sortDir, String(sortDir));
         try {
@@ -516,7 +687,6 @@
     function initRecruitment() {
         const fetchWarsBtn = document.getElementById('recruitment-fetch-wars');
         const buildListBtn = document.getElementById('recruitment-build-list');
-        const battleStatsBtn = document.getElementById('recruitment-fetch-battle-stats');
 
         fetchWarsBtn?.addEventListener('click', async () => {
             const apiKey = getApiKey();
@@ -532,10 +702,14 @@
                     fetchTorndownFacList()
                 ]);
                 rankedWarsList = wars.slice(0, count);
+                quickListTotal = wars.length;
                 factionMap = facList;
                 setStatus('recruitment-step1-status', `Loaded ${rankedWarsList.length} wars and ${Object.keys(factionMap).length} factions (torndown).`);
                 setProgress(false);
                 renderRankCheckboxes();
+                updateFetchButtonVisibility();
+                const step2Section = document.getElementById('recruitment-step2-section');
+                if (step2Section) step2Section.style.display = '';
             } catch (e) {
                 let msg = e.message || 'Failed to fetch.';
                 if (msg === 'Failed to fetch' || (e.name && e.name === 'TypeError')) {
@@ -554,7 +728,7 @@
 
             setError('');
             const winnerFilter = document.getElementById('recruitment-winner-filter')?.value || 'both';
-            const minScore = Math.max(0, parseFloat(document.getElementById('recruitment-min-score')?.value || '0') || 0);
+            const minScore = getBuildMinScore();
             const selectedRanks = getSelectedRanks();
 
             const playerMap = {};
@@ -575,25 +749,38 @@
             playerList.forEach(p => {
                 p.leaderWarHits = leaderWarHits[p.factionId] != null ? leaderWarHits[p.factionId] : null;
             });
-            const filterMinScoreEl = document.getElementById('recruitment-filter-min-score');
-            const filterMinScoreCb = document.getElementById('recruitment-filter-min-score-cb');
-            if (filterMinScoreEl) {
-                filterMinScoreEl.value = minScore > 0 ? formatNumInput(minScore) : '';
-                if (filterMinScoreCb) {
-                    filterMinScoreCb.checked = minScore > 0;
-                    updateResultFilterVisibility();
-                }
-                saveSelections();
-            }
+            saveSelections();
             setProgress(false);
+            const resultsSection = document.getElementById('recruitment-results-section');
+            if (resultsSection) resultsSection.style.display = '';
             setStatus('recruitment-step2-status', `Found ${playerList.length} players.`);
             renderTable();
             const detailsBtn = document.getElementById('recruitment-fetch-player-details');
-            if (battleStatsBtn) battleStatsBtn.disabled = playerList.length === 0;
             if (detailsBtn) detailsBtn.disabled = playerList.length === 0;
-            const fetchMoreBtn = document.getElementById('recruitment-fetch-more');
-            if (fetchMoreBtn) fetchMoreBtn.disabled = false;
+            updateFetchMoreAndOlderButtons();
+            ensureBattleStatsFetched();
         });
+
+        /** Show only one of the three fetch buttons at a time; others are hidden. */
+        function updateFetchButtonVisibility() {
+            const fetchWarsBtnEl = document.getElementById('recruitment-fetch-wars');
+            const fetchMoreBtn = document.getElementById('recruitment-fetch-more');
+            const fetchOlderBtn = document.getElementById('recruitment-fetch-older');
+            if (!fetchWarsBtnEl || !fetchMoreBtn || !fetchOlderBtn) return;
+            const hasWars = rankedWarsList.length > 0;
+            const quickListExhausted = rankedWarsList.length >= quickListTotal;
+            fetchWarsBtnEl.style.display = hasWars ? 'none' : '';
+            fetchMoreBtn.style.display = hasWars && !quickListExhausted ? '' : 'none';
+            fetchOlderBtn.style.display = hasWars && quickListExhausted ? '' : 'none';
+            fetchMoreBtn.disabled = false;
+            fetchOlderBtn.disabled = false;
+        }
+
+        function updateFetchMoreAndOlderButtons() {
+            updateFetchButtonVisibility();
+        }
+
+        updateFetchButtonVisibility();
 
         const fetchMoreBtn = document.getElementById('recruitment-fetch-more');
         fetchMoreBtn?.addEventListener('click', async () => {
@@ -603,7 +790,7 @@
 
             setError('');
             const winnerFilter = document.getElementById('recruitment-winner-filter')?.value || 'both';
-            const minScore = Math.max(0, parseFloat(document.getElementById('recruitment-min-score')?.value || '0') || 0);
+            const minScore = getBuildMinScore();
             const selectedRanks = getSelectedRanks();
 
             setProgress(true, 'Fetching more wars…', '');
@@ -615,12 +802,14 @@
                 setProgress(false);
                 return;
             }
+            quickListTotal = allWars.length;
             const currentCount = rankedWarsList.length;
             const newCount = Math.min(currentCount + FETCH_MORE_INCREMENT, allWars.length);
             const warsToProcess = allWars.slice(currentCount, newCount);
             if (warsToProcess.length === 0) {
                 setProgress(false);
-                setStatus('recruitment-step2-status', 'No more wars to add.');
+                updateFetchMoreAndOlderButtons();
+                setStatus('recruitment-step2-status', 'No more wars in quick list. Use "Fetch older wars (slower)" to load more by war ID.');
                 return;
             }
 
@@ -648,22 +837,74 @@
                 p.leaderWarHits = leaderWarHits[p.factionId] != null ? leaderWarHits[p.factionId] : null;
             });
 
-            const warCountEl = document.getElementById('recruitment-war-count');
-            if (warCountEl) warCountEl.value = String(newCount);
             saveSelections();
             setProgress(false);
+            setStatus('recruitment-step1-status', `Loaded ${rankedWarsList.length} wars and ${Object.keys(factionMap).length} factions (torndown).`);
+            updateFetchMoreAndOlderButtons();
             setStatus('recruitment-step2-status', `Found ${playerList.length} players (${rankedWarsList.length} wars).`);
             renderTable();
             const detailsBtn = document.getElementById('recruitment-fetch-player-details');
-            if (battleStatsBtn) battleStatsBtn.disabled = playerList.length === 0;
             if (detailsBtn) detailsBtn.disabled = playerList.length === 0;
+            ensureBattleStatsFetched();
+        });
+
+        const fetchOlderBtn = document.getElementById('recruitment-fetch-older');
+        fetchOlderBtn?.addEventListener('click', async () => {
+            const apiKey = getApiKey();
+            if (!apiKey) { setError('Please enter your API key in the sidebar.'); return; }
+            if (!rankedWarsList.length) { setError('Run Step 1 first.'); return; }
+
+            setError('');
+            const winnerFilter = document.getElementById('recruitment-winner-filter')?.value || 'both';
+            const minScore = getBuildMinScore();
+            const selectedRanks = getSelectedRanks();
+
+            const playerMap = {};
+            const leaderWarHits = {};
+            playerList.forEach(p => {
+                playerMap[p.id] = { ...p };
+                if (p.leaderWarHits != null) leaderWarHits[p.factionId] = p.leaderWarHits;
+            });
+
+            setProgress(true, 'Fetching older wars by ID…', 'One request per war (slower).');
+            const progressMsg = document.getElementById('recruitment-progress-message');
+            const progressDet = document.getElementById('recruitment-progress-details');
+            const progressOpts = progressMsg && progressDet ? { progressMessage: progressMsg, progressDetails: progressDet } : {};
+            const warCountInput = document.getElementById('recruitment-war-count')?.value;
+            let added;
+            try {
+                added = await fetchOlderWarsByWarId(apiKey, {
+                    playerMap,
+                    leaderWarHits,
+                    winnerFilter,
+                    minScore,
+                    selectedRanks
+                }, progressOpts, warCountInput);
+            } catch (e) {
+                setError(e.message || 'Failed to fetch older wars.');
+                setProgress(false);
+                return;
+            }
+            playerList = Object.values(playerMap).sort((a, b) => (b.warScore - a.warScore));
+            playerList.forEach(p => {
+                p.leaderWarHits = leaderWarHits[p.factionId] != null ? leaderWarHits[p.factionId] : null;
+            });
+            saveSelections();
+            setProgress(false);
+            setStatus('recruitment-step1-status', `Loaded ${rankedWarsList.length} wars and ${Object.keys(factionMap).length} factions (torndown).`);
+            updateFetchMoreAndOlderButtons();
+            setStatus('recruitment-step2-status', added > 0
+                ? `Added ${added} older war(s). ${playerList.length} players (${rankedWarsList.length} wars).`
+                : `No older wars found. ${playerList.length} players (${rankedWarsList.length} wars).`);
+            renderTable();
+            const detailsBtn = document.getElementById('recruitment-fetch-player-details');
+            if (detailsBtn) detailsBtn.disabled = playerList.length === 0;
+            ensureBattleStatsFetched();
         });
 
         document.getElementById('recruitment-war-count')?.addEventListener('change', saveSelections);
         document.getElementById('recruitment-war-count')?.addEventListener('input', saveSelections);
         document.getElementById('recruitment-winner-filter')?.addEventListener('change', saveSelections);
-        document.getElementById('recruitment-min-score')?.addEventListener('change', saveSelections);
-        document.getElementById('recruitment-min-score')?.addEventListener('input', saveSelections);
         document.getElementById('recruitment-rank-checkboxes')?.addEventListener('change', saveSelections);
 
         function applyResultFiltersAndSave() {
@@ -707,6 +948,7 @@
         });
         document.getElementById('recruitment-filter-min-score')?.addEventListener('input', applyResultFiltersAndSave);
         document.getElementById('recruitment-filter-min-score')?.addEventListener('change', applyResultFiltersAndSave);
+        document.getElementById('recruitment-filter-ignore-contacted')?.addEventListener('change', applyResultFiltersAndSave);
 
         document.getElementById('recruitment-table')?.addEventListener('click', (e) => {
             const th = e.target.closest('th.recruitment-sort');
@@ -731,30 +973,22 @@
             }
         });
 
-        loadSelections();
-
-        battleStatsBtn?.addEventListener('click', async () => {
-            const apiKey = getApiKey();
-            if (!apiKey || !playerList.length) return;
-            const fn = window.getFFAndBattleStatsForMembers;
-            if (typeof fn !== 'function') { setError('FF Scouter not available. Load Faction Battle Stats or ensure app is ready.'); return; }
-
-            setError('');
-            setProgress(true, 'Fetching battle stats from FF Scouter…', playerList.length + ' players');
-            try {
-                const ids = playerList.map(p => p.id).filter(id => id != null && String(id).trim() !== '' && /^\d+$/.test(String(id)));
-                if (ids.length === 0) { setError('No valid player IDs to look up (IDs must be positive integers).'); setProgress(false); return; }
-                const { ff, bs } = await fn(apiKey, ids);
-                playerList.forEach(p => {
-                    p.ff = ff[p.id] != null ? ff[p.id] : null;
-                    p.bs = bs[p.id] != null ? bs[p.id] : null;
-                });
-                renderTable();
-            } catch (e) {
-                setError(e.message || 'FF Scouter failed.');
+        document.getElementById('recruitment-detailed-table')?.addEventListener('click', (e) => {
+            const link = e.target.closest('a[data-player-id].recruitment-player-link');
+            if (link) {
+                const id = link.getAttribute('data-player-id');
+                if (id) {
+                    saveClickedPlayerId(id);
+                    const row = link.closest('tr');
+                    const cb = row?.querySelector('input.recruitment-contacted-cb');
+                    if (cb) cb.checked = true;
+                    const cells = row?.querySelectorAll('td');
+                    if (cells && cells.length >= 2) cells[1].textContent = '0d';
+                }
             }
-            setProgress(false);
         });
+
+        loadSelections();
 
         document.getElementById('recruitment-fetch-player-details')?.addEventListener('click', async () => {
             const apiKey = getApiKey();
@@ -805,6 +1039,7 @@
 
             const tbody = document.getElementById('recruitment-detailed-table')?.querySelector('tbody');
             const section = document.getElementById('recruitment-detailed-section');
+            const contactedMap = getContactedTimestamps();
             if (tbody && section) {
                 tbody.innerHTML = list.map(p => {
                     const ps = detailedStats[p.id]?.personalstats || {};
@@ -812,8 +1047,11 @@
                     const estStats = p.bs != null ? Number(p.bs).toLocaleString() : '—';
                     const networth = (ps.networth != null) ? Number(ps.networth).toLocaleString() : '—';
                     const biggestHit = (ps.bestdamage != null) ? Number(ps.bestdamage).toLocaleString() : '—';
+                    const contacted = contactedMap[p.id] != null;
+                    const lastContactedText = formatLastContactedShort(contactedMap[p.id]);
                     return `<tr>
-                        <td><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(p.id)}" target="_blank" rel="noopener" style="color: var(--accent-color);">${escapeHtml(p.name)} [${escapeHtml(p.id)}]</a></td>
+                        <td><input type="checkbox" class="recruitment-contacted-cb" data-player-id="${escapeHtml(p.id)}" disabled title="Checked when you have opened this player's profile" ${contacted ? ' checked' : ''}><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(p.id)}" target="_blank" rel="noopener" class="recruitment-player-link" data-player-id="${escapeHtml(p.id)}" style="color: var(--accent-color); margin-left: 6px;">${escapeHtml(p.name)} [${escapeHtml(p.id)}]</a></td>
+                        <td>${escapeHtml(lastContactedText)}</td>
                         <td>${escapeHtml(String(p.level))}</td>
                         <td>${estStats}</td>
                         <td>${Number(warHits).toLocaleString()}</td>
@@ -837,14 +1075,16 @@
         if (!tbody) return;
 
         const list = getDisplayList();
-        const clickedIds = getClickedPlayerIds();
+        const contactedMap = getContactedTimestamps();
         tbody.innerHTML = list.map(p => {
             const bsText = p.bs != null ? Number(p.bs).toLocaleString() : '—';
             const leaderDisplay = p.leader || '—';
             const leaderText = p.leaderWarHits != null ? `${escapeHtml(leaderDisplay)} (${p.leaderWarHits})` : escapeHtml(leaderDisplay);
-            const contacted = clickedIds.has(String(p.id));
+            const contacted = contactedMap[p.id] != null;
+            const lastContactedText = formatLastContactedShort(contactedMap[p.id]);
             return `<tr>
                 <td><input type="checkbox" class="recruitment-contacted-cb" data-player-id="${escapeHtml(p.id)}" disabled title="Checked when you have opened this player's profile" ${contacted ? ' checked' : ''}><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(p.id)}" target="_blank" rel="noopener" class="recruitment-player-link" data-player-id="${escapeHtml(p.id)}" style="color: var(--accent-color); margin-left: 6px;">${escapeHtml(p.name)}</a></td>
+                <td>${escapeHtml(lastContactedText)}</td>
                 <td>${escapeHtml(String(p.level))}</td>
                 <td>${escapeHtml(String(p.warHits))}</td>
                 <td>${escapeHtml(String(p.warScore))}</td>
