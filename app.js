@@ -465,7 +465,9 @@ document.addEventListener('DOMContentLoaded', () => {
             userCache[apiKey] = userData;
             return userData;
         } catch (error) {
-            console.error('Error fetching user data:', error);
+            if (error?.message !== 'Failed to fetch' && error?.name !== 'TypeError') {
+                console.error('Error fetching user data:', error);
+            }
             return null;
         }
     }
@@ -536,7 +538,53 @@ document.addEventListener('DOMContentLoaded', () => {
         if (balance >= VIP_LEVELS[1]) return 1;
         return 0;
     }
-    
+
+    // Recruitment tool requires VIP 3
+    const RECRUITMENT_VIP_REQUIRED = 3;
+    window.currentVipLevel = window.currentVipLevel ?? 0;
+
+    /** Apply VIP gating to Recruitment: grey out and tooltip if vipLevel < RECRUITMENT_VIP_REQUIRED. */
+    function applyVipGating(vipLevel) {
+        const level = vipLevel ?? window.currentVipLevel ?? 0;
+        window.currentVipLevel = level;
+        const hasAccess = level >= RECRUITMENT_VIP_REQUIRED;
+        const tooltip = 'Requires VIP 3. Send Xanax to Jimidy to unlock this tool.';
+        document.querySelectorAll('#mainNav a[href="#recruitment"]').forEach((a) => {
+            if (hasAccess) {
+                a.classList.remove('vip-locked');
+                a.removeAttribute('title');
+            } else {
+                a.classList.add('vip-locked');
+                a.setAttribute('title', tooltip);
+            }
+        });
+        document.querySelectorAll('a.tool-card[href="#recruitment"], .tool-cards-grid a[href="#recruitment"]').forEach((a) => {
+            if (hasAccess) {
+                a.classList.remove('vip-locked');
+                a.removeAttribute('title');
+                const wrap = a.closest('.tool-card-vip-wrap');
+                if (wrap && wrap.parentNode) {
+                    wrap.parentNode.insertBefore(a, wrap);
+                    wrap.remove();
+                }
+            } else {
+                a.classList.add('vip-locked');
+                a.setAttribute('title', tooltip);
+                if (!a.closest('.tool-card-vip-wrap')) {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'tool-card-vip-wrap';
+                    a.parentNode.insertBefore(wrap, a);
+                    wrap.appendChild(a);
+                    const badge = document.createElement('span');
+                    badge.className = 'tool-card-vip-badge';
+                    badge.setAttribute('aria-hidden', 'true');
+                    badge.textContent = '\uD83D\uDD12  VIP level 3';
+                    wrap.appendChild(badge);
+                }
+            }
+        });
+    }
+
     // Get progress to next VIP level
     function getVipProgress(balance, currentLevel) {
         if (currentLevel >= 3) {
@@ -1239,7 +1287,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const userData = await getUserData(apiKey);
             return userData && ADMIN_USER_IDS.includes(userData.playerId);
         } catch (error) {
-            console.error('Error checking admin status:', error);
+            if (error?.message !== 'Failed to fetch' && error?.name !== 'TypeError') {
+                console.error('Error checking admin status:', error);
+            }
             return false;
         }
     }
@@ -2444,10 +2494,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     // If we have cached data, display it immediately
                     if (vipData) {
+                        window.currentVipLevel = vipData.vipLevel ?? 0;
+                        applyVipGating(vipData.vipLevel);
                         // Temporarily set welcome message so displayVipStatus can append to it
                         welcomeMessage.innerHTML = welcomeHtml;
                         displayVipStatus(vipData, userData.name);
                     } else {
+                        window.currentVipLevel = 0;
+                        applyVipGating(0);
                         // No VIP data, just show welcome + rate limit settings
                         const rateLimitHtml = getRateLimitSettingsHtml();
                         welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
@@ -2463,6 +2517,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         // Cache expired or missing, do full check
                         const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
                         if (updatedVipData) {
+                            window.currentVipLevel = updatedVipData.vipLevel ?? 0;
+                            applyVipGating(updatedVipData.vipLevel);
                             // Update display with fresh VIP data (this will also add rate limit settings)
                             welcomeMessage.innerHTML = welcomeHtml;
                             displayVipStatus(updatedVipData, userData.name);
@@ -2473,14 +2529,21 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 } else {
+                    window.currentVipLevel = 0;
+                    applyVipGating(0);
                     welcomeMessage.style.display = 'none';
                 }
             } catch (error) {
                 console.error('Error updating welcome message:', error);
+                window.currentVipLevel = 0;
+                applyVipGating(0);
                 welcomeMessage.style.display = 'none';
             }
         }, 500);
     }
+
+    // Apply VIP gating on initial load (no key = locked)
+    applyVipGating(0);
     
     const globalApiKeyInput = document.getElementById('globalApiKey');
     if (globalApiKeyInput) {
@@ -2636,12 +2699,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     else if (window.initVaultChecker) window.initVaultChecker();
                 };
                 document.head.appendChild(script);
+            } else if (page.includes('recruitment')) {
+                const oldScript = document.getElementById('recruitment-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src = 'tools/recruitment/recruitment.js';
+                script.id = 'recruitment-script';
+                script.onload = () => {
+                    if (typeof initRecruitment === 'function') initRecruitment();
+                    else if (window.initRecruitment) window.initRecruitment();
+                };
+                document.head.appendChild(script);
             } else if (page.includes('home.html')) {
                 // Log home page visit
                 if (window.logToolUsage) {
                     window.logToolUsage('home');
                 }
             }
+            // Re-apply VIP gating so nav and (if home) tool cards reflect current level
+            applyVipGating(window.currentVipLevel ?? 0);
         } catch (error) {
             console.error('Failed to load page:', error);
             appContent.innerHTML = `<div class="container"><h2>Error</h2><p>Failed to load page content. Please check the console for details.</p></div>`;
@@ -2667,6 +2743,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Handle admin dashboard specially (no HTML file needed)
         if (pageName === 'admin-dashboard') {
             loadPage('admin-dashboard');
+            return;
+        }
+
+        // Recruitment requires VIP 3
+        if (pageName === 'recruitment' && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED) {
+            window.location.hash = 'home';
+            loadPage('pages/home.html');
             return;
         }
         
@@ -2696,8 +2779,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- EVENT DELEGATION ---
-    // Listen for clicks on the whole app container
+    // Prevent navigation when clicking VIP-locked links (tooltip still shows via title)
     document.addEventListener('click', (event) => {
+        const locked = event.target.closest('a.vip-locked');
+        if (locked) {
+            event.preventDefault();
+            return;
+        }
         const target = event.target;
         if (target) {
             // Only handle fetchData for consumption tracker page, not war-report-2.0

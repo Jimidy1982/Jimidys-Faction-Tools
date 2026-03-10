@@ -1,0 +1,140 @@
+<div class="container">
+    <h1>Recruitment Tool</h1>
+    <p class="recruitment-intro">Find potential recruits from recent ranked wars. Uses game-wide war data and <a href="https://torndown.eu/facList.csv" target="_blank" rel="noopener">torndown.eu</a> faction list (rank, leader, respect) to minimise API calls.</p>
+
+    <div id="recruitment-tool-container">
+        <!-- Step 1: Fetch wars + faction list -->
+        <section class="recruitment-section" aria-labelledby="recruitment-step1-heading">
+            <h2 id="recruitment-step1-heading" style="color: var(--accent-color); margin-bottom: 10px;">Step 1 – Fetch wars &amp; faction list</h2>
+            <div class="recruitment-step1-controls">
+                <label for="recruitment-war-count">Number of recent wars</label>
+                <input type="number" id="recruitment-war-count" min="1" max="500" value="50" style="width: 80px;">
+                <button type="button" id="recruitment-fetch-wars" class="btn">Fetch wars &amp; faction list</button>
+                <button type="button" id="recruitment-fetch-more" class="btn" disabled title="Add more wars to the current results (same filters)">Fetch more results</button>
+            </div>
+            <p id="recruitment-step1-status" class="recruitment-status" style="margin-top: 8px; color: #b0b0b0; font-size: 13px;"></p>
+        </section>
+
+        <!-- Step 2: Filters -->
+        <section class="recruitment-section" aria-labelledby="recruitment-step2-heading">
+            <h2 id="recruitment-step2-heading" style="color: var(--accent-color); margin-bottom: 10px;">Step 2 – Filters</h2>
+            <div class="recruitment-filters">
+                <div class="recruitment-filter-group">
+                    <span class="recruitment-filter-label">Faction rank (torndown)</span>
+                    <div id="recruitment-rank-checkboxes" class="recruitment-checkbox-group"></div>
+                </div>
+                <div class="recruitment-filter-group">
+                    <span class="recruitment-filter-label">War outcome</span>
+                    <select id="recruitment-winner-filter">
+                        <option value="both">Winners &amp; losers</option>
+                        <option value="winners">Winners only</option>
+                        <option value="losers">Losers only</option>
+                    </select>
+                </div>
+                <div class="recruitment-filter-group">
+                    <label for="recruitment-min-score">Min. player score (per war)</label>
+                    <input type="number" id="recruitment-min-score" min="0" value="0" style="width: 80px;">
+                </div>
+                <div class="recruitment-filter-group">
+                    <button type="button" id="recruitment-build-list" class="btn">Load war reports &amp; build player list</button>
+                </div>
+            </div>
+            <p id="recruitment-step2-status" class="recruitment-status" style="margin-top: 8px; color: #b0b0b0; font-size: 13px;"></p>
+        </section>
+
+        <!-- Progress -->
+        <div id="recruitment-progress" class="recruitment-progress" style="display: none;">
+            <p id="recruitment-progress-message"></p>
+            <p id="recruitment-progress-details" style="font-size: 12px; color: #888;"></p>
+        </div>
+        <div id="recruitment-error" class="recruitment-error" style="display: none; color: #f44336; margin: 10px 0;"></div>
+
+        <!-- Results -->
+        <section class="recruitment-section" aria-labelledby="recruitment-results-heading">
+            <h2 id="recruitment-results-heading" style="color: var(--accent-color); margin-bottom: 10px;">Results</h2>
+            <div class="recruitment-results-filters" style="margin-bottom: 12px;">
+                <div class="recruitment-filter-row">
+                    <label class="recruitment-filter-check">
+                        <input type="checkbox" id="recruitment-filter-leader-hits-below">
+                        <span>Include when leader hits below</span>
+                    </label>
+                    <span id="recruitment-leader-hits-below-wrap" class="recruitment-filter-input-wrap" style="display: none; margin-left: 12px;">
+                        <input type="text" inputmode="numeric" id="recruitment-leader-hits-below" value="10" style="width: 56px;" title="Minimum leader war hits" placeholder="10">
+                    </span>
+                </div>
+                <div class="recruitment-filter-row">
+                    <label class="recruitment-filter-check">
+                        <input type="checkbox" id="recruitment-filter-faction-respect">
+                        <span>Exclude factions above</span>
+                    </label>
+                    <span id="recruitment-faction-respect-wrap" class="recruitment-filter-input-wrap" style="display: none; margin-left: 12px;">
+                        <input type="text" inputmode="numeric" id="recruitment-faction-respect-below" value="" placeholder="e.g. 500,000" style="width: 120px;" title="Exclude players in factions with respect above this">
+                    </span>
+                </div>
+                <div class="recruitment-filter-row">
+                    <label class="recruitment-filter-check">
+                        <input type="checkbox" id="recruitment-filter-min-war-hits-cb">
+                        <span>Min. war hits</span>
+                    </label>
+                    <span id="recruitment-min-war-hits-wrap" class="recruitment-filter-input-wrap" style="display: none; margin-left: 12px;">
+                        <input type="text" inputmode="numeric" id="recruitment-filter-min-war-hits" value="" placeholder="e.g. 20" style="width: 72px;">
+                    </span>
+                </div>
+                <div class="recruitment-filter-row">
+                    <label class="recruitment-filter-check">
+                        <input type="checkbox" id="recruitment-filter-min-score-cb">
+                        <span>Min. score</span>
+                    </label>
+                    <span id="recruitment-min-score-wrap" class="recruitment-filter-input-wrap" style="display: none; margin-left: 12px;">
+                        <input type="text" inputmode="numeric" id="recruitment-filter-min-score" value="" placeholder="e.g. 20" style="width: 72px;">
+                    </span>
+                </div>
+                <div class="recruitment-filter-row" style="margin-top: 12px;">
+                    <button type="button" id="recruitment-fetch-battle-stats" class="btn" disabled>Fetch battle stats (FF Scouter)</button>
+                    <button type="button" id="recruitment-fetch-player-details" class="btn" disabled style="margin-left: 10px;">Fetch player details</button>
+                    <span id="recruitment-results-summary" style="margin-left: 12px; color: #888; font-size: 13px;"></span>
+                </div>
+            </div>
+            <div class="table-scroll-wrapper" style="overflow-x: auto;">
+                <table id="recruitment-table" class="recruitment-table">
+                    <thead>
+                        <tr>
+                            <th class="recruitment-sort" data-sort="name">Player</th>
+                            <th class="recruitment-sort" data-sort="level">Level</th>
+                            <th class="recruitment-sort" data-sort="warHits">War hits</th>
+                            <th class="recruitment-sort" data-sort="warScore">War score</th>
+                            <th class="recruitment-sort" data-sort="warResultScore">War result</th>
+                            <th class="recruitment-sort" data-sort="factionName">Faction</th>
+                            <th class="recruitment-sort" data-sort="factionRank">Faction rank</th>
+                            <th class="recruitment-sort" data-sort="respectNum">Respect</th>
+                            <th class="recruitment-sort" data-sort="leader">Leader (hits)</th>
+                            <th class="recruitment-sort" data-sort="bs">Est. stats</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div id="recruitment-detailed-section" style="display: none; margin-top: 24px;">
+                <h3 style="color: var(--accent-color); margin-bottom: 10px;">Player details (filtered)</h3>
+                <div class="table-scroll-wrapper" style="overflow-x: auto;">
+                    <table id="recruitment-detailed-table" class="recruitment-table" style="min-width: 900px;">
+                        <thead>
+                            <tr>
+                                <th>Player</th>
+                                <th>Level</th>
+                                <th>Est. stats</th>
+                                <th>War hits</th>
+                                <th>Cans used</th>
+                                <th>Xanax used</th>
+                                <th>Networth</th>
+                                <th>Biggest hit</th>
+                                <th>Refills</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+</div>

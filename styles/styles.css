@@ -432,6 +432,106 @@ header h1 {
     color: var(--accent-color);
 }
 
+/* Recruitment Tool */
+.recruitment-intro {
+    margin-bottom: 20px;
+    color: var(--text-primary, #eee);
+}
+.recruitment-intro a {
+    color: var(--accent-color);
+}
+.recruitment-section {
+    margin-bottom: 24px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border-color, #444);
+}
+.recruitment-section:last-of-type {
+    border-bottom: none;
+}
+.recruitment-step1-controls,
+.recruitment-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+}
+.recruitment-filter-group {
+    display: flex;
+    align-items: center;
+    gap: 6px 10px;
+}
+.recruitment-filter-label {
+    color: var(--text-muted, #888);
+    margin-right: 4px;
+}
+.recruitment-checkbox-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+}
+.recruitment-results-filters .recruitment-filter-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+.recruitment-results-filters .recruitment-filter-row:last-child {
+    margin-bottom: 0;
+}
+.recruitment-filter-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+.recruitment-progress {
+    padding: 12px;
+    background: rgba(255, 215, 0, 0.08);
+    border-left: 4px solid var(--accent-color);
+    border-radius: 4px;
+    margin: 12px 0;
+}
+.recruitment-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.recruitment-table th,
+.recruitment-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color, #444);
+}
+.recruitment-table input.recruitment-contacted-cb {
+    vertical-align: middle;
+    cursor: default;
+}
+.recruitment-table th {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+.recruitment-table a {
+    color: var(--accent-color);
+}
+.recruitment-table th.recruitment-sort {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+.recruitment-table th.recruitment-sort:hover {
+    text-decoration: underline;
+}
+.recruitment-table th.recruitment-sort-asc::after {
+    content: ' \2191';
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+.recruitment-table th.recruitment-sort-desc::after {
+    content: ' \2193';
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+
 .vault-checker-tabs {
     display: flex;
     gap: 4px;
@@ -1341,6 +1441,61 @@ nav a:hover::after {
   .tool-cards-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* VIP-locked tools (e.g. Recruitment requires VIP 3) */
+a.vip-locked,
+a.tool-card.vip-locked {
+  opacity: 0.55;
+  filter: grayscale(0.4);
+  cursor: not-allowed;
+}
+.dashboard-layout nav a.vip-locked {
+  opacity: 1;
+  filter: none;
+  color: #888;
+}
+a.vip-locked:hover,
+.dashboard-layout nav a.vip-locked:hover {
+  background-color: transparent;
+  color: inherit;
+  border-left-color: transparent;
+}
+.dashboard-layout nav a.vip-locked:hover {
+  color: #888;
+}
+
+/* Padlock + VIP 3 label on locked nav link (yellow branding) */
+.dashboard-layout nav a.vip-locked::after {
+  content: " \1F512 VIP 3";
+  color: var(--accent-color);
+  font-weight: bold;
+  font-size: 0.85em;
+  margin-left: 4px;
+}
+
+/* Wrapper for locked tool card so badge can sit on top at full opacity */
+.tool-card-vip-wrap {
+  position: relative;
+  min-height: 180px;
+}
+
+/* Padlock overlay on locked tool card (yellow branding) */
+.tool-card-vip-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--accent-color);
+  font-weight: bold;
+  font-size: 1.1rem;
+  background: rgba(0, 0, 0, 0.8);
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-color);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* Disabled tool card styles */
