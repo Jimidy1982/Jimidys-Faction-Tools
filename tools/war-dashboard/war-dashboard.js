@@ -8,6 +8,7 @@
     const STORAGE_KEYS = {
         enemyFactionId: 'war_dashboard_enemy_faction_id',
         refreshInterval: 'war_dashboard_refresh_interval',
+        chainRefreshInterval: 'war_dashboard_chain_refresh_interval',
         ffBlue: 'war_dashboard_ff_blue',
         ffGreen: 'war_dashboard_ff_green',
         ffOrange: 'war_dashboard_ff_orange',
@@ -16,8 +17,19 @@
         refreshSectionMinimised: 'war_dashboard_refresh_section_minimised',
         ffSectionMinimised: 'war_dashboard_ff_section_minimised',
         trackOurChain: 'war_dashboard_track_our_chain',
-        trackEnemyChain: 'war_dashboard_track_enemy_chain'
+        trackEnemyChain: 'war_dashboard_track_enemy_chain',
+        autoRefreshEnabled: 'war_dashboard_auto_refresh_enabled',
+        activityTrackerConfig: 'war_dashboard_activity_tracker_config',
+        activityTrackerLastVisit: 'war_dashboard_activity_tracker_last_visit',
+        activityTrackerSectionExpanded: 'war_dashboard_activity_tracker_section_expanded',
+        activityAutoWarEnemyFactionId: 'war_dashboard_activity_auto_war_enemy_faction_id'
     };
+
+    const ACTIVITY_DATA_PREFIX = 'war_dashboard_activity_data_';
+    const ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
+    const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+    const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+    const ACTIVITY_DATA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
     const CHAIN_AT_ZERO_THROTTLE_MS = 60 * 1000; // when chain at 0, only refetch once per minute
     let lastOurChainFetchTime = 0;
@@ -30,6 +42,8 @@
 
     let refreshTimer = null;
     let countdownTick = null;
+    let chainTickIntervalId = null;
+    let chainRefreshTimer = null;
     let nextRefreshAt = null;
     let lastEnemyMembers = [];
     let lastEnemyFF = {};
@@ -42,6 +56,7 @@
     let ourSortColumn = 'level';
     let ourSortDir = 'desc';
     let lastEnemyFactionId = null;
+    let lastEnemyName = null;
     let lastOurFactionId = null;
     let currentUserPlayerId = null;
     let currentUserAbroadCountry = null;
@@ -51,6 +66,13 @@
     /** Mutable display state: { timeout, cooldown } ticked every second */
     let ourChainDisplay = { timeout: 0, cooldown: 0 };
     let enemyChainDisplay = { timeout: 0, cooldown: 0 };
+
+    let activityTrackerIntervalId = null;
+    let activityTrackerCountdownIntervalId = null;
+    let nextActivitySampleAt = 0;
+    let activityTrackerChartInstances = {};
+    /** Per-faction sort state for activity tracker table: { [factionId]: { by: string, dir: 'asc'|'desc' } }. Default by: 'stats', dir: 'desc'. */
+    let activityTrackerTableSort = {};
 
     function getApiKey() {
         return (localStorage.getItem('tornApiKey') || '').trim();
@@ -112,6 +134,32 @@
         return Array.isArray(members) ? members : Object.values(members);
     }
 
+    /** Fetch faction name — same URL and parsing as Faction Battle Stats (app.js). */
+    async function fetchFactionName(apiKey, factionId) {
+        if (!factionId || !apiKey) return null;
+        const url = `https://api.torn.com/v2/faction/${factionId}?key=${apiKey}`;
+        try {
+            if (typeof window.batchTornApiCalls === 'function') {
+                const tornData = await window.batchTornApiCalls(apiKey, [
+                    { name: 'factionInfo', url: `https://api.torn.com/v2/faction/${factionId}`, params: '' }
+                ]);
+                const data = tornData?.factionInfo;
+                if (data && !data.error) {
+                    let name = data.basic?.name || data.name || data.faction_name;
+                    if (name) return name;
+                }
+            }
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data && data.error) return null;
+            const raw = data?.faction || data;
+            let name = raw?.basic?.name || raw?.name || raw?.faction_name;
+            return name || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
     /** FF Scouter: cache per faction, refresh on first use each day, expire after 1 week */
     function getFFCache(factionId) {
         try {
@@ -171,6 +219,31 @@
         };
     }
 
+    /** Return CSS color for Status column: Online=green, Idle=orange, Abroad=blue, else inherit. */
+    function getStatusColor(status, nowSec) {
+        const expired = status.until != null && nowSec >= status.until;
+        if (!expired) {
+            const state = (status.state || '').toLowerCase();
+            const desc = (status.description || '').toLowerCase();
+            if (state.includes('abroad') || state.includes('traveling') || desc.includes('abroad')) return '#6eb5ff';
+        }
+        const a = (status.actionStatus || '').toLowerCase();
+        if (a === 'online') return '#81c784';
+        if (a === 'idle') return '#ffb74d';
+        return '';
+    }
+
+    /** Return CSS color for Location/state column: Okay=green, Abroad=blue, else red. */
+    function getLocationStateColor(status, nowSec) {
+        const expired = status.until != null && nowSec >= status.until;
+        if (expired) return '#81c784'; // Okay when expired
+        const state = (status.state || '').toLowerCase();
+        const desc = (status.description || '').toLowerCase();
+        if (state.includes('abroad') || state.includes('traveling') || desc.includes('abroad')) return '#6eb5ff';
+        if (state === 'okay' || desc === 'okay') return '#81c784';
+        return '#e57373'; // anything else (hospital, jail, etc.)
+    }
+
     /** Parse country from status description (e.g. "Traveling in Japan" -> "japan") for same-country abroad check. */
     function parseAbroadCountry(member) {
         const st = member.status || {};
@@ -196,6 +269,91 @@
         const enemyCountry = parseAbroadCountry(enemy);
         if (!enemyCountry || !currentUserAbroadCountry) return false;
         return enemyCountry.includes(currentUserAbroadCountry) || currentUserAbroadCountry.includes(enemyCountry);
+    }
+
+    // --- Faction activity tracker (local cache, 5-min samples, graph + active times TCT) ---
+    function getActivityConfig() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.activityTrackerConfig);
+            if (!raw) return { tracked: [] };
+            const obj = JSON.parse(raw);
+            return Array.isArray(obj.tracked) ? obj : { tracked: [] };
+        } catch (e) { return { tracked: [] }; }
+    }
+
+    function setActivityConfig(config) {
+        try {
+            localStorage.setItem(STORAGE_KEYS.activityTrackerConfig, JSON.stringify(config));
+        } catch (e) { /* ignore */ }
+    }
+
+    function getActivityLastVisit() {
+        const raw = localStorage.getItem(STORAGE_KEYS.activityTrackerLastVisit);
+        return raw ? parseInt(raw, 10) : 0;
+    }
+
+    function setActivityLastVisit(ms) {
+        try {
+            localStorage.setItem(STORAGE_KEYS.activityTrackerLastVisit, String(ms));
+        } catch (e) { /* ignore */ }
+    }
+
+    function getActivityData(factionId) {
+        try {
+            const raw = localStorage.getItem(ACTIVITY_DATA_PREFIX + factionId);
+            if (!raw) return { samples: [], members: [] };
+            const obj = JSON.parse(raw);
+            const samples = Array.isArray(obj.samples) ? obj.samples : [];
+            const members = Array.isArray(obj.members) ? obj.members : [];
+            const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
+            const trimmed = samples.filter(s => s.t >= cutoff);
+            return { samples: trimmed, members };
+        } catch (e) { return { samples: [], members: [] }; }
+    }
+
+    function setActivityData(factionId, data) {
+        try {
+            const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
+            const samples = (data.samples || []).filter(s => s.t >= cutoff);
+            localStorage.setItem(ACTIVITY_DATA_PREFIX + factionId, JSON.stringify({
+                samples,
+                members: data.members || []
+            }));
+        } catch (e) { /* ignore */ }
+    }
+
+    function appendActivitySample(factionId, onlineIds, members) {
+        const existing = getActivityData(factionId);
+        const memberList = Array.isArray(members) && members.length ? members.map(m => ({ id: m.id, name: m.name || String(m.id), level: m.level })) : existing.members;
+        existing.samples.push({ t: Date.now(), onlineIds: onlineIds || [] });
+        setActivityData(factionId, { samples: existing.samples, members: memberList });
+    }
+
+    function updateActivityLastVisitAndCleanup() {
+        const now = Date.now();
+        const previousLastVisit = getActivityLastVisit();
+        setActivityLastVisit(now);
+        const config = getActivityConfig();
+        if (previousLastVisit > 0 && (now - previousLastVisit) > TWO_DAYS_MS) {
+            config.tracked.forEach(t => {
+                if (t.enabled) {
+                    t.enabled = false;
+                    t.disabledAt = now;
+                }
+            });
+            setActivityConfig(config);
+        }
+        const threeDaysAgo = now - THREE_DAYS_MS;
+        let changed = false;
+        config.tracked = config.tracked.filter(t => {
+            if (t.disabledAt != null && t.disabledAt < threeDaysAgo) {
+                try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + t.factionId); } catch (e) { /* ignore */ }
+                changed = true;
+                return false;
+            }
+            return true;
+        });
+        if (changed) setActivityConfig(config);
     }
 
     function getSortValue(m, column, ffMap, bsMap, nowSec) {
@@ -261,6 +419,8 @@
             const expired = status.until != null && nowSec >= status.until;
             const statusDisplay = expired ? 'Okay' : (status.description || status.state || '—');
             const color = getFFColor(ff, blue, green, orange);
+            const statusColor = getStatusColor(status, nowSec);
+            const locationColor = getLocationStateColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             return `<tr>
@@ -268,8 +428,8 @@
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
-                <td>${escapeHtml(status.actionStatus)}</td>
-                <td>${escapeHtml(statusDisplay)}</td>
+                <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
+                <td style="color: ${locationColor};">${escapeHtml(statusDisplay)}</td>
             </tr>`;
         }).join('');
         tbody.innerHTML = rowHtml;
@@ -324,7 +484,7 @@
         boxEl.style.display = 'block';
         if (!trackOn) {
             boxEl.innerHTML = `
-                <label class="war-dashboard-chain-track-wrap" title="Tracking off (reduces API calls): click to turn on. Frequency changed by your auto refresh settings.">
+                <label class="war-dashboard-chain-track-wrap" title="Tracking off (reduces API calls): click to turn on. Refresh interval in Settings (Chain refresh).">
                     <input type="checkbox" class="war-dashboard-chain-track-input" data-chain-key="${escapeHtml(chainKey)}" aria-label="Track this chain" />
                     <span class="war-dashboard-chain-track-slider"></span>
                 </label>
@@ -333,7 +493,7 @@
             `;
         } else {
             boxEl.innerHTML = `
-                <label class="war-dashboard-chain-track-wrap" title="Tracking on (increases API calls): click to turn off. Frequency changed by your auto refresh settings.">
+                <label class="war-dashboard-chain-track-wrap" title="Tracking on (increases API calls): click to turn off. Refresh interval in Settings (Chain refresh).">
                     <input type="checkbox" class="war-dashboard-chain-track-input" data-chain-key="${escapeHtml(chainKey)}" checked aria-label="Track this chain" />
                     <span class="war-dashboard-chain-track-slider"></span>
                 </label>
@@ -352,7 +512,10 @@
                 const on = this.checked;
                 if (chainKey === 'our') setTrackOurChain(on); else setTrackEnemyChain(on);
                 renderChainBoxes();
-                if (on) refreshChainWhenTurningOn(chainKey);
+                if (on) {
+                    refreshChainWhenTurningOn(chainKey);
+                    startChainRefreshTimer();
+                }
             });
         }
     }
@@ -477,6 +640,8 @@
             const expired = status.until != null && nowSec >= status.until;
             const statusDisplay = expired ? 'Okay' : (status.description || status.state || '—');
             const color = getFFColor(ff, blue, green, orange);
+            const statusColor = getStatusColor(status, nowSec);
+            const locationColor = getLocationStateColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             const attackUrl = `https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
@@ -486,8 +651,8 @@
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
-                <td>${escapeHtml(status.actionStatus)}</td>
-                <td>${escapeHtml(statusDisplay)}</td>
+                <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
+                <td style="color: ${locationColor};">${escapeHtml(statusDisplay)}</td>
                 <td><input type="text" class="war-dashboard-note-input" data-player-id="${escapeHtml(id)}" value="${noteValue}" placeholder="Note…" maxlength="500" /></td>
             </tr>`;
         }).join('');
@@ -571,6 +736,7 @@
     function loadSettings() {
         const fid = localStorage.getItem(STORAGE_KEYS.enemyFactionId) || '';
         const interval = localStorage.getItem(STORAGE_KEYS.refreshInterval);
+        const chainInterval = localStorage.getItem(STORAGE_KEYS.chainRefreshInterval);
         const blue = localStorage.getItem(STORAGE_KEYS.ffBlue);
         const green = localStorage.getItem(STORAGE_KEYS.ffGreen);
         const orange = localStorage.getItem(STORAGE_KEYS.ffOrange);
@@ -579,6 +745,8 @@
         if (idInput) idInput.value = fid;
         const intervalInput = document.getElementById('war-dashboard-refresh-interval');
         if (intervalInput && interval != null) intervalInput.value = interval || '15';
+        const chainIntervalInput = document.getElementById('war-dashboard-chain-refresh-interval');
+        if (chainIntervalInput) chainIntervalInput.value = (chainInterval != null && chainInterval !== '') ? chainInterval : '30';
         const blueInput = document.getElementById('war-dashboard-ff-blue');
         if (blueInput && blue != null) blueInput.value = blue || '2.5';
         const greenInput = document.getElementById('war-dashboard-ff-green');
@@ -600,6 +768,8 @@
         const intervalInput = document.getElementById('war-dashboard-refresh-interval');
         if (idInput) localStorage.setItem(STORAGE_KEYS.enemyFactionId, idInput.value.trim());
         if (intervalInput) localStorage.setItem(STORAGE_KEYS.refreshInterval, intervalInput.value);
+        const chainIntervalInput = document.getElementById('war-dashboard-chain-refresh-interval');
+        if (chainIntervalInput) localStorage.setItem(STORAGE_KEYS.chainRefreshInterval, chainIntervalInput.value);
         const blue = document.getElementById('war-dashboard-ff-blue')?.value;
         const green = document.getElementById('war-dashboard-ff-green')?.value;
         const orange = document.getElementById('war-dashboard-ff-orange')?.value;
@@ -632,8 +802,57 @@
                 return;
             }
 
+            lastOurFactionId = ourFactionId;
+            currentUserPlayerId = user.playerId;
+
             if (!enemyFactionId) {
-                showError('Enter an enemy faction ID, or click "Use current ranked war".');
+                // No enemy applied: still show Our team and Our chain (collapsed)
+                const [ourMembers, ourChainData] = await Promise.all([
+                    fetchFactionMembers(apiKey, null),
+                    fetchFactionChain(apiKey, ourFactionId).catch(() => null)
+                ]);
+                let ourFF = {};
+                let ourBS = {};
+                const ourIds = ourMembers.map(m => String(m.id));
+                const ourCached = getFFCache(ourFactionId);
+                if (ourCached?.ff && !shouldRefreshFFToday(ourFactionId)) {
+                    ourFF = ourCached.ff || {};
+                    ourBS = ourCached.bs || {};
+                } else if (ourIds.length) {
+                    try {
+                        const ourData = await fetchFFForMembers(apiKey, ourIds);
+                        ourFF = ourData.ff || {};
+                        ourBS = ourData.bs || {};
+                        setFFCache(ourFactionId, { ff: ourFF, bs: ourBS });
+                    } catch (e) { console.warn('War Dashboard our FF:', e.message); }
+                } else if (ourCached?.ff) {
+                    ourFF = ourCached.ff;
+                    ourBS = ourCached.bs || {};
+                }
+                lastOurMembers = ourMembers;
+                lastOurFF = ourFF;
+                lastOurBS = ourBS;
+                lastOurChain = ourChainData;
+                if (ourChainData) lastOurChainFetchTime = Date.now();
+                ourChainDisplay = ourChainData ? { timeout: ourChainData.timeout, cooldown: ourChainData.cooldown } : { timeout: 0, cooldown: 0 };
+                lastEnemyFactionId = null;
+                lastEnemyMembers = [];
+                lastEnemyFF = {};
+                lastEnemyBS = {};
+                lastEnemyChain = null;
+                enemyChainDisplay = { timeout: 0, cooldown: 0 };
+                const me = ourMembers.find(m => String(m.id) === String(user.playerId));
+                currentUserAbroadCountry = me ? parseAbroadCountry(me) : null;
+                renderOurTeam(ourMembers, ourFF, ourBS, null);
+                renderChainBoxes();
+                document.getElementById('war-dashboard-chains-row').style.display = 'block';
+                document.getElementById('war-dashboard-our-team').style.display = 'block';
+                document.getElementById('war-dashboard-enemy-section').style.display = 'none';
+                const activitySection = document.getElementById('war-dashboard-activity-tracker');
+                if (activitySection) activitySection.style.display = 'block';
+                updateActivityTrackerUI();
+                setOurTeamCollapsed(true);
+                showError('Enter an enemy faction ID or click "Use current ranked war" to compare.');
                 showLoading(false);
                 return;
             }
@@ -643,6 +862,7 @@
             if (current && current.enemyFactionId === enemyFactionId) {
                 enemyName = current.enemyName;
             }
+            lastEnemyName = enemyName || '';
             const labelText = enemyName ? `Enemy: ${enemyName} (ID: ${enemyFactionId})` : `Enemy Faction ID: ${enemyFactionId}`;
             const labelEl = document.getElementById('war-dashboard-enemy-label');
             if (labelEl) labelEl.textContent = labelText;
@@ -720,8 +940,12 @@
             renderEnemy(enemyMembers, enemyFF, enemyBS, null);
             renderChainBoxes();
 
+            document.getElementById('war-dashboard-chains-row').style.display = 'block';
             document.getElementById('war-dashboard-enemy-section').style.display = 'block';
             document.getElementById('war-dashboard-our-team').style.display = 'block';
+            const activitySection = document.getElementById('war-dashboard-activity-tracker');
+            if (activitySection) activitySection.style.display = 'block';
+            updateActivityTrackerUI();
             setOurTeamCollapsed(true);
         } catch (err) {
             showError(err.message || 'Failed to load data.');
@@ -877,6 +1101,73 @@
         return Math.max(5, Math.min(300, parseInt(document.getElementById('war-dashboard-refresh-interval')?.value || '15', 10)));
     }
 
+    function getChainRefreshIntervalSec() {
+        return Math.max(10, Math.min(300, parseInt(document.getElementById('war-dashboard-chain-refresh-interval')?.value || '30', 10)));
+    }
+
+    /** Fetch chain data only (our and/or enemy when tracking). Uses chain refresh interval, independent of main refresh. */
+    async function refreshChainsOnly() {
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+        const now = Date.now();
+        const ourPromise = (() => {
+            if (!getTrackOurChain() || !lastOurFactionId) return Promise.resolve(lastOurChain);
+            if (lastOurFactionId && isChainAtZero(lastOurChain) && lastOurChainFetchTime && (now - lastOurChainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
+                return Promise.resolve(lastOurChain);
+            return fetchFactionChain(apiKey, lastOurFactionId).then((data) => { lastOurChainFetchTime = Date.now(); return data; }).catch(() => lastOurChain);
+        })();
+        const enemyPromise = (() => {
+            if (!getTrackEnemyChain() || !lastEnemyFactionId) return Promise.resolve(lastEnemyChain);
+            if (isChainAtZero(lastEnemyChain) && lastEnemyChainFetchTime && (now - lastEnemyChainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
+                return Promise.resolve(lastEnemyChain);
+            return fetchFactionChain(apiKey, lastEnemyFactionId).then((data) => { lastEnemyChainFetchTime = Date.now(); return data; }).catch(() => lastEnemyChain);
+        })();
+        try {
+            const [ourChainData, enemyChainData] = await Promise.all([ourPromise, enemyPromise]);
+            if (ourChainData) {
+                lastOurChain = ourChainData;
+                ourChainDisplay = { timeout: ourChainData.timeout, cooldown: ourChainData.cooldown };
+            }
+            if (enemyChainData) {
+                lastEnemyChain = enemyChainData;
+                enemyChainDisplay = { timeout: enemyChainData.timeout, cooldown: enemyChainData.cooldown };
+            }
+            renderChainBoxes();
+        } catch (e) {
+            console.warn('War Dashboard chain refresh:', e);
+        }
+        scheduleNextChainRefresh();
+    }
+
+    function scheduleNextChainRefresh() {
+        if (chainRefreshTimer) clearTimeout(chainRefreshTimer);
+        chainRefreshTimer = null;
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        const sec = getChainRefreshIntervalSec();
+        chainRefreshTimer = setTimeout(() => {
+            chainRefreshTimer = null;
+            refreshChainsOnly();
+        }, sec * 1000);
+    }
+
+    function startChainRefreshTimer() {
+        if (chainRefreshTimer) clearTimeout(chainRefreshTimer);
+        chainRefreshTimer = null;
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        scheduleNextChainRefresh();
+    }
+
+    function stopChainRefreshTimer() {
+        if (chainRefreshTimer) {
+            clearTimeout(chainRefreshTimer);
+            chainRefreshTimer = null;
+        }
+    }
+
     function updateCountdownDisplay() {
         const el = document.getElementById('war-dashboard-refresh-countdown');
         if (!el) return;
@@ -897,18 +1188,45 @@
         nextRefreshAt = Date.now() + sec * 1000;
         refreshTimer = setTimeout(() => {
             refreshStatusOnly();
+            syncActivityTrackerWithCurrentWar().then(() => updateActivityTrackerUI()).catch(() => {});
             scheduleNextRefresh();
         }, sec * 1000);
         if (!countdownTick) {
             countdownTick = setInterval(() => {
                 if ((window.location.hash || '').replace('#', '').split('/')[0] !== 'war-dashboard') return;
                 updateCountdownDisplay();
-                updateChainDisplays();
-                renderChainBoxes();
-                /* Do not re-render enemy/our tables here: it replaces the tbody and recreates note inputs, so the cursor would jump. Only chain boxes and refresh countdown need to tick. */
             }, 1000);
         }
         updateCountdownDisplay();
+    }
+
+    /** Start the chain timeout/cooldown tick (independent of Auto-refresh). Runs every second while on war-dashboard. */
+    function startChainTick() {
+        if (chainTickIntervalId) return;
+        chainTickIntervalId = setInterval(() => {
+            if ((window.location.hash || '').replace('#', '').split('/')[0] !== 'war-dashboard') return;
+            updateChainDisplays();
+            renderChainBoxes();
+        }, 1000);
+        renderChainBoxes();
+    }
+
+    function stopChainTick() {
+        if (chainTickIntervalId) {
+            clearInterval(chainTickIntervalId);
+            chainTickIntervalId = null;
+        }
+    }
+
+    function getAutoRefreshEnabled() {
+        const stored = localStorage.getItem(STORAGE_KEYS.autoRefreshEnabled);
+        return stored !== '0';
+    }
+
+    function setAutoRefreshEnabled(enabled) {
+        try {
+            localStorage.setItem(STORAGE_KEYS.autoRefreshEnabled, enabled ? '1' : '0');
+        } catch (e) { /* ignore */ }
     }
 
     function startRefreshTimer() {
@@ -917,6 +1235,7 @@
         nextRefreshAt = null;
         const page = (window.location.hash || '').replace('#', '').split('/')[0];
         if (page !== 'war-dashboard') return;
+        if (!getAutoRefreshEnabled()) return;
         scheduleNextRefresh();
     }
 
@@ -929,6 +1248,8 @@
             clearInterval(countdownTick);
             countdownTick = null;
         }
+        stopChainTick();
+        stopChainRefreshTimer();
         nextRefreshAt = null;
         updateCountdownDisplay();
     }
@@ -947,6 +1268,29 @@
         localStorage.setItem(STORAGE_KEYS.enemyPickerMinimised, minimised ? '1' : '0');
     }
 
+    /** Clear enemy tracking only (does not affect Activity Tracker). */
+    function clearEnemyTracking() {
+        lastEnemyFactionId = null;
+        lastEnemyName = null;
+        lastEnemyMembers = [];
+        lastEnemyFF = {};
+        lastEnemyBS = {};
+        lastEnemyChain = null;
+        lastEnemyChainFetchTime = 0;
+        enemyChainDisplay = { timeout: 0, cooldown: 0 };
+        try { localStorage.removeItem(STORAGE_KEYS.enemyFactionId); } catch (e) { /* ignore */ }
+        const idInput = document.getElementById('war-dashboard-enemy-faction-id');
+        if (idInput) idInput.value = '';
+        const labelEl = document.getElementById('war-dashboard-enemy-label');
+        if (labelEl) labelEl.textContent = '';
+        const summaryEl = document.getElementById('war-dashboard-enemy-picker-summary');
+        if (summaryEl) summaryEl.textContent = '';
+        renderEnemy([], {}, {}, null);
+        renderChainBoxes();
+        document.getElementById('war-dashboard-enemy-section').style.display = 'none';
+        showError('Enter an enemy faction ID or click "Use current ranked war" to compare.');
+    }
+
     function setRefreshSectionMinimised(minimised) {
         const body = document.getElementById('war-dashboard-refresh-picker-body');
         const arrow = document.getElementById('war-dashboard-refresh-picker-arrow');
@@ -963,6 +1307,762 @@
         localStorage.setItem(STORAGE_KEYS.ffSectionMinimised, minimised ? '1' : '0');
     }
 
+    function openWarDashboardSettingsModal() {
+        const overlay = document.getElementById('war-dashboard-settings-overlay');
+        if (overlay) {
+            overlay.style.display = 'flex';
+            overlay.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    function closeWarDashboardSettingsModal() {
+        const overlay = document.getElementById('war-dashboard-settings-overlay');
+        if (overlay) {
+            overlay.style.display = 'none';
+            overlay.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    /** Run one 5-min tick: for each enabled tracked faction (with lastVisit within 2 days), fetch members and append sample. */
+    async function runActivityTrackerTick() {
+        nextActivitySampleAt = Date.now() + ACTIVITY_INTERVAL_MS;
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+        const config = getActivityConfig();
+        const lastVisit = getActivityLastVisit();
+        if (lastVisit === 0 || (Date.now() - lastVisit) > TWO_DAYS_MS) return;
+        for (const t of config.tracked) {
+            if (!t.enabled) continue;
+            try {
+                const members = await fetchFactionMembers(apiKey, t.factionId);
+                const onlineIds = members
+                    .filter(m => {
+                        const st = statusFromMember(m);
+                        const a = (st.actionStatus || '').toLowerCase();
+                        return a === 'online' || a === 'idle';
+                    })
+                    .map(m => String(m.id));
+                appendActivitySample(t.factionId, onlineIds, members);
+            } catch (e) {
+                console.warn('Activity tracker tick for faction', t.factionId, e);
+            }
+        }
+        updateActivityTrackerUI();
+    }
+
+    function formatCountdown(ms) {
+        if (ms <= 0) return '0:00';
+        const totalSec = Math.ceil(ms / 1000);
+        const m = Math.floor(totalSec / 60);
+        const s = totalSec % 60;
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function updateActivityCountdown() {
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        const remaining = nextActivitySampleAt > 0 ? nextActivitySampleAt - Date.now() : 0;
+        const text = remaining <= 0 ? 'Next sample soon…' : 'Next sample in ' + formatCountdown(remaining);
+        document.querySelectorAll('.war-dashboard-activity-next-sample').forEach(el => { el.textContent = text; });
+    }
+
+    /** Aggregate samples by hour (TCT = UTC). Returns { labels: ['00:00', ...], values: [...], countByHour: [...] }. */
+    function aggregateActivityByHour(factionId) {
+        const data = getActivityData(factionId);
+        const byHour = Array(24).fill(0);
+        const countByHour = Array(24).fill(0);
+        for (const s of data.samples) {
+            const d = new Date(s.t);
+            const h = d.getUTCHours();
+            byHour[h] += (s.onlineIds && s.onlineIds.length) ? s.onlineIds.length : 0;
+            countByHour[h]++;
+        }
+        const labels = [];
+        const values = [];
+        for (let i = 0; i < 24; i++) {
+            labels.push(String(i).padStart(2, '0') + ':00');
+            values.push(countByHour[i] > 0 ? Math.round((byHour[i] / countByHour[i]) * 10) / 10 : 0);
+        }
+        return { labels, values, countByHour };
+    }
+
+    /** Per-hour (UTC) list of player IDs seen in that hour. Returns array of 24 arrays. */
+    function getPlayerIdsByHour(factionId) {
+        const data = getActivityData(factionId);
+        const byHour = Array(24).fill(null).map(() => []);
+        const seen = Array(24).fill(null).map(() => ({}));
+        for (const s of data.samples) {
+            if (!s.onlineIds) continue;
+            const d = new Date(s.t);
+            const h = d.getUTCHours();
+            for (const id of s.onlineIds) {
+                if (!seen[h][id]) {
+                    seen[h][id] = true;
+                    byHour[h].push(id);
+                }
+            }
+        }
+        return byHour;
+    }
+
+    /** Per-hour (UTC) per-player sample count in that hour. Returns array of 24 objects { playerId: count }. */
+    function getPlayerSampleCountsByHour(factionId) {
+        const data = getActivityData(factionId);
+        const byHour = Array(24).fill(null).map(() => ({}));
+        for (const s of data.samples) {
+            if (!s.onlineIds) continue;
+            const d = new Date(s.t);
+            const h = d.getUTCHours();
+            for (const id of s.onlineIds) {
+                byHour[h][id] = (byHour[h][id] || 0) + 1;
+            }
+        }
+        return byHour;
+    }
+
+    function renderActivityTrackerChart(factionId) {
+        const canvas = document.getElementById('war-dashboard-activity-chart-' + factionId);
+        if (!canvas || typeof Chart === 'undefined') return;
+        const { labels, values, countByHour } = aggregateActivityByHour(factionId);
+        if (activityTrackerChartInstances[factionId]) {
+            activityTrackerChartInstances[factionId].destroy();
+            delete activityTrackerChartInstances[factionId];
+        }
+        activityTrackerChartInstances[factionId] = new Chart(canvas, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Avg. online (per sample)',
+                    data: values,
+                    backgroundColor: 'rgba(255, 215, 0, 0.6)',
+                    borderColor: 'rgba(255, 215, 0, 1)',
+                    borderWidth: 1,
+                    hoverBackgroundColor: 'rgba(255, 215, 0, 0.85)',
+                    hoverBorderColor: 'rgba(255, 255, 200, 1)',
+                    hoverBorderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true }
+                },
+                plugins: {
+                    notTrackedLabel: { countByHour: countByHour }
+                },
+                onHover(evt, elements, chart) {
+                    if (chart.canvas) chart.canvas.style.cursor = elements.length ? 'pointer' : 'default';
+                },
+                onClick: (evt, elements, chart) => {
+                    if (elements.length) {
+                        const hourIndex = elements[0].index;
+                        openActivityHourModal(factionId, hourIndex);
+                    }
+                }
+            },
+            plugins: [{
+                id: 'notTrackedLabel',
+                afterDatasetsDraw(chart) {
+                    const opts = chart.options.plugins?.notTrackedLabel;
+                    const countByHour = opts?.countByHour;
+                    if (!countByHour || countByHour.length === 0) return;
+                    const ctx = chart.ctx;
+                    const yScale = chart.scales.y;
+                    if (!yScale) return;
+                    const meta = chart.getDatasetMeta(0);
+                    if (!meta || !meta.data.length) return;
+                    const centerY = (yScale.top + yScale.bottom) / 2;
+                    ctx.save();
+                    ctx.font = '10px sans-serif';
+                    ctx.fillStyle = 'rgba(140, 140, 140, 0.9)';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    meta.data.forEach((bar, index) => {
+                        if (countByHour[index] === 0) {
+                            ctx.save();
+                            ctx.translate(bar.x, centerY);
+                            ctx.rotate(-Math.PI / 2);
+                            ctx.fillText('Not tracked', 0, 0);
+                            ctx.restore();
+                        }
+                    });
+                    ctx.restore();
+                }
+            }]
+        });
+    }
+
+    function openActivityHourModal(factionId, hourIndex) {
+        const overlay = document.getElementById('war-dashboard-activity-hour-modal');
+        const titleEl = document.getElementById('war-dashboard-activity-hour-modal-title');
+        const tbody = document.getElementById('war-dashboard-activity-hour-modal-tbody');
+        if (!overlay || !titleEl || !tbody) return;
+        const hourLabel = String(hourIndex).padStart(2, '0') + ':00';
+        titleEl.textContent = 'Players active during ' + hourLabel + ' (TCT)';
+        const ids = getPlayerIdsByHour(factionId)[hourIndex] || [];
+        const countsInHour = getPlayerSampleCountsByHour(factionId)[hourIndex] || {};
+        const activityData = getActivityData(factionId);
+        const membersMap = {};
+        (activityData.members || []).forEach(m => { membersMap[String(m.id)] = m; });
+        const cached = getFFCache(factionId);
+        const bsMap = cached ? (cached.bs || {}) : (factionId === lastEnemyFactionId ? lastEnemyBS : {});
+        const rows = ids.map(id => {
+            const m = membersMap[id];
+            const name = m ? (m.name || id) : id;
+            const bs = bsMap[id];
+            const statsNum = bs != null ? Number(bs) : -1;
+            const statsDisplay = bs != null ? Number(bs).toLocaleString() : '—';
+            const sampleCount = countsInHour[id] || 0;
+            const minutesActive = Math.min(60, sampleCount * 5);
+            return { id, name, statsNum, statsDisplay, minutesActive };
+        });
+        const sortBy = 'stats';
+        const sortDir = 'desc';
+        overlay._activityHourRows = rows;
+        overlay._activityHourSort = { by: sortBy, dir: sortDir };
+        sortActivityHourModalRows(overlay._activityHourRows, sortBy, sortDir);
+        renderActivityHourModalBody(tbody, overlay._activityHourRows);
+        updateActivityHourModalSortHeaders(overlay);
+        if (rows.length === 0) tbody.innerHTML = '<tr><td colspan="3" style="color: #888;">No players recorded in this hour.</td></tr>';
+        overlay.style.display = 'flex';
+        overlay.setAttribute('aria-hidden', 'false');
+    }
+
+    function sortActivityHourModalRows(rows, by, dir) {
+        const mult = dir === 'asc' ? 1 : -1;
+        rows.sort((a, b) => {
+            let va, vb;
+            if (by === 'player') {
+                va = (a.name || a.id).toLowerCase();
+                vb = (b.name || b.id).toLowerCase();
+                return mult * (va < vb ? -1 : va > vb ? 1 : 0);
+            }
+            if (by === 'stats') {
+                va = a.statsNum;
+                vb = b.statsNum;
+                return mult * (va - vb);
+            }
+            if (by === 'active') {
+                va = a.minutesActive;
+                vb = b.minutesActive;
+                return mult * (va - vb);
+            }
+            return 0;
+        });
+    }
+
+    function renderActivityHourModalBody(tbody, rows) {
+        tbody.innerHTML = rows.map(row =>
+            '<tr><td><a href="https://www.torn.com/profiles.php?XID=' + row.id + '" target="_blank" rel="noopener" style="color: #FFD700;">' + escapeHtml(row.name) + ' [' + escapeHtml(row.id) + ']</a></td><td>' + escapeHtml(String(row.statsDisplay)) + '</td><td>' + row.minutesActive + ' min</td></tr>'
+        ).join('');
+    }
+
+    function updateActivityHourModalSortHeaders(overlay) {
+        const sort = overlay._activityHourSort;
+        if (!sort) return;
+        overlay.querySelectorAll('.war-dashboard-activity-hour-sortable').forEach(th => {
+            const col = th.getAttribute('data-column');
+            const isActive = col === sort.by;
+            const arrow = isActive ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+            const label = th.textContent.replace(/\s*[▲▼]\s*$/, '').trim();
+            th.textContent = label + arrow;
+            th.setAttribute('aria-sort', isActive ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+        });
+    }
+
+    function handleActivityHourModalSort(overlay, column) {
+        const rows = overlay._activityHourRows;
+        const sort = overlay._activityHourSort;
+        if (!rows || !sort) return;
+        const tbody = document.getElementById('war-dashboard-activity-hour-modal-tbody');
+        if (!tbody) return;
+        let by = sort.by;
+        let dir = sort.dir;
+        if (column === by) dir = dir === 'asc' ? 'desc' : 'asc';
+        else {
+            by = column;
+            dir = (column === 'player' ? 'asc' : 'desc');
+        }
+        overlay._activityHourSort = { by, dir };
+        sortActivityHourModalRows(rows, by, dir);
+        renderActivityHourModalBody(tbody, rows);
+        updateActivityHourModalSortHeaders(overlay);
+    }
+
+    function closeActivityHourModal() {
+        const overlay = document.getElementById('war-dashboard-activity-hour-modal');
+        if (overlay) {
+            overlay.style.display = 'none';
+            overlay.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    /** Compute per-player active range in TCT (UTC). Returns { playerId: { first, last } in ms }. */
+    function getPlayerActiveRanges(factionId) {
+        const data = getActivityData(factionId);
+        const byPlayer = {};
+        for (const s of data.samples) {
+            if (!s.onlineIds) continue;
+            for (const id of s.onlineIds) {
+                if (!byPlayer[id]) byPlayer[id] = { first: s.t, last: s.t };
+                else {
+                    if (s.t < byPlayer[id].first) byPlayer[id].first = s.t;
+                    if (s.t > byPlayer[id].last) byPlayer[id].last = s.t;
+                }
+            }
+        }
+        return byPlayer;
+    }
+
+    function formatTctTime(ms) {
+        const d = new Date(ms);
+        return d.getUTCHours().toString().padStart(2, '0') + ':' + d.getUTCMinutes().toString().padStart(2, '0');
+    }
+
+    /** Format decimal hours as H:MM (e.g. 1.5 -> "1:30"). Returns "—" for invalid. */
+    function formatHoursMinutes(decimalHours) {
+        if (decimalHours == null || typeof decimalHours !== 'number' || isNaN(decimalHours) || decimalHours < 0) return '—';
+        const h = Math.floor(decimalHours);
+        let m = Math.round((decimalHours - h) * 60);
+        if (m >= 60) { m = 0; h += 1; }
+        return h + ':' + String(m).padStart(2, '0');
+    }
+
+    /** Format total minutes as H:MM (e.g. 25 -> "0:25", 65 -> "1:05"). */
+    function formatMinutesToHMM(totalMinutes) {
+        const m = Math.round(Number(totalMinutes)) || 0;
+        const h = Math.floor(m / 60);
+        const mins = m % 60;
+        return h + ':' + String(mins).padStart(2, '0');
+    }
+
+    function formatTrackingStarted(ms) {
+        const d = new Date(ms);
+        return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatActiveBetween(factionId, playerId) {
+        const ranges = getPlayerActiveRanges(factionId);
+        const r = ranges[playerId];
+        if (!r) return '—';
+        return formatTctTime(r.first) + ' – ' + formatTctTime(r.last);
+    }
+
+    /** Per-player count of 5-min samples they were seen in. */
+    function getPlayerSampleCounts(factionId) {
+        const data = getActivityData(factionId);
+        const counts = {};
+        for (const s of data.samples) {
+            if (!s.onlineIds) continue;
+            for (const id of s.onlineIds) {
+                counts[id] = (counts[id] || 0) + 1;
+            }
+        }
+        return counts;
+    }
+
+    /** Hours tracked = total sampling time (number of 5-min samples × 5/60). Ensures no player can show more active hours than tracked. */
+    function getHoursTracked(factionId) {
+        const data = getActivityData(factionId);
+        const samples = data.samples || [];
+        if (samples.length === 0) return 0;
+        return Math.round((samples.length * (5 / 60)) * 10) / 10;
+    }
+
+    function getActivityTrackerSort(factionId) {
+        const def = { by: 'stats', dir: 'desc' };
+        return activityTrackerTableSort[factionId] || def;
+    }
+
+    function setActivityTrackerSort(factionId, by, dir) {
+        activityTrackerTableSort[factionId] = { by, dir };
+    }
+
+    function sortActivityTrackerMembers(members, factionId, by, dir, bsMap, sampleCounts, activeRanges) {
+        const sampleHours = 5 / 60;
+        const mult = dir === 'asc' ? 1 : -1;
+        return [...members].sort((a, b) => {
+            const idA = String(a.id);
+            const idB = String(b.id);
+            let cmp = 0;
+            if (by === 'member') {
+                const va = (a.name || idA).toLowerCase();
+                const vb = (b.name || idB).toLowerCase();
+                cmp = va < vb ? -1 : va > vb ? 1 : 0;
+            } else if (by === 'level') {
+                cmp = (a.level || 0) - (b.level || 0);
+            } else if (by === 'stats') {
+                cmp = (bsMap[idA] ?? -1) - (bsMap[idB] ?? -1);
+            } else if (by === 'hoursActive') {
+                cmp = (sampleCounts[idA] || 0) - (sampleCounts[idB] || 0);
+            } else if (by === 'activeBetween') {
+                const tA = activeRanges[idA]?.first ?? 0;
+                const tB = activeRanges[idB]?.first ?? 0;
+                cmp = tA - tB;
+            }
+            return mult * cmp;
+        });
+    }
+
+    function updateActivityTrackerTableSortHeaders(table, factionId) {
+        const sort = getActivityTrackerSort(factionId);
+        table.querySelectorAll('.war-dashboard-activity-tracker-sortable').forEach(th => {
+            const col = th.getAttribute('data-column');
+            const isActive = col === sort.by;
+            const arrowEl = th.querySelector('.war-dashboard-activity-tracker-sort-arrow');
+            if (arrowEl) arrowEl.textContent = isActive ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+            th.setAttribute('aria-sort', isActive ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+        });
+    }
+
+    function renderActivityTrackerTable(factionId) {
+        const table = document.getElementById('war-dashboard-activity-tracker-table-' + factionId);
+        const tbody = table?.querySelector('tbody');
+        if (!tbody) return;
+        const data = getActivityData(factionId);
+        const cached = getFFCache(factionId);
+        const ffMap = cached ? (cached.ff || {}) : (factionId === lastEnemyFactionId ? lastEnemyFF : {});
+        const bsMap = cached ? (cached.bs || {}) : (factionId === lastEnemyFactionId ? lastEnemyBS : {});
+        const sampleCounts = getPlayerSampleCounts(factionId);
+        const hoursTracked = getHoursTracked(factionId);
+        const members = data.members && data.members.length ? data.members : [];
+        const sort = getActivityTrackerSort(factionId);
+        const activeRanges = getPlayerActiveRanges(factionId);
+        const sorted = sortActivityTrackerMembers(members, factionId, sort.by, sort.dir, bsMap, sampleCounts, activeRanges);
+        const sampleHours = 5 / 60;
+        tbody.innerHTML = sorted.map(m => {
+            const id = String(m.id);
+            const bs = bsMap[id];
+            const bsText = bs != null ? Number(bs).toLocaleString() : '—';
+            const activeBetween = formatActiveBetween(factionId, id);
+            const count = sampleCounts[id] || 0;
+            const hoursActive = count > 0 ? formatHoursMinutes(count * sampleHours) : '—';
+            return `<tr>
+                <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;">${escapeHtml(m.name || id)}</a></td>
+                <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
+                <td>${bsText}</td>
+                <td>${hoursActive}</td>
+                <td>${escapeHtml(activeBetween)}</td>
+            </tr>`;
+        }).join('');
+        const hoursTrackedEl = table?.querySelector('.war-dashboard-activity-hours-tracked[data-faction-id="' + factionId + '"]');
+        if (hoursTrackedEl) hoursTrackedEl.textContent = formatHoursMinutes(hoursTracked);
+        updateActivityTrackerTableSortHeaders(table, factionId);
+    }
+
+    function handleActivityTrackerTableSort(factionId, column) {
+        const sort = getActivityTrackerSort(factionId);
+        let by = sort.by;
+        let dir = sort.dir;
+        if (column === by) dir = dir === 'asc' ? 'desc' : 'asc';
+        else {
+            by = column;
+            dir = (column === 'member' ? 'asc' : 'desc');
+        }
+        setActivityTrackerSort(factionId, by, dir);
+        renderActivityTrackerTable(factionId);
+    }
+
+    function updateActivityTrackerUI() {
+        Object.keys(activityTrackerChartInstances).forEach(fid => {
+            try { activityTrackerChartInstances[fid].destroy(); } catch (e) { /* ignore */ }
+        });
+        activityTrackerChartInstances = {};
+
+        const config = getActivityConfig();
+        const container = document.getElementById('war-dashboard-activity-tracker-factions');
+        const empty = document.getElementById('war-dashboard-activity-tracker-empty');
+        const loadBtn = document.getElementById('war-dashboard-activity-tracker-load');
+        if (loadBtn) loadBtn.textContent = config.tracked.length > 0 ? 'Track this faction too' : 'Load';
+        if (!container) return;
+        const expandedFactionIds = [];
+        container.querySelectorAll('.war-dashboard-activity-faction-block').forEach(block => {
+            const body = block.querySelector('.war-dashboard-activity-faction-body');
+            const fid = block.getAttribute('data-faction-id');
+            if (fid && body && body.style.display === 'block') expandedFactionIds.push(fid);
+        });
+        container.innerHTML = '';
+        config.tracked.forEach(t => {
+            const fid = t.factionId;
+            const wasExpanded = expandedFactionIds.indexOf(fid) !== -1;
+            const name = escapeHtml(t.factionName || 'Faction ' + fid);
+            const block = document.createElement('div');
+            block.className = 'war-dashboard-activity-faction-block';
+            block.setAttribute('data-faction-id', fid);
+            block.innerHTML = `
+                <div class="war-dashboard-activity-faction-header-row" style="display: flex; align-items: center; gap: 10px; padding: 8px 0; width: 100%; min-height: 40px;">
+                    <button type="button" class="war-dashboard-activity-faction-header" data-faction-id="${escapeHtml(fid)}" aria-expanded="${wasExpanded ? 'true' : 'false'}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0; background: none; border: none; color: var(--accent-color); font-size: 1rem; font-weight: bold; cursor: pointer; text-align: left;">
+                        <span class="war-dashboard-activity-faction-arrow" aria-hidden="true" style="flex-shrink: 0;">${wasExpanded ? '▼' : '▶'}</span>
+                        <span class="war-dashboard-activity-faction-name" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${name} (${escapeHtml(fid)})${t.startedAt ? ` <span style="color: #888; font-weight: normal; font-size: 0.9em;">(started ${escapeHtml(formatTrackingStarted(t.startedAt))})</span>` : ''}</span>
+                    </button>
+                    <div class="war-dashboard-activity-faction-controls" style="display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                        <label class="war-dashboard-activity-track-wrap war-dashboard-activity-faction-toggle-wrap" onclick="event.stopPropagation()" title="Cache will clear if tracker is off for 72 hours" style="margin: 0;">
+                            <input type="checkbox" class="war-dashboard-activity-faction-enabled war-dashboard-chain-track-input" data-faction-id="${escapeHtml(fid)}" ${t.enabled ? 'checked' : ''} aria-label="Tracking on or off">
+                            <span class="war-dashboard-chain-track-slider"></span>
+                        </label>
+                        <button type="button" class="war-dashboard-activity-faction-remove" data-faction-id="${escapeHtml(fid)}" title="Remove faction from tracker" aria-label="Remove faction from tracker" onclick="event.stopPropagation()" style="flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #aaa; cursor: pointer;"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                    </div>
+                </div>
+                <div class="war-dashboard-activity-faction-body" style="display: ${wasExpanded ? 'block' : 'none'}; margin-left: 12px; margin-bottom: 16px;">
+                    <div style="margin-bottom: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;">
+                        <span class="war-dashboard-activity-next-sample" style="color: #888; font-size: 13px;">Next sample in —</span>
+                        <button type="button" class="war-dashboard-activity-faction-clear btn" data-faction-id="${escapeHtml(fid)}" style="padding: 4px 10px; font-size: 12px;">Clear cache</button>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <h3 style="color: var(--accent-color); font-size: 14px; margin: 0 0 8px 0;">Activity by hour (Torn City Time)</h3>
+                        <div class="war-dashboard-activity-chart-wrap" style="height: 200px;">
+                            <canvas id="war-dashboard-activity-chart-${escapeHtml(fid)}"></canvas>
+                        </div>
+                    </div>
+                    <div>
+                        <h3 style="color: var(--accent-color); font-size: 14px; margin: 0 0 8px 0;">Players and active times (TCT)</h3>
+                        <div class="table-scroll-wrapper" style="overflow-x: auto;">
+                            <table id="war-dashboard-activity-tracker-table-${escapeHtml(fid)}" class="war-dashboard-table war-dashboard-activity-tracker-sortable-table">
+                                <thead><tr><th class="war-dashboard-activity-tracker-sortable" data-column="member" scope="col">Member<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="level" scope="col">Level<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="stats" scope="col">Est. stats<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="hoursActive" scope="col">Hours active (<span class="war-dashboard-activity-hours-tracked" data-faction-id="${escapeHtml(fid)}">—</span> tracked)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="activeBetween" scope="col">Active between (TCT)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th></tr></thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+            container.appendChild(block);
+
+            const headerBtn = block.querySelector('.war-dashboard-activity-faction-header');
+            const bodyEl = block.querySelector('.war-dashboard-activity-faction-body');
+            const arrow = block.querySelector('.war-dashboard-activity-faction-arrow');
+            headerBtn.addEventListener('click', async (e) => {
+                if (e.target.closest('.war-dashboard-activity-faction-controls')) return;
+                const expanded = bodyEl.style.display === 'block';
+                bodyEl.style.display = expanded ? 'none' : 'block';
+                headerBtn.setAttribute('aria-expanded', !expanded);
+                arrow.textContent = expanded ? '▶' : '▼';
+                if (!expanded) {
+                    await ensureActivityTrackerBattleStats(fid);
+                    renderActivityTrackerChart(fid);
+                    renderActivityTrackerTable(fid);
+                }
+            });
+
+            const enabledCb = block.querySelector('.war-dashboard-activity-faction-enabled');
+            enabledCb.addEventListener('change', () => {
+                t.enabled = enabledCb.checked;
+                if (!t.enabled) t.disabledAt = Date.now();
+                else t.disabledAt = null;
+                setActivityConfig(config);
+            });
+
+            const clearBtn = block.querySelector('.war-dashboard-activity-faction-clear');
+            clearBtn.addEventListener('click', () => {
+                const factionLabel = t.factionName || 'Faction ' + fid;
+                if (!confirm('Clear all activity data for ' + factionLabel + '? This will remove the activity history and cannot be undone.')) return;
+                try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
+                t.enabled = false;
+                t.disabledAt = Date.now();
+                setActivityConfig(config);
+                updateActivityTrackerUI();
+            });
+
+            const removeBtn = block.querySelector('.war-dashboard-activity-faction-remove');
+            removeBtn.addEventListener('click', () => {
+                const factionLabel = t.factionName || 'Faction ' + fid;
+                if (!confirm('Remove ' + factionLabel + ' from the activity tracker? Its cached data will be cleared. You can add it again later by loading the faction.')) return;
+                config.tracked = config.tracked.filter(x => String(x.factionId) !== String(fid));
+                try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
+                setActivityConfig(config);
+                updateActivityTrackerUI();
+            });
+
+            const sortableTable = block.querySelector('.war-dashboard-activity-tracker-sortable-table');
+            sortableTable?.addEventListener('click', (e) => {
+                const th = e.target.closest('.war-dashboard-activity-tracker-sortable');
+                if (!th) return;
+                const column = th.getAttribute('data-column');
+                if (column) handleActivityTrackerTableSort(fid, column);
+            });
+        });
+
+        config.tracked.forEach(t => {
+            renderActivityTrackerChart(t.factionId);
+            renderActivityTrackerTable(t.factionId);
+        });
+
+        if (empty) empty.style.display = config.tracked.length ? 'none' : 'block';
+
+        // If any tracked faction still shows "Faction {id}", fetch name in background (same as Faction Battle Stats)
+        const apiKey = getApiKey();
+        if (apiKey) {
+            config.tracked.forEach(t => {
+                const defaultName = 'Faction ' + t.factionId;
+                if (!t.factionName || t.factionName === defaultName) {
+                    fetchFactionName(apiKey, t.factionId).then(name => {
+                        if (name && name !== defaultName) {
+                            t.factionName = name;
+                            setActivityConfig(config);
+                            updateActivityTrackerUI();
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    /** Get faction ID from the Faction ID input only. */
+    function getActivityTrackerFactionIdFromInputs() {
+        const input = document.getElementById('war-dashboard-activity-tracker-faction-id');
+        return (input?.value || '').trim();
+    }
+
+    /** When user expands a tracked faction, ensure we have battle stats (fetch if missing). */
+    async function ensureActivityTrackerBattleStats(factionId) {
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+        const data = getActivityData(factionId);
+        const members = data.members || [];
+        const memberIds = members.map(m => String(m.id));
+        if (memberIds.length === 0) return;
+        try {
+            const ffData = await fetchFFForMembers(apiKey, memberIds);
+            setFFCache(factionId, { ff: ffData.ff || {}, bs: ffData.bs || {} });
+        } catch (e) {
+            console.warn('Activity tracker: could not fetch battle stats for faction', factionId, e);
+        }
+    }
+
+    /** Sync activity tracker with current ranked war: auto-add enemy when war is active, auto-disable when war ends. */
+    async function syncActivityTrackerWithCurrentWar() {
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+        try {
+            const user = await getUserProfile(apiKey);
+            const ourFactionId = user.factionId;
+            if (!ourFactionId) return;
+            const current = await getCurrentWarEnemy(apiKey, ourFactionId).catch(() => null);
+            const config = getActivityConfig();
+            const storedAutoId = localStorage.getItem(STORAGE_KEYS.activityAutoWarEnemyFactionId);
+
+            if (current) {
+                const enemyId = current.enemyFactionId;
+                const enemyName = current.enemyName || 'Faction ' + enemyId;
+                const existing = config.tracked.find(t => t.factionId === enemyId);
+                if (!existing) {
+                    config.tracked.push({
+                        factionId: enemyId,
+                        factionName: enemyName,
+                        enabled: true,
+                        disabledAt: null,
+                        startedAt: Date.now()
+                    });
+                    setActivityConfig(config);
+                    try { localStorage.setItem(STORAGE_KEYS.activityAutoWarEnemyFactionId, enemyId); } catch (e) { /* ignore */ }
+                    await runActivityTrackerImmediatePull(enemyId);
+                    return;
+                }
+                existing.enabled = true;
+                existing.disabledAt = null;
+                if (existing.factionName === 'Faction ' + enemyId) existing.factionName = enemyName;
+                setActivityConfig(config);
+                try { localStorage.setItem(STORAGE_KEYS.activityAutoWarEnemyFactionId, enemyId); } catch (e) { /* ignore */ }
+                updateActivityTrackerUI();
+            } else {
+                if (storedAutoId) {
+                    const t = config.tracked.find(x => x.factionId === storedAutoId);
+                    if (t) {
+                        t.enabled = false;
+                        t.disabledAt = Date.now();
+                        setActivityConfig(config);
+                        updateActivityTrackerUI();
+                    }
+                    try { localStorage.removeItem(STORAGE_KEYS.activityAutoWarEnemyFactionId); } catch (e) { /* ignore */ }
+                }
+            }
+        } catch (e) {
+            console.warn('Activity tracker sync with current war:', e);
+        }
+    }
+
+    /** Ensure faction is in tracked list; add with default name if missing. Updates factionName when provided. Returns config. */
+    function ensureActivityTrackerFactionInConfig(factionId, factionName) {
+        const config = getActivityConfig();
+        const existing = config.tracked.find(t => t.factionId === factionId);
+        if (existing) {
+            if (factionName) {
+                existing.factionName = factionName;
+                setActivityConfig(config);
+            }
+            return config;
+        }
+        config.tracked.push({
+            factionId: factionId,
+            factionName: factionName || 'Faction ' + factionId,
+            enabled: true,
+            disabledAt: null,
+            startedAt: Date.now()
+        });
+        setActivityConfig(config);
+        return config;
+    }
+
+    /** Immediate pull: fetch faction members, append one sample, fetch and cache battle stats, then show graph and table. */
+    async function runActivityTrackerImmediatePull(factionId) {
+        factionId = (factionId || getActivityTrackerFactionIdFromInputs()).trim();
+        if (!factionId) return;
+        const apiKey = getApiKey();
+        if (!apiKey) {
+            showError('Please enter your API key in the sidebar.');
+            return;
+        }
+        showError('');
+        try {
+            const [members, factionName] = await Promise.all([
+                fetchFactionMembers(apiKey, factionId),
+                fetchFactionName(apiKey, factionId)
+            ]);
+            const onlineIds = members
+                .filter(m => {
+                    const st = statusFromMember(m);
+                    const a = (st.actionStatus || '').toLowerCase();
+                    return a === 'online' || a === 'idle';
+                })
+                .map(m => String(m.id));
+            ensureActivityTrackerFactionInConfig(factionId, factionName || undefined);
+            appendActivitySample(factionId, onlineIds, members);
+            // Auto-fetch and cache battle stats (same as war dashboard) so table can show Est. stats
+            const memberIds = members.map(m => String(m.id));
+            if (memberIds.length > 0) {
+                try {
+                    const data = await fetchFFForMembers(apiKey, memberIds);
+                    setFFCache(factionId, { ff: data.ff || {}, bs: data.bs || {} });
+                } catch (ffErr) {
+                    console.warn('Activity tracker: could not fetch battle stats for faction', factionId, ffErr);
+                }
+            }
+            updateActivityTrackerUI();
+        } catch (e) {
+            showError(e.message || 'Failed to load faction.');
+        }
+    }
+
+    function setActivityTrackerSectionExpanded(expanded) {
+        const body = document.getElementById('war-dashboard-activity-tracker-body');
+        const btn = document.getElementById('war-dashboard-activity-tracker-toggle');
+        const arrow = document.getElementById('war-dashboard-activity-tracker-arrow');
+        if (body) body.style.display = expanded ? 'block' : 'none';
+        if (btn) btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        if (arrow) arrow.textContent = expanded ? '▼' : '▶';
+        try {
+            localStorage.setItem(STORAGE_KEYS.activityTrackerSectionExpanded, expanded ? '1' : '0');
+        } catch (e) { /* ignore */ }
+        if (expanded) {
+            updateActivityTrackerUI();
+            const factionId = getActivityTrackerFactionIdFromInputs();
+            if (factionId) runActivityTrackerImmediatePull(factionId);
+        }
+    }
+
     function initWarDashboard() {
         if (window.logToolUsage) window.logToolUsage('war-dashboard');
 
@@ -971,7 +2071,18 @@
         if (localStorage.getItem(STORAGE_KEYS.ffNoticeHidden) === '1') setFFNoticeVisible(false);
         if (localStorage.getItem(STORAGE_KEYS.enemyPickerMinimised) === '1') setEnemyPickerMinimised(true);
         if (localStorage.getItem(STORAGE_KEYS.refreshSectionMinimised) === '1') setRefreshSectionMinimised(true);
-        if (localStorage.getItem(STORAGE_KEYS.ffSectionMinimised) === '1') setFFSectionMinimised(true);
+
+        const autoRefreshCb = document.getElementById('war-dashboard-auto-refresh-enabled');
+        if (autoRefreshCb) {
+            autoRefreshCb.checked = getAutoRefreshEnabled();
+            autoRefreshCb.addEventListener('change', () => {
+                setAutoRefreshEnabled(autoRefreshCb.checked);
+                if (autoRefreshCb.checked) startRefreshTimer();
+                else stopRefreshTimer();
+            });
+        }
+        document.getElementById('war-dashboard-auto-refresh-slider-wrap')?.addEventListener('click', (e) => e.stopPropagation());
+        if (!getAutoRefreshEnabled()) stopRefreshTimer();
 
         document.getElementById('war-dashboard-hide-ff-notice')?.addEventListener('click', () => setFFNoticeVisible(false));
         document.getElementById('war-dashboard-enemy-picker-toggle')?.addEventListener('click', () => {
@@ -982,9 +2093,19 @@
             const currently = localStorage.getItem(STORAGE_KEYS.refreshSectionMinimised) === '1';
             setRefreshSectionMinimised(!currently);
         });
-        document.getElementById('war-dashboard-ff-picker-toggle')?.addEventListener('click', () => {
-            const currently = localStorage.getItem(STORAGE_KEYS.ffSectionMinimised) === '1';
-            setFFSectionMinimised(!currently);
+
+        document.getElementById('war-dashboard-settings-cog')?.addEventListener('click', openWarDashboardSettingsModal);
+        document.getElementById('war-dashboard-settings-close')?.addEventListener('click', closeWarDashboardSettingsModal);
+        document.getElementById('war-dashboard-settings-overlay')?.addEventListener('click', (e) => {
+            if (e.target.id === 'war-dashboard-settings-overlay') closeWarDashboardSettingsModal();
+        });
+        document.getElementById('war-dashboard-activity-hour-modal-close')?.addEventListener('click', closeActivityHourModal);
+        document.getElementById('war-dashboard-activity-hour-modal')?.addEventListener('click', (e) => {
+            if (e.target.id === 'war-dashboard-activity-hour-modal') closeActivityHourModal();
+            else {
+                const th = e.target.closest('.war-dashboard-activity-hour-sortable');
+                if (th) handleActivityHourModalSort(e.currentTarget, th.getAttribute('data-column'));
+            }
         });
 
         document.getElementById('war-dashboard-apply-enemy')?.addEventListener('click', () => {
@@ -1026,6 +2147,10 @@
             } finally {
                 if (btn) btn.disabled = false;
             }
+        });
+
+        document.getElementById('war-dashboard-clear-enemy')?.addEventListener('click', () => {
+            clearEnemyTracking();
         });
 
         // Our team collapsible toggle
@@ -1087,6 +2212,10 @@
             saveSettings();
             startRefreshTimer();
         });
+        document.getElementById('war-dashboard-chain-refresh-interval')?.addEventListener('change', () => {
+            saveSettings();
+            startChainRefreshTimer();
+        });
 
         document.getElementById('war-dashboard-refresh-now')?.addEventListener('click', () => {
             refreshStatusOnly();
@@ -1101,11 +2230,63 @@
         document.getElementById('war-dashboard-ff-green')?.addEventListener('change', () => { updateRecommendedLabel(); runDashboard(); });
         document.getElementById('war-dashboard-ff-orange')?.addEventListener('change', () => runDashboard());
 
+        // Faction activity tracker
+        updateActivityLastVisitAndCleanup();
+        const activitySection = document.getElementById('war-dashboard-activity-tracker');
+        if (activitySection) activitySection.style.display = 'block';
+        setActivityTrackerSectionExpanded(localStorage.getItem(STORAGE_KEYS.activityTrackerSectionExpanded) === '1');
+        updateActivityTrackerUI();
+        syncActivityTrackerWithCurrentWar().then(() => updateActivityTrackerUI()).catch(() => {});
+
+        document.getElementById('war-dashboard-activity-tracker-toggle')?.addEventListener('click', () => {
+            const body = document.getElementById('war-dashboard-activity-tracker-body');
+            const expanded = body && body.style.display === 'block';
+            setActivityTrackerSectionExpanded(!expanded);
+        });
+
+        document.getElementById('war-dashboard-activity-tracker-load')?.addEventListener('click', () => {
+            const factionId = getActivityTrackerFactionIdFromInputs();
+            if (!factionId) {
+                showError('Enter a Faction ID first.');
+                return;
+            }
+            runActivityTrackerImmediatePull(factionId);
+        });
+
+        if (activityTrackerIntervalId) clearInterval(activityTrackerIntervalId);
+        activityTrackerIntervalId = setInterval(runActivityTrackerTick, ACTIVITY_INTERVAL_MS);
+        nextActivitySampleAt = Date.now() + 5000;
+        setTimeout(runActivityTrackerTick, 5000);
+
+        if (activityTrackerCountdownIntervalId) clearInterval(activityTrackerCountdownIntervalId);
+        activityTrackerCountdownIntervalId = setInterval(updateActivityCountdown, 1000);
+        updateActivityCountdown();
+
         // Only run timer when on this page; stop when user navigates away
         function onHashChange() {
             const page = (window.location.hash || '').replace('#', '').split('/')[0];
-            if (page !== 'war-dashboard') stopRefreshTimer();
-            else startRefreshTimer();
+            if (page !== 'war-dashboard') {
+                stopRefreshTimer();
+                if (activityTrackerIntervalId) {
+                    clearInterval(activityTrackerIntervalId);
+                    activityTrackerIntervalId = null;
+                }
+                if (activityTrackerCountdownIntervalId) {
+                    clearInterval(activityTrackerCountdownIntervalId);
+                    activityTrackerCountdownIntervalId = null;
+                }
+            } else {
+                startRefreshTimer();
+                startChainTick();
+                startChainRefreshTimer();
+                if (!activityTrackerIntervalId) {
+                    activityTrackerIntervalId = setInterval(runActivityTrackerTick, ACTIVITY_INTERVAL_MS);
+                }
+                if (!activityTrackerCountdownIntervalId) {
+                    activityTrackerCountdownIntervalId = setInterval(updateActivityCountdown, 1000);
+                    updateActivityCountdown();
+                }
+            }
         }
         window.removeEventListener('hashchange', window._warDashboardHashChange);
         window._warDashboardHashChange = onHashChange;
@@ -1113,6 +2294,8 @@
 
         runDashboard();
         startRefreshTimer();
+        startChainTick();
+        startChainRefreshTimer();
     }
 
     window.initWarDashboard = initWarDashboard;

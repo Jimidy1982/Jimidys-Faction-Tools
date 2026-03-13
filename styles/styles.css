@@ -355,6 +355,20 @@ header h1 {
     margin-top: 8px;
 }
 
+/* Auto-refresh header: on/off slider (independent of chain track positioning) */
+.war-dashboard-refresh-slider-wrap {
+    position: static;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+.war-dashboard-refresh-slider-wrap .war-dashboard-chain-track-input {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+}
+
 /* Chain box: track toggle in corner */
 .war-dashboard-chain-track-wrap {
     position: absolute;
@@ -402,6 +416,187 @@ header h1 {
 @keyframes war-dashboard-chain-rotate {
     from { transform: translateZ(0) rotate(0deg); }
     to { transform: translateZ(0) rotate(360deg); }
+}
+
+/* War Dashboard settings cog and modal */
+.war-dashboard-settings-cog {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: var(--secondary-color, #2a2a2a);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 6px;
+    color: var(--accent-color, #FFD700);
+    font-size: 1.25rem;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+.war-dashboard-settings-cog:hover {
+    background: rgba(255, 215, 0, 0.15);
+    color: var(--accent-color);
+}
+
+.war-dashboard-settings-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+.war-dashboard-settings-modal {
+    background: var(--secondary-color, #1e1e1e);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 8px;
+    max-width: 420px;
+    width: 100%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.war-dashboard-settings-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-color, #444);
+}
+.war-dashboard-settings-modal-header h2 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--accent-color, #FFD700);
+}
+.war-dashboard-settings-close {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: #b0b0b0;
+    font-size: 1.5rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 4px;
+}
+.war-dashboard-settings-close:hover {
+    color: var(--accent-color);
+    background: rgba(255, 255, 255, 0.08);
+}
+.war-dashboard-settings-modal-body {
+    padding: 16px;
+}
+.war-dashboard-settings-ff-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.war-dashboard-settings-ff-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.war-dashboard-settings-ff-label {
+    min-width: 72px;
+    color: var(--accent-color, #FFD700);
+}
+.war-dashboard-settings-ff-row .war-dashboard-ff-input {
+    width: 80px;
+}
+.war-dashboard-settings-ff-hint {
+    color: #888;
+    font-size: 12px;
+}
+.war-dashboard-settings-interval-input {
+    width: 80px;
+}
+.war-dashboard-settings-divider {
+    border: none;
+    border-top: 1px solid var(--border-color, #444);
+    margin: 16px 0;
+}
+
+/* Faction activity tracker */
+#war-dashboard-activity-tracker .war-dashboard-activity-track-wrap {
+    position: static;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.war-dashboard-activity-chart-wrap {
+    position: relative;
+    min-height: 200px;
+}
+
+.war-dashboard-activity-faction-block {
+    margin-bottom: 8px;
+    border: 1px solid var(--border-color, #444);
+    border-radius: 4px;
+    padding: 0 8px 8px 8px;
+}
+.war-dashboard-activity-faction-header-row {
+    flex-wrap: nowrap;
+}
+.war-dashboard-activity-faction-header:hover {
+    color: var(--accent-color);
+}
+.war-dashboard-activity-faction-name {
+    font-weight: normal;
+    color: #e0e0e0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.war-dashboard-activity-faction-remove:hover {
+    color: #e0e0e0;
+    border-color: rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.08);
+}
+.war-dashboard-activity-faction-remove:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+}
+
+/* Activity hour modal: fit in modal without horizontal scroll, sensible column widths */
+.war-dashboard-activity-hour-modal-table {
+    table-layout: fixed;
+    width: 100%;
+    min-width: 0;
+}
+.war-dashboard-activity-hour-modal-table th:first-child,
+.war-dashboard-activity-hour-modal-table td:first-child {
+    width: 52%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.war-dashboard-activity-hour-modal-table .war-dashboard-activity-hour-col-stats,
+.war-dashboard-activity-hour-modal-table td:nth-child(2) {
+    width: 30%;
+    white-space: nowrap;
+}
+.war-dashboard-activity-hour-modal-table .war-dashboard-activity-hour-col-active,
+.war-dashboard-activity-hour-modal-table td:nth-child(3) {
+    width: 18%;
+    white-space: nowrap;
+}
+.war-dashboard-activity-hour-sortable {
+    cursor: pointer;
+    user-select: none;
+}
+.war-dashboard-activity-hour-sortable:hover {
+    color: var(--accent-color);
+}
+
+/* Activity tracker table (tracked faction dropdown): sortable columns */
+.war-dashboard-activity-tracker-sortable {
+    cursor: pointer;
+    user-select: none;
+}
+.war-dashboard-activity-tracker-sortable:hover {
+    color: var(--accent-color);
 }
 
 /* Vault Checker */

@@ -8,6 +8,15 @@ document.addEventListener('DOMContentLoaded', () => {
         contactLink.href = `https://www.torn.com/profiles.php?XID=${CONTACT_TORN_PROFILE_ID}`;
     }
 
+    /** Format decimal hours as H:MM (e.g. 1.5 -> "1:30"). Returns "-" for null/invalid. */
+    function formatHoursMinutes(decimalHours) {
+        if (decimalHours == null || typeof decimalHours !== 'number' || isNaN(decimalHours) || decimalHours < 0) return '-';
+        let h = Math.floor(decimalHours);
+        let m = Math.round((decimalHours - h) * 60);
+        if (m >= 60) { m = 0; h += 1; }
+        return h + ':' + String(m).padStart(2, '0');
+    }
+
     // API key help tooltip: show on hover (CSS) and toggle on click/tap for mobile
     const apiKeyHelp = document.getElementById('apiKeyHelp');
     if (apiKeyHelp) {
@@ -2453,6 +2462,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         return results;
     };
+    window.batchTornApiCalls = batchTornApiCalls;
 
     // --- GLOBAL API KEY HANDLING ---
     // Function to update welcome message
@@ -3737,7 +3747,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? formatRelativeTime(lastUpdatedTimestamp * 1000) 
                 : 'N/A';
             
-            const displayActivity = activity.toFixed(1);
+            const displayActivity = formatHoursMinutes(activity);
             
             tableHtml += `
                 <tr>
@@ -3863,7 +3873,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const lastUpdatedDate = lastUpdatedTimestamp 
                     ? new Date(lastUpdatedTimestamp * 1000).toLocaleString() 
                     : 'N/A';
-                const activity = (activityHours[memberID] || 0).toFixed(1);
+                const activity = formatHoursMinutes(activityHours[memberID] || 0);
                 
                 csvContent += `"${member.name} [${memberID}]",${member.level},"${displayEstimatedStat}",${fairFightScore},${activity},"${lastUpdatedDate}"\r\n`;
             });
@@ -4278,7 +4288,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             callbacks: {
                                 label: function(context) {
                                     if (context.parsed.y === null) return '';
-                                    return `${context.dataset.label}: ${context.parsed.y.toFixed(1)} hours`;
+                                    return `${context.dataset.label}: ${formatHoursMinutes(context.parsed.y)}`;
                                 }
                             }
                         }
@@ -4425,13 +4435,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     </td>
                     <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}">${currentLevel || '-'}</td>
                     <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}">${displayCurrentEstimatedStat}</td>
-                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding-right: 10px;">${currentActivity !== null ? currentActivity.toFixed(1) : '-'}</td>
+                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding-right: 10px;">${currentActivity !== null ? formatHoursMinutes(currentActivity) : '-'}</td>
                     <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}">
                         ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
                     </td>
                     <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}">${ownLevel || '-'}</td>
                     <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}">${displayOwnEstimatedStat}</td>
-                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding-right: 10px;">${ownActivity !== null ? ownActivity.toFixed(1) : '-'}</td>
+                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding-right: 10px;">${ownActivity !== null ? formatHoursMinutes(ownActivity) : '-'}</td>
                 </tr>`;
         }
         
@@ -4536,7 +4546,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     callbacks: {
                                         label: function(context) {
                                             if (context.parsed.y === null) return '';
-                                            return `${context.dataset.label}: ${context.parsed.y.toFixed(1)} hours`;
+                                            return `${context.dataset.label}: ${formatHoursMinutes(context.parsed.y)}`;
                                         }
                                     }
                                 }
@@ -4717,13 +4727,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     </td>
                     <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}" style="padding: 8px 6px;">${currentLevel || '-'}</td>
                     <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}" style="padding: 8px 6px;">${displayCurrentEstimatedStat}</td>
-                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding: 8px 6px;">${currentActivity !== null ? currentActivity.toFixed(1) : '-'}</td>
+                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding: 8px 6px;">${currentActivity !== null ? formatHoursMinutes(currentActivity) : '-'}</td>
                     <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}" style="padding: 8px 6px;">
                         ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
                     </td>
                     <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}" style="padding: 8px 6px;">${ownLevel || '-'}</td>
                     <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}" style="padding: 8px 6px;">${displayOwnEstimatedStat}</td>
-                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding: 8px 6px;">${ownActivity !== null ? ownActivity.toFixed(1) : '-'}</td>
+                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding: 8px 6px;">${ownActivity !== null ? formatHoursMinutes(ownActivity) : '-'}</td>
                 `;
                 tbody.appendChild(row);
             }
@@ -4773,7 +4783,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const ownEstimatedStat = ownPlayerID ? (ownBattleStatsEstimates[ownPlayerID] || ownBattleStatsEstimates[parseInt(ownPlayerID)] || 'N/A') : null;
                 const displayOwnEstimatedStat = (ownEstimatedStat && ownEstimatedStat !== 'N/A') ? ownEstimatedStat.toLocaleString() : (ownEstimatedStat || '-');
                 
-                csvContent += `"${currentName || '-'}",${currentLevel || '-'},"${displayCurrentEstimatedStat}","${currentActivity !== null ? currentActivity.toFixed(1) : '-'}","${ownName || '-'}",${ownLevel || '-'},"${displayOwnEstimatedStat}","${ownActivity !== null ? ownActivity.toFixed(1) : '-'}"\r\n`;
+                csvContent += `"${currentName || '-'}",${currentLevel || '-'},"${displayCurrentEstimatedStat}","${currentActivity !== null ? formatHoursMinutes(currentActivity) : '-'}","${ownName || '-'}",${ownLevel || '-'},"${displayOwnEstimatedStat}","${ownActivity !== null ? formatHoursMinutes(ownActivity) : '-'}"\r\n`;
             }
             
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -4853,7 +4863,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         borderWidth: 1,
                         callbacks: {
                             label: function(context) {
-                                return `Activity: ${context.parsed.y.toFixed(1)} hours`;
+                                return `Activity: ${formatHoursMinutes(context.parsed.y)}`;
                             }
                         }
                     }
