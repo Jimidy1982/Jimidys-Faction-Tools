@@ -1617,6 +1617,14 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="container">
                 <h1>🔧 Admin Dashboard</h1>
                 
+                <div class="admin-tab-bar">
+                    <button type="button" class="admin-tab-btn active" data-tab="overview">Overview</button>
+                    <button type="button" class="admin-tab-btn" data-tab="usage">Usage</button>
+                    <button type="button" class="admin-tab-btn" data-tab="activity">Activity</button>
+                    <button type="button" class="admin-tab-btn" data-tab="vip">VIP Balances</button>
+                </div>
+                
+                <div id="admin-tab-overview" class="admin-tab-panel">
                 <div style="margin-bottom: 20px; text-align: center;">
                     <button id="toggleAdminFilter" class="fetch-button" style="background-color: var(--accent-color);">
                         ${showAdminData ? '📊 Including Admin Usage' : '📊 Excluding Admin Usage'} (${filteredLogs.length} uses)
@@ -1670,7 +1678,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         <canvas id="usersGraph"></canvas>
                     </div>
                 </div>
+                </div>
                 
+                <div id="admin-tab-usage" class="admin-tab-panel" style="display: none;">
                 <div class="dashboard-section">
                     <h2>Most Used Tools</h2>
                     <table class="admin-table">
@@ -1762,7 +1772,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         </tbody>
                     </table>
                 </div>
+                </div>
                 
+                <div id="admin-tab-activity" class="admin-tab-panel" style="display: none;">
                 <div class="dashboard-section">
                     <h2>Recent Activity (Last 20)</h2>
                     <table class="admin-table">
@@ -1885,10 +1897,118 @@ document.addEventListener('DOMContentLoaded', () => {
                         </table>
                     </div>
                 </div>
+                </div>
+                
+                <div id="admin-tab-vip" class="admin-tab-panel" style="display: none;">
+                <div class="dashboard-section" id="admin-vip-section">
+                    <h2>VIP Balances</h2>
+                    <div id="admin-vip-loading" style="padding: 20px; text-align: center;">Loading VIP balances...</div>
+                    <div id="admin-vip-content" style="display: none;"></div>
+                </div>
+                </div>
             </div>
         `;
         
         appContent.innerHTML = html;
+        
+        // Tab switching
+        document.querySelectorAll('.admin-tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tab = btn.getAttribute('data-tab');
+                document.querySelectorAll('.admin-tab-panel').forEach(panel => {
+                    panel.style.display = panel.id === `admin-tab-${tab}` ? 'block' : 'none';
+                });
+                document.querySelectorAll('.admin-tab-btn').forEach(b => {
+                    b.classList.toggle('active', b === btn);
+                });
+            });
+        });
+        
+        // Load VIP balances (admin-only callable) and render table with edit
+        (async function loadAdminVipBalances() {
+            const loadingEl = document.getElementById('admin-vip-loading');
+            const contentEl = document.getElementById('admin-vip-content');
+            if (!loadingEl || !contentEl) return;
+            const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
+            if (!apiKey) {
+                loadingEl.textContent = 'Enter your API key in the sidebar to load VIP balances.';
+                return;
+            }
+            try {
+                if (typeof firebase === 'undefined' || !firebase.functions) {
+                    loadingEl.textContent = 'Firebase not loaded.';
+                    return;
+                }
+                const fn = firebase.functions().httpsCallable('getVipBalancesForAdmin');
+                const res = await fn({ apiKey: apiKey });
+                const balances = (res && res.data && res.data.balances) || [];
+                loadingEl.style.display = 'none';
+                contentEl.style.display = 'block';
+                if (balances.length === 0) {
+                    contentEl.innerHTML = '<p style="color: #888;">No VIP balances yet.</p>';
+                    return;
+                }
+                const sorted = balances.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
+                let tableHtml = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Last Deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+                sorted.forEach(function(row) {
+                    const lastDed = row.lastDeductionDate ? new Date(row.lastDeductionDate).toLocaleDateString() : '—';
+                    const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
+                    tableHtml += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
+                        '<td>' + String(row.playerId) + '</td>' +
+                        '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a></td>' +
+                        '<td>' + (row.totalXanaxSent ?? 0) + '</td>' +
+                        '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
+                        '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
+                        '<td>' + lastDed + '</td>' +
+                        '<td>' + lastLog + '</td>' +
+                        '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
+                });
+                tableHtml += '</tbody></table>';
+                contentEl.innerHTML = tableHtml;
+                contentEl.querySelectorAll('.admin-vip-edit-btn').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        const tr = btn.closest('tr');
+                        const playerId = tr.getAttribute('data-player-id');
+                        const row = sorted.find(function(r) { return String(r.playerId) === playerId; });
+                        if (!row) return;
+                        const newBalance = prompt('New current balance (Xanax):', row.currentBalance);
+                        if (newBalance === null) return;
+                        const num = parseInt(newBalance, 10);
+                        if (isNaN(num) || num < 0) {
+                            alert('Enter a non-negative number.');
+                            return;
+                        }
+                        const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
+                        (async function save() {
+                            btn.disabled = true;
+                            try {
+                                const updateFn = firebase.functions().httpsCallable('updateVipBalance');
+                                await updateFn({
+                                    playerId: row.playerId,
+                                    playerName: row.playerName,
+                                    totalXanaxSent: row.totalXanaxSent,
+                                    currentBalance: num,
+                                    lastDeductionDate: row.lastDeductionDate,
+                                    vipLevel: newLevel,
+                                    lastLoginDate: row.lastLoginDate
+                                });
+                                tr.querySelector('.admin-vip-balance').textContent = num;
+                                tr.querySelector('td:nth-child(5)').textContent = 'VIP ' + newLevel;
+                                row.currentBalance = num;
+                                row.vipLevel = newLevel;
+                            } catch (e) {
+                                console.error(e);
+                                alert('Update failed: ' + (e.message || e));
+                            }
+                            btn.disabled = false;
+                        })();
+                    });
+                });
+            } catch (e) {
+                console.error('VIP balances load failed:', e);
+                loadingEl.textContent = 'Failed to load VIP balances. ' + (e.message || e.code || '');
+            }
+        })();
         
         // Get tools list from stats (already calculated)
         const allTools = Object.keys(stats).sort();

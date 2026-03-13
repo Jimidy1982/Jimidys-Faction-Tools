@@ -165,6 +165,47 @@ exports.logVipTransaction = onCall(
   }
 );
 
+/** Admin-only: return all VIP balance documents. Caller must pass apiKey; we validate against Torn and allow only admin user IDs. */
+const ADMIN_USER_IDS = [2935825, 2093859];
+
+async function validateAdminApiKey(apiKey) {
+  const key = String(apiKey || '').trim();
+  if (!key) return false;
+  try {
+    const res = await fetch(`https://api.torn.com/user/?selections=profile&key=${key}`);
+    const data = await res.json();
+    if (data.error) return false;
+    const pid = data.player_id != null ? Number(data.player_id) : null;
+    return pid != null && ADMIN_USER_IDS.includes(pid);
+  } catch (e) {
+    return false;
+  }
+}
+
+exports.getVipBalancesForAdmin = onCall(
+  { maxInstances: 10 },
+  async (request) => {
+    const { apiKey } = request.data || {};
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const list = [];
+    snap.docs.forEach((doc) => {
+      const d = doc.data();
+      list.push({
+        playerId: doc.id,
+        playerName: d.playerName ?? '',
+        totalXanaxSent: d.totalXanaxSent ?? 0,
+        currentBalance: d.currentBalance ?? 0,
+        lastDeductionDate: d.lastDeductionDate ?? null,
+        vipLevel: d.vipLevel ?? 0,
+        lastLoginDate: d.lastLoginDate ?? null,
+      });
+    });
+    return { balances: list };
+  }
+);
+
 /** One-off import: set VIP balances from a list of { playerId, playerName, amount }. Assumes all sent today; logs one "Sent" transaction per player. */
 function vipLevelFromBalance(balance) {
   const b = Number(balance) || 0;

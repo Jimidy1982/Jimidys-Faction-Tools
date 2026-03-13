@@ -2815,6 +2815,35 @@ th small {
     font-weight: bold;
 }
 
+.admin-tab-bar {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 8px;
+}
+
+.admin-tab-btn {
+    padding: 8px 14px;
+    background: var(--secondary-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-color);
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.admin-tab-btn:hover {
+    background-color: var(--border-color);
+}
+
+.admin-tab-btn.active {
+    color: var(--accent-color);
+    font-weight: bold;
+    border-color: var(--accent-color);
+}
+
 .user-link:hover {
     color: #ffd700;
     text-decoration: underline;
