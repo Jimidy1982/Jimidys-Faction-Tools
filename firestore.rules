@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Activity tracker: batched samples (one doc per 5-min tick). Backend writes; clients read last 7 days.
+    match /activitySamples/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    // Which factions to sample. Only backend (Callable) writes; clients read to see list.
+    match /trackedFactions/{factionId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    // API keys per faction (one doc per faction, keys array). Backend only; never expose to client.
+    match /trackedFactionKeys/{factionId} {
+      allow read, write: if false;
+    }
+    // VIP: balances and transactions. Backend (Callables) only; client calls callables.
+    match /vipBalances/{playerId} {
+      allow read, write: if false;
+    }
+    match /vipTransactions/{transactionId} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -490,9 +490,23 @@ document.addEventListener('DOMContentLoaded', () => {
         3: 100
     };
     
-    // Google Sheets URL for VIP tracking (using same Apps Script as tool usage logs)
+    // VIP backend: Firebase Callables (getVipBalance, updateVipBalance, logVipTransaction). Fallback URL only for tool-usage log if needed.
     const GOOGLE_SHEETS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx9dnveoMQYIAzjvsBrhzO1Fl9y29SAUsqLlQLG4YSiyIJ0FyAFpbj0idb854_7w87u/exec';
-    
+
+    /** Call Firebase getVipBalance callable with { playerId } or { playerName }. Returns balance object or null. */
+    async function fetchVipBalanceFromBackend(opts) {
+        try {
+            if (typeof firebase === 'undefined' || !firebase.functions) return null;
+            const fn = firebase.functions().httpsCallable('getVipBalance');
+            const res = await fn(opts);
+            const data = res && res.data;
+            return data || null;
+        } catch (e) {
+            console.error('VIP getVipBalance callable error:', e);
+            return null;
+        }
+    }
+
     // Get admin API key (stored in localStorage with key 'adminApiKey')
     function getAdminApiKey() {
         // Admin API key should be set via admin dashboard or localStorage
@@ -700,30 +714,23 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         
-        // Cache expired or doesn't exist, fetch from Google Sheets
+        // Cache expired or doesn't exist, fetch from Firebase
         try {
-            const response = await fetch(`${GOOGLE_SHEETS_SCRIPT_URL}?action=getVipBalance&playerId=${playerId}`);
-            if (response.ok) {
-                const data = await response.json();
-                if (data && data.playerId) {
-                    // Cache the result with expiration
-                    if (useCache) {
-                        const cacheKey = `vipBalance_${playerId}`;
-                        const cacheExpiryKey = `vipBalanceExpiry_${playerId}`;
-                        const expirationTime = Date.now() + calculateCacheExpiration(data);
-                        
-                        localStorage.setItem(cacheKey, JSON.stringify(data));
-                        localStorage.setItem(cacheExpiryKey, expirationTime.toString());
-                    }
-                    return data;
+            const data = await fetchVipBalanceFromBackend({ playerId: playerId });
+            if (data && (data.playerId != null || data.playerName != null)) {
+                if (useCache) {
+                    const cacheKey = `vipBalance_${playerId}`;
+                    const cacheExpiryKey = `vipBalanceExpiry_${playerId}`;
+                    const expirationTime = Date.now() + calculateCacheExpiration(data);
+                    localStorage.setItem(cacheKey, JSON.stringify(data));
+                    localStorage.setItem(cacheExpiryKey, expirationTime.toString());
                 }
-                // If data is null, player doesn't exist yet
-                return null;
+                return data;
             }
+            return null;
         } catch (error) {
-            console.error('Error fetching VIP balance from Google Sheets:', error);
+            console.error('Error fetching VIP balance:', error);
         }
-        
         return null;
     }
     
@@ -733,61 +740,40 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.removeItem(`vipBalanceExpiry_${playerId}`);
     }
     
-    // Update VIP balance in Google Sheets
+    // Update VIP balance (Firebase Callable)
     async function updateVipBalance(playerId, playerName, totalSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) {
-        const vipData = {
-            action: 'updateVipBalance',
-            playerId: playerId,
-            playerName: playerName,
-            totalXanaxSent: totalSent,
-            currentBalance: currentBalance,
-            lastDeductionDate: lastDeductionDate,
-            vipLevel: vipLevel,
-            lastLoginDate: lastLoginDate
-        };
-        
         try {
-            // Use no-cors mode for Google Apps Script (required for web apps)
-            const url = `${GOOGLE_SHEETS_SCRIPT_URL}?action=updateVipBalance`;
-            await fetch(url, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(vipData)
+            if (typeof firebase === 'undefined' || !firebase.functions) return;
+            const fn = firebase.functions().httpsCallable('updateVipBalance');
+            await fn({
+                playerId: playerId,
+                playerName: playerName,
+                totalXanaxSent: totalSent,
+                currentBalance: currentBalance,
+                lastDeductionDate: lastDeductionDate,
+                vipLevel: vipLevel,
+                lastLoginDate: lastLoginDate
             });
-            // Note: With no-cors, we can't read the response, but the request was sent
         } catch (error) {
-            console.error('Error updating VIP balance in Google Sheets:', error);
+            console.error('Error updating VIP balance:', error);
         }
     }
     
-    // Log VIP transaction to Google Sheets
+    // Log VIP transaction (Firebase Callable)
     async function logVipTransaction(playerId, playerName, amount, transactionType, balanceAfter) {
-        const transaction = {
-            action: 'logVipTransaction',
-            timestamp: new Date().toISOString(),
-            playerId: playerId,
-            playerName: playerName,
-            amount: amount,
-            transactionType: transactionType, // 'Sent' or 'Deduction'
-            balanceAfter: balanceAfter
-        };
-        
         try {
-            // Use no-cors mode for Google Apps Script (required for web apps)
-            const url = `${GOOGLE_SHEETS_SCRIPT_URL}?action=logVipTransaction`;
-            await fetch(url, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(transaction)
+            if (typeof firebase === 'undefined' || !firebase.functions) return;
+            const fn = firebase.functions().httpsCallable('logVipTransaction');
+            await fn({
+                timestamp: new Date().toISOString(),
+                playerId: playerId,
+                playerName: playerName,
+                amount: amount,
+                transactionType: transactionType,
+                balanceAfter: balanceAfter
             });
         } catch (error) {
-            console.error('Error logging VIP transaction to Google Sheets:', error);
+            console.error('Error logging VIP transaction:', error);
         }
     }
     
@@ -814,15 +800,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // If not found by ID, try to find by name (for backfilled data where playerId was 0)
             if (!vipData) {
                 try {
-                    const response = await fetch(`${GOOGLE_SHEETS_SCRIPT_URL}?action=getVipBalance&playerName=${encodeURIComponent(userData.name)}`);
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data && data.playerName === userData.name) {
-                            vipData = data;
-                            // Update player ID if it was 0 (from backfill)
-                            if (vipData.playerId === 0 || !vipData.playerId) {
-                                vipData.playerId = userData.playerId;
-                            }
+                    const data = await fetchVipBalanceFromBackend({ playerName: userData.name });
+                    if (data && data.playerName === userData.name) {
+                        vipData = data;
+                        if (vipData.playerId === 0 || !vipData.playerId) {
+                            vipData.playerId = userData.playerId;
                         }
                     }
                 } catch (error) {
@@ -2237,10 +2219,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    // Test function to check Google Sheets connection
+    // Test function to check VIP Firebase connection
     window.testVipConnection = async function() {
-        console.log('Testing VIP Google Sheets connection...');
+        console.log('Testing VIP Firebase connection...');
         try {
+            if (typeof firebase === 'undefined' || !firebase.functions) {
+                console.error('Firebase not loaded');
+                return false;
+            }
             const testData = {
                 playerId: 999999,
                 playerName: 'Test Player',
@@ -2250,47 +2236,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 vipLevel: 0,
                 lastLoginDate: null
             };
-            
-            console.log('Sending test update (using no-cors mode)...');
-            // Use no-cors mode for Google Apps Script
-            await fetch(GOOGLE_SHEETS_SCRIPT_URL, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    action: 'updateVipBalance',
-                    ...testData
-                })
-            });
-            
-            console.log('✓ Test update sent!');
-            console.log('Note: With no-cors mode, we cannot verify the response.');
-            console.log('Please check your "VIP Balances" sheet for a row with Player ID = 999999');
-            console.log('If you see it, the connection is working!');
-            
-            // Try to verify by reading back (this uses GET which should work)
-            setTimeout(async () => {
-                try {
-                    const checkUrl = `${GOOGLE_SHEETS_SCRIPT_URL}?action=getVipBalance&playerId=999999`;
-                    const checkResponse = await fetch(checkUrl);
-                    if (checkResponse.ok) {
-                        const data = await checkResponse.json();
-                        if (data && data.playerId === 999999) {
-                            console.log('✓ Verification successful! Test data found in sheet:', data);
-                        } else {
-                            console.log('⚠ Test data not found yet. It may take a moment to appear.');
-                        }
-                    }
-                } catch (e) {
-                    console.log('Could not verify (this is normal with no-cors mode)');
-                }
-            }, 2000);
-            
+            const updateFn = firebase.functions().httpsCallable('updateVipBalance');
+            await updateFn(testData);
+            console.log('✓ Test update sent to Firebase');
+            const data = await fetchVipBalanceFromBackend({ playerId: 999999 });
+            if (data && (data.playerId === 999999 || data.playerId === '999999')) {
+                console.log('✓ Verification successful! Test data in Firestore:', data);
+            } else {
+                console.log('⚠ Test data not found yet.');
+            }
             return true;
         } catch (error) {
-            console.error('✗ Connection error:', error);
+            console.error('✗ VIP connection error:', error);
             return false;
         }
     };

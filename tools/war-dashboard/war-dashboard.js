@@ -30,6 +30,10 @@
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
     const ACTIVITY_DATA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+    /** Firestore collection: one doc per 5-min tick; doc has { t: number, factions: { [factionId]: { onlineIds: number[] } } }. 7-day retention. */
+    const ACTIVITY_SAMPLES_COLLECTION = 'activitySamples';
+    /** In-memory cache of merged Firestore + localStorage activity data per faction (so getActivityData stays sync). */
+    let activityDataCache = {};
 
     const CHAIN_AT_ZERO_THROTTLE_MS = 60 * 1000; // when chain at 0, only refetch once per minute
     let lastOurChainFetchTime = 0;
@@ -298,7 +302,8 @@
         } catch (e) { /* ignore */ }
     }
 
-    function getActivityData(factionId) {
+    /** Get activity data from localStorage only (7-day trim). Used for merge and fallback. */
+    function getActivityDataFromStorage(factionId) {
         try {
             const raw = localStorage.getItem(ACTIVITY_DATA_PREFIX + factionId);
             if (!raw) return { samples: [], members: [] };
@@ -309,6 +314,79 @@
             const trimmed = samples.filter(s => s.t >= cutoff);
             return { samples: trimmed, members };
         } catch (e) { return { samples: [], members: [] }; }
+    }
+
+    /** Sync: return cached merged data if present, else localStorage (7-day). */
+    function getActivityData(factionId) {
+        if (activityDataCache[factionId]) return activityDataCache[factionId];
+        return getActivityDataFromStorage(factionId);
+    }
+
+    /** Load activity samples from Firestore (batched ticks, 7-day retention), merge with local, store in cache. Resolves when done or when Firestore unavailable. */
+    async function ensureActivityDataLoaded(factionId) {
+        if (activityDataCache[factionId]) return;
+        var db = null;
+        try {
+            if (typeof firebase !== 'undefined' && firebase.firestore) db = firebase.firestore();
+        } catch (e) { /* ignore */ }
+        if (!db) return;
+        const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
+        var firestoreSamples = [];
+        try {
+            // Firestore may require a composite index on (t). Create it when the console prompts.
+            const snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
+                .where('t', '>=', cutoff)
+                .orderBy('t')
+                .get();
+            const fid = String(factionId);
+            snap.docs.forEach(function (doc) {
+                const d = doc.data();
+                const factions = d.factions || {};
+                const factionData = factions[fid];
+                if (factionData && Array.isArray(factionData.onlineIds)) {
+                    firestoreSamples.push({ t: d.t, onlineIds: factionData.onlineIds });
+                }
+            });
+        } catch (e) {
+            console.warn('Activity Firestore read failed for faction', factionId, e);
+            return;
+        }
+        const local = getActivityDataFromStorage(factionId);
+        const byT = {};
+        (local.samples || []).forEach(function (s) { byT[s.t] = s; });
+        firestoreSamples.forEach(function (s) { byT[s.t] = s; });
+        const merged = Object.keys(byT).map(function (k) { return byT[k]; }).filter(function (s) { return s.t >= cutoff; }).sort(function (a, b) { return a.t - b.t; });
+        activityDataCache[factionId] = { samples: merged, members: local.members || [] };
+    }
+
+    /** Persistent anonymous id for this browser so the backend can associate our API key with our tracked factions. */
+    function getOrCreateActivityUserId() {
+        var key = 'war_dashboard_activity_user_id';
+        try {
+            var id = localStorage.getItem(key);
+            if (id && id.length > 0) return id;
+            id = 'uid_' + Date.now() + '_' + Math.random().toString(36).slice(2, 12);
+            localStorage.setItem(key, id);
+            return id;
+        } catch (e) { return 'uid_' + Date.now(); }
+    }
+
+    /** Tell the backend to add/remove this faction for 24/7 sampling. Uses your API key (add) and a persistent userId. */
+    function syncTrackedFactionToFirestore(factionId, action) {
+        var functions = null;
+        try {
+            if (typeof firebase !== 'undefined' && firebase.functions) functions = firebase.functions();
+        } catch (e) { return; }
+        if (!functions) return;
+        var fid = String(factionId);
+        var uid = getOrCreateActivityUserId();
+        if (action === 'add') {
+            var apiKey = (getApiKey() || '').trim();
+            if (!apiKey) return;
+            functions.httpsCallable('addTrackedFaction')({ factionId: fid, apiKey: apiKey, userId: uid }).catch(function () {});
+        } else if (action === 'remove') {
+            functions.httpsCallable('removeTrackedFaction')({ factionId: fid, userId: uid }).catch(function () {});
+        }
     }
 
     function setActivityData(factionId, data) {
@@ -327,6 +405,7 @@
         const memberList = Array.isArray(members) && members.length ? members.map(m => ({ id: m.id, name: m.name || String(m.id), level: m.level })) : existing.members;
         existing.samples.push({ t: Date.now(), onlineIds: onlineIds || [] });
         setActivityData(factionId, { samples: existing.samples, members: memberList });
+        if (activityDataCache[factionId]) activityDataCache[factionId] = { samples: existing.samples, members: memberList };
     }
 
     function updateActivityLastVisitAndCleanup() {
@@ -1841,6 +1920,7 @@
                 headerBtn.setAttribute('aria-expanded', !expanded);
                 arrow.textContent = expanded ? '▶' : '▼';
                 if (!expanded) {
+                    await ensureActivityDataLoaded(fid);
                     await ensureActivityTrackerBattleStats(fid);
                     renderActivityTrackerChart(fid);
                     renderActivityTrackerTable(fid);
@@ -1860,6 +1940,7 @@
                 const factionLabel = t.factionName || 'Faction ' + fid;
                 if (!confirm('Clear all activity data for ' + factionLabel + '? This will remove the activity history and cannot be undone.')) return;
                 try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
+                delete activityDataCache[fid];
                 t.enabled = false;
                 t.disabledAt = Date.now();
                 setActivityConfig(config);
@@ -1872,7 +1953,9 @@
                 if (!confirm('Remove ' + factionLabel + ' from the activity tracker? Its cached data will be cleared. You can add it again later by loading the faction.')) return;
                 config.tracked = config.tracked.filter(x => String(x.factionId) !== String(fid));
                 try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
+                delete activityDataCache[fid];
                 setActivityConfig(config);
+                syncTrackedFactionToFirestore(fid, 'remove');
                 updateActivityTrackerUI();
             });
 
@@ -1957,6 +2040,7 @@
                         startedAt: Date.now()
                     });
                     setActivityConfig(config);
+                    syncTrackedFactionToFirestore(enemyId, 'add');
                     try { localStorage.setItem(STORAGE_KEYS.activityAutoWarEnemyFactionId, enemyId); } catch (e) { /* ignore */ }
                     await runActivityTrackerImmediatePull(enemyId);
                     return;
@@ -2003,6 +2087,7 @@
             startedAt: Date.now()
         });
         setActivityConfig(config);
+        syncTrackedFactionToFirestore(factionId, 'add');
         return config;
     }
 
@@ -2067,6 +2152,7 @@
         if (window.logToolUsage) window.logToolUsage('war-dashboard');
 
         loadSettings();
+        getActivityConfig().tracked.forEach(function (t) { syncTrackedFactionToFirestore(t.factionId, 'add'); });
 
         if (localStorage.getItem(STORAGE_KEYS.ffNoticeHidden) === '1') setFFNoticeVisible(false);
         if (localStorage.getItem(STORAGE_KEYS.enemyPickerMinimised) === '1') setEnemyPickerMinimised(true);

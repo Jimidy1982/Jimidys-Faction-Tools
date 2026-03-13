@@ -1,0 +1,10 @@
+# Firebase / Functions
+functions/.env
+functions/.env.*
+functions/node_modules
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
