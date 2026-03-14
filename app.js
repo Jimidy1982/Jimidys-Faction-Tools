@@ -890,7 +890,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     vipData.currentBalance
                 );
             } else if (!vipData.lastDeductionDate) {
-                // Start deduction clock for imported/new users so they deduct correctly from next time
+                // Start deduction clock from now; first deduction in 48 hours
                 vipData.lastDeductionDate = now;
             }
             
@@ -1956,23 +1956,55 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const sorted = balances.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
-                let tableHtml = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Last Deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+                function formatNextDeductionCountdown(ms) {
+                    if (ms <= 0) return '0m';
+                    const d = Math.floor(ms / (24 * 60 * 60 * 1000));
+                    const h = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+                    const m = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+                    if (d > 0) return d + 'd ' + h + 'h';
+                    if (h > 0) return h + 'h ' + m + 'm';
+                    return m + 'm';
+                }
+                let tableHtml = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
                 sorted.forEach(function(row) {
-                    const lastDed = row.lastDeductionDate ? new Date(row.lastDeductionDate).toLocaleDateString() : '—';
+                    let nextDedCell = '';
+                    let nextDedTs = '';
+                    const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+                    let nextDedMs;
+                    if (row.lastDeductionDate) {
+                        const lastDedMs = new Date(row.lastDeductionDate).getTime();
+                        nextDedMs = lastDedMs + twoDaysMs;
+                    } else {
+                        // No stored date: treat next deduction as 48 hours from now (clock runs for everyone)
+                        nextDedMs = Date.now() + twoDaysMs;
+                    }
+                    const nextDedDate = new Date(nextDedMs);
+                    const countdownMs = Math.max(0, nextDedMs - Date.now());
+                    nextDedTs = String(nextDedMs);
+                    nextDedCell = '<span class="admin-next-deduction-date">' + nextDedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + '</span><br><span class="admin-next-deduction-countdown" data-until="' + nextDedTs + '">' + formatNextDeductionCountdown(countdownMs) + '</span>';
                     const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
                     tableHtml += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
                         '<td>' + String(row.playerId) + '</td>' +
                         '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
-                        '<td>' + (row.factionName || '—') + '</td>' +
+                        '<td>' + (row.factionName || (userStats[row.playerName] && userStats[row.playerName].factionName) || '—') + '</td>' +
                         '<td class="admin-vip-total-sent">' + (row.totalXanaxSent ?? 0) + '</td>' +
                         '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
                         '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
-                        '<td>' + lastDed + '</td>' +
+                        '<td class="admin-next-deduction-cell">' + nextDedCell + '</td>' +
                         '<td>' + lastLog + '</td>' +
                         '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
                 });
                 tableHtml += '</tbody></table>';
                 contentEl.innerHTML = tableHtml;
+                // Update next-deduction countdowns every 30 seconds
+                setInterval(function() {
+                    contentEl.querySelectorAll('.admin-next-deduction-countdown[data-until]').forEach(function(el) {
+                        const until = parseInt(el.getAttribute('data-until'), 10);
+                        if (isNaN(until)) return;
+                        const countdownMs = Math.max(0, until - Date.now());
+                        el.textContent = formatNextDeductionCountdown(countdownMs);
+                    });
+                }, 30 * 1000);
                 // Ensure VIP edit modal exists (one per dashboard load)
                 let vipEditOverlay = document.getElementById('admin-vip-edit-modal');
                 if (!vipEditOverlay) {

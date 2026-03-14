@@ -2857,6 +2857,14 @@ th small {
     background: rgba(255, 215, 0, 0.15);
 }
 
+.admin-next-deduction-cell {
+    white-space: nowrap;
+}
+.admin-next-deduction-countdown {
+    font-size: 0.85em;
+    color: var(--accent-color);
+}
+
 .user-link {
     color: var(--accent-color);
     text-decoration: none;
