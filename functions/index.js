@@ -135,7 +135,7 @@ exports.updateVipBalance = onCall(
     const playerName = data.playerName != null ? String(data.playerName) : '';
     if (!playerId) throw new HttpsError('invalid-argument', 'playerId required');
     const ref = db.collection(VIP_BALANCES_COLLECTION).doc(playerId);
-    await ref.set({
+    const doc = {
       playerId: data.playerId,
       playerName: playerName,
       totalXanaxSent: data.totalXanaxSent ?? 0,
@@ -143,7 +143,10 @@ exports.updateVipBalance = onCall(
       lastDeductionDate: data.lastDeductionDate ?? null,
       vipLevel: data.vipLevel ?? 0,
       lastLoginDate: data.lastLoginDate ?? null,
-    }, { merge: true });
+    };
+    if (data.factionName != null && data.factionName !== '') doc.factionName = data.factionName;
+    if (data.factionId != null && data.factionId !== '') doc.factionId = String(data.factionId);
+    await ref.set(doc, { merge: true });
     return { success: true };
   }
 );
@@ -195,6 +198,8 @@ exports.getVipBalancesForAdmin = onCall(
       list.push({
         playerId: doc.id,
         playerName: d.playerName ?? '',
+        factionName: d.factionName ?? '',
+        factionId: d.factionId ?? '',
         totalXanaxSent: d.totalXanaxSent ?? 0,
         currentBalance: d.currentBalance ?? 0,
         lastDeductionDate: d.lastDeductionDate ?? null,
@@ -203,6 +208,34 @@ exports.getVipBalancesForAdmin = onCall(
       });
     });
     return { balances: list };
+  }
+);
+
+/** Admin-only: return VIP transactions for a player (when they sent xanax / deductions). */
+exports.getVipTransactionsForAdmin = onCall(
+  { maxInstances: 10 },
+  async (request) => {
+    const { apiKey, playerId } = request.data || {};
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+    const pid = String(playerId ?? '');
+    if (!pid) throw new HttpsError('invalid-argument', 'playerId required');
+    const snap = await db.collection(VIP_TRANSACTIONS_COLLECTION)
+      .where('playerId', '==', pid)
+      .orderBy('timestamp', 'desc')
+      .limit(200)
+      .get();
+    const list = [];
+    snap.docs.forEach((doc) => {
+      const d = doc.data();
+      list.push({
+        timestamp: d.timestamp ?? null,
+        transactionType: d.transactionType ?? 'Sent',
+        amount: d.amount ?? 0,
+        balanceAfter: d.balanceAfter ?? 0,
+      });
+    });
+    return { transactions: list };
   }
 );
 

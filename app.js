@@ -629,8 +629,9 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
     
-    // Calculate cache expiration time based on VIP status
-    // Returns milliseconds until they could potentially drop a VIP level
+    // Calculate cache expiration time based on VIP status.
+    // Returns milliseconds until next refetch. Deductions are still applied when reading from cache (see getVipBalance).
+    // - No balance: 0 (no cache). Level 0: 2 days. Otherwise: (xanaxUntilDrop * 2 + 2) days so we refetch before they could drop a level.
     function calculateCacheExpiration(vipData) {
         if (!vipData || vipData.currentBalance === 0) {
             return 0; // No cache for users with no balance
@@ -740,12 +741,12 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.removeItem(`vipBalanceExpiry_${playerId}`);
     }
     
-    // Update VIP balance (Firebase Callable)
-    async function updateVipBalance(playerId, playerName, totalSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) {
+    // Update VIP balance (Firebase Callable). Optional factionName, factionId to show faction in admin table.
+    async function updateVipBalance(playerId, playerName, totalSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate, factionName, factionId) {
         try {
             if (typeof firebase === 'undefined' || !firebase.functions) return;
             const fn = firebase.functions().httpsCallable('updateVipBalance');
-            await fn({
+            const payload = {
                 playerId: playerId,
                 playerName: playerName,
                 totalXanaxSent: totalSent,
@@ -753,7 +754,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 lastDeductionDate: lastDeductionDate,
                 vipLevel: vipLevel,
                 lastLoginDate: lastLoginDate
-            });
+            };
+            if (factionName != null && factionName !== '') payload.factionName = factionName;
+            if (factionId != null && factionId !== '') payload.factionId = String(factionId);
+            await fn(payload);
         } catch (error) {
             console.error('Error updating VIP balance:', error);
         }
@@ -878,22 +882,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 vipData.lastDeductionDate = now;
                 
                 // Log deduction transaction
-                if (deductions > 0) {
-                    await logVipTransaction(
-                        userData.playerId,
-                        userData.name,
-                        deductions,
-                        'Deduction',
-                        vipData.currentBalance
-                    );
-                }
+                await logVipTransaction(
+                    userData.playerId,
+                    userData.name,
+                    deductions,
+                    'Deduction',
+                    vipData.currentBalance
+                );
+            } else if (!vipData.lastDeductionDate) {
+                // Start deduction clock for imported/new users so they deduct correctly from next time
+                vipData.lastDeductionDate = now;
             }
             
             // Update VIP level
             vipData.vipLevel = getVipLevel(vipData.currentBalance);
             vipData.lastLoginDate = now;
             
-            // Update Google Sheets
+            // Update backend (include faction when available so admin table can show it)
             await updateVipBalance(
                 vipData.playerId,
                 vipData.playerName,
@@ -901,7 +906,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 vipData.currentBalance,
                 vipData.lastDeductionDate,
                 vipData.vipLevel,
-                vipData.lastLoginDate
+                vipData.lastLoginDate,
+                userData.factionName,
+                userData.factionId
             );
             
             // Clear cache and update it with new data (since balance changed)
@@ -1949,14 +1956,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const sorted = balances.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
-                let tableHtml = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Last Deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+                let tableHtml = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Last Deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
                 sorted.forEach(function(row) {
                     const lastDed = row.lastDeductionDate ? new Date(row.lastDeductionDate).toLocaleDateString() : '—';
                     const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
                     tableHtml += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
                         '<td>' + String(row.playerId) + '</td>' +
-                        '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a></td>' +
-                        '<td>' + (row.totalXanaxSent ?? 0) + '</td>' +
+                        '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
+                        '<td>' + (row.factionName || '—') + '</td>' +
+                        '<td class="admin-vip-total-sent">' + (row.totalXanaxSent ?? 0) + '</td>' +
                         '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
                         '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
                         '<td>' + lastDed + '</td>' +
@@ -1965,43 +1973,167 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 tableHtml += '</tbody></table>';
                 contentEl.innerHTML = tableHtml;
+                // Ensure VIP edit modal exists (one per dashboard load)
+                let vipEditOverlay = document.getElementById('admin-vip-edit-modal');
+                if (!vipEditOverlay) {
+                    vipEditOverlay = document.createElement('div');
+                    vipEditOverlay.id = 'admin-vip-edit-modal';
+                    vipEditOverlay.className = 'app-modal-overlay';
+                    vipEditOverlay.setAttribute('aria-hidden', 'true');
+                    vipEditOverlay.style.display = 'none';
+                    vipEditOverlay.innerHTML = '<div class="app-modal" role="dialog" aria-labelledby="admin-vip-edit-modal-title">' +
+                        '<div class="app-modal-header">' +
+                        '<h2 id="admin-vip-edit-modal-title">Edit VIP balance</h2>' +
+                        '<button type="button" class="app-modal-close" id="admin-vip-edit-modal-close" aria-label="Close">×</button>' +
+                        '</div>' +
+                        '<div class="app-modal-body">' +
+                        '<div class="app-modal-row"><label class="app-modal-label">Total sent (Xanax)</label><input type="number" id="admin-vip-edit-total-sent" class="app-modal-input" min="0" step="1"></div>' +
+                        '<div class="app-modal-row"><label class="app-modal-label">Current balance (Xanax)</label><input type="number" id="admin-vip-edit-balance" class="app-modal-input" min="0" step="1"></div>' +
+                        '<div class="app-modal-actions">' +
+                        '<button type="button" class="fetch-button" id="admin-vip-edit-cancel">Cancel</button>' +
+                        '<button type="button" class="fetch-button" id="admin-vip-edit-save" style="background-color: var(--accent-color);">Save</button>' +
+                        '</div></div></div>';
+                    document.body.appendChild(vipEditOverlay);
+                    function closeVipEditModal() {
+                        vipEditOverlay.style.display = 'none';
+                        vipEditOverlay.setAttribute('aria-hidden', 'true');
+                    }
+                    vipEditOverlay.querySelector('#admin-vip-edit-modal-close').addEventListener('click', closeVipEditModal);
+                    vipEditOverlay.querySelector('#admin-vip-edit-cancel').addEventListener('click', closeVipEditModal);
+                    vipEditOverlay.addEventListener('click', function(e) {
+                        if (e.target === vipEditOverlay) closeVipEditModal();
+                    });
+                }
+                // VIP history modal (reuse app-modal style)
+                let vipHistoryOverlay = document.getElementById('admin-vip-history-modal');
+                if (!vipHistoryOverlay) {
+                    vipHistoryOverlay = document.createElement('div');
+                    vipHistoryOverlay.id = 'admin-vip-history-modal';
+                    vipHistoryOverlay.className = 'app-modal-overlay';
+                    vipHistoryOverlay.setAttribute('aria-hidden', 'true');
+                    vipHistoryOverlay.style.display = 'none';
+                    vipHistoryOverlay.innerHTML = '<div class="app-modal" role="dialog" style="max-width: 480px;" aria-labelledby="admin-vip-history-modal-title">' +
+                        '<div class="app-modal-header">' +
+                        '<h2 id="admin-vip-history-modal-title">Xanax history</h2>' +
+                        '<button type="button" class="app-modal-close" id="admin-vip-history-modal-close" aria-label="Close">×</button>' +
+                        '</div>' +
+                        '<div class="app-modal-body" id="admin-vip-history-modal-body"><p style="color: #888;">Loading...</p></div></div>';
+                    document.body.appendChild(vipHistoryOverlay);
+                    function closeVipHistoryModal() {
+                        vipHistoryOverlay.style.display = 'none';
+                        vipHistoryOverlay.setAttribute('aria-hidden', 'true');
+                    }
+                    vipHistoryOverlay.querySelector('#admin-vip-history-modal-close').addEventListener('click', closeVipHistoryModal);
+                    vipHistoryOverlay.addEventListener('click', function(e) {
+                        if (e.target === vipHistoryOverlay) closeVipHistoryModal();
+                    });
+                }
+                contentEl.querySelectorAll('.admin-vip-history-btn').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        const playerId = btn.getAttribute('data-player-id');
+                        const playerName = btn.getAttribute('data-player-name');
+                        const titleEl = document.getElementById('admin-vip-history-modal-title');
+                        const bodyEl = document.getElementById('admin-vip-history-modal-body');
+                        if (!titleEl || !bodyEl) return;
+                        titleEl.textContent = 'Xanax history — ' + playerName;
+                        bodyEl.innerHTML = '<p style="color: #888;">Loading...</p>';
+                        vipHistoryOverlay.style.display = 'flex';
+                        vipHistoryOverlay.setAttribute('aria-hidden', 'false');
+                        const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                        if (!apiKey || apiKey.length !== 16) {
+                            bodyEl.innerHTML = '<p style="color: #c0392b;">Enter your API key in the sidebar to load history.</p>';
+                            return;
+                        }
+                        firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey, playerId: playerId })
+                            .then(function(result) {
+                                const transactions = result.data && result.data.transactions ? result.data.transactions : [];
+                                if (transactions.length === 0) {
+                                    bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>';
+                                    return;
+                                }
+                                let tableHtml = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
+                                transactions.forEach(function(t) {
+                                    const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
+                                    tableHtml += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
+                                });
+                                tableHtml += '</tbody></table>';
+                                bodyEl.innerHTML = tableHtml;
+                            })
+                            .catch(function(e) {
+                                console.error(e);
+                                bodyEl.innerHTML = '<p style="color: #c0392b;">Failed to load history. ' + (e.message || e.code || '') + '</p>';
+                            });
+                    });
+                });
                 contentEl.querySelectorAll('.admin-vip-edit-btn').forEach(function(btn) {
                     btn.addEventListener('click', function() {
                         const tr = btn.closest('tr');
                         const playerId = tr.getAttribute('data-player-id');
                         const row = sorted.find(function(r) { return String(r.playerId) === playerId; });
                         if (!row) return;
-                        const newBalance = prompt('New current balance (Xanax):', row.currentBalance);
-                        if (newBalance === null) return;
-                        const num = parseInt(newBalance, 10);
-                        if (isNaN(num) || num < 0) {
-                            alert('Enter a non-negative number.');
-                            return;
+                        const totalSentInput = document.getElementById('admin-vip-edit-total-sent');
+                        const balanceInput = document.getElementById('admin-vip-edit-balance');
+                        if (!totalSentInput || !balanceInput) return;
+                        totalSentInput.value = row.totalXanaxSent ?? 0;
+                        balanceInput.value = row.currentBalance ?? 0;
+                        vipEditOverlay.style.display = 'flex';
+                        vipEditOverlay.setAttribute('aria-hidden', 'false');
+                        totalSentInput.focus();
+                        function closeModal() {
+                            vipEditOverlay.style.display = 'none';
+                            vipEditOverlay.setAttribute('aria-hidden', 'true');
                         }
-                        const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
-                        (async function save() {
+                        function doSave() {
+                            const totalSent = parseInt(totalSentInput.value, 10);
+                            const num = parseInt(balanceInput.value, 10);
+                            if (isNaN(totalSent) || totalSent < 0) {
+                                alert('Total sent must be a non-negative number.');
+                                return;
+                            }
+                            if (isNaN(num) || num < 0) {
+                                alert('Current balance must be a non-negative number.');
+                                return;
+                            }
+                            const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
                             btn.disabled = true;
-                            try {
-                                const updateFn = firebase.functions().httpsCallable('updateVipBalance');
-                                await updateFn({
-                                    playerId: row.playerId,
-                                    playerName: row.playerName,
-                                    totalXanaxSent: row.totalXanaxSent,
-                                    currentBalance: num,
-                                    lastDeductionDate: row.lastDeductionDate,
-                                    vipLevel: newLevel,
-                                    lastLoginDate: row.lastLoginDate
-                                });
+                            firebase.functions().httpsCallable('updateVipBalance')({
+                                playerId: row.playerId,
+                                playerName: row.playerName,
+                                factionName: row.factionName,
+                                factionId: row.factionId,
+                                totalXanaxSent: totalSent,
+                                currentBalance: num,
+                                lastDeductionDate: row.lastDeductionDate,
+                                vipLevel: newLevel,
+                                lastLoginDate: row.lastLoginDate
+                            }).then(function() {
+                                tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
                                 tr.querySelector('.admin-vip-balance').textContent = num;
-                                tr.querySelector('td:nth-child(5)').textContent = 'VIP ' + newLevel;
+                                tr.querySelector('td:nth-child(6)').textContent = 'VIP ' + newLevel;
+                                row.totalXanaxSent = totalSent;
                                 row.currentBalance = num;
                                 row.vipLevel = newLevel;
-                            } catch (e) {
+                                closeModal();
+                                // Clear VIP cache so next read gets fresh data; if edited player is current user, refresh Welcome section
+                                clearVipCache(row.playerId);
+                                const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                                if (apiKey && apiKey.length === 16) {
+                                    getUserData(apiKey).then(function(ud) {
+                                        if (ud && String(ud.playerId) === String(row.playerId)) {
+                                            updateWelcomeMessage();
+                                        }
+                                    });
+                                }
+                            }).catch(function(e) {
                                 console.error(e);
                                 alert('Update failed: ' + (e.message || e));
-                            }
-                            btn.disabled = false;
-                        })();
+                            }).finally(function() {
+                                btn.disabled = false;
+                            });
+                        }
+                        vipEditOverlay.querySelector('#admin-vip-edit-save').onclick = doSave;
+                        vipEditOverlay.querySelector('#admin-vip-edit-modal-close').onclick = closeModal;
+                        vipEditOverlay.querySelector('#admin-vip-edit-cancel').onclick = closeModal;
                     });
                 });
             } catch (e) {
@@ -2544,13 +2676,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- GLOBAL API KEY HANDLING ---
     // Function to update welcome message
     let welcomeMessageTimeout = null;
+    const WELCOME_REFRESH_COOLDOWN_MS = 30 * 1000;
     async function updateWelcomeMessage() {
         const welcomeMessage = document.getElementById('welcomeMessage');
+        const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
         if (!welcomeMessage) return;
+        
+        function setWelcomeVisible(visible) {
+            welcomeMessage.style.display = visible ? 'block' : 'none';
+            if (welcomeRefreshBtn) welcomeRefreshBtn.style.display = visible ? 'block' : 'none';
+        }
         
         const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
         if (!apiKey || apiKey.length !== 16) {
-            welcomeMessage.style.display = 'none';
+            setWelcomeVisible(false);
             // Clear cache for old API key
             if (welcomeMessageTimeout) {
                 clearTimeout(welcomeMessageTimeout);
@@ -2566,7 +2705,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         welcomeMessageTimeout = setTimeout(async () => {
             // Show loading state
-            welcomeMessage.style.display = 'block';
+            setWelcomeVisible(true);
             welcomeMessage.innerHTML = '<span style="color: #888;">Loading...</span>';
             
             try {
@@ -2624,7 +2763,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     window.currentVipLevel = 0;
                     window.vipLevelKnown = true;
                     applyVipGating(0);
-                    welcomeMessage.style.display = 'none';
+                    setWelcomeVisible(false);
                 }
                 if (window.vipLevelKnown && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED && (window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
                     window.location.hash = 'home';
@@ -2634,7 +2773,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.currentVipLevel = 0;
                 window.vipLevelKnown = true;
                 applyVipGating(0);
-                welcomeMessage.style.display = 'none';
+                setWelcomeVisible(false);
                 if ((window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
                     window.location.hash = 'home';
                 }
@@ -2673,8 +2812,63 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.dispatchEvent(event);
             } else {
                 const welcomeMessage = document.getElementById('welcomeMessage');
+                const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
                 if (welcomeMessage) welcomeMessage.style.display = 'none';
+                if (welcomeRefreshBtn) welcomeRefreshBtn.style.display = 'none';
             }
+        });
+    }
+    
+    // Welcome refresh button: recheck VIP status and new Xanax sent (with cooldown)
+    const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
+    if (welcomeRefreshBtn) {
+        welcomeRefreshBtn.addEventListener('click', async function() {
+            if (this.disabled) return;
+            const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+            if (!apiKey || apiKey.length !== 16) return;
+            const welcomeMessage = document.getElementById('welcomeMessage');
+            if (!welcomeMessage) return;
+            this.disabled = true;
+            this.textContent = '…';
+            this.title = 'Checking...';
+            try {
+                const userData = await getUserData(apiKey);
+                if (!userData || !userData.name) {
+                    this.textContent = '↻';
+                    this.title = 'Recheck VIP status and new Xanax sent';
+                    this.disabled = false;
+                    return;
+                }
+                clearVipCache(userData.playerId);
+                welcomeMessage.innerHTML = '<span style="color: #888;">Checking...</span>';
+                const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
+                const welcomeHtml = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
+                welcomeMessage.innerHTML = welcomeHtml;
+                if (updatedVipData) {
+                    window.currentVipLevel = updatedVipData.vipLevel ?? 0;
+                    window.vipLevelKnown = true;
+                    applyVipGating(updatedVipData.vipLevel);
+                    displayVipStatus(updatedVipData, userData.name);
+                } else {
+                    window.currentVipLevel = 0;
+                    window.vipLevelKnown = true;
+                    applyVipGating(0);
+                    const rateLimitHtml = getRateLimitSettingsHtml();
+                    welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
+                }
+                if (!welcomeMessage.innerHTML.includes('API calls/minute')) {
+                    welcomeMessage.innerHTML += getRateLimitSettingsHtml();
+                }
+            } catch (e) {
+                console.error('Welcome refresh failed:', e);
+                welcomeMessage.innerHTML = '<span style="color: #c0392b;">Refresh failed. Try again.</span>';
+            }
+            this.textContent = '↻';
+            this.title = 'Recheck VIP status and new Xanax sent';
+            this.disabled = true;
+            setTimeout(function() {
+                welcomeRefreshBtn.disabled = false;
+            }, WELCOME_REFRESH_COOLDOWN_MS);
         });
     }
 
