@@ -244,19 +244,38 @@ header h1 {
     flex-shrink: 0;
 }
 
-/* Chains row: Our + Enemy side by side */
+/* Chains row: dual = Our | Enemy grid; solo = only our chain, centred */
 .war-dashboard-chains-row {
-    display: flex;
-    flex-wrap: wrap;
     gap: 16px;
     align-items: stretch;
     margin-top: 12px;
     margin-bottom: 16px;
 }
 
-.war-dashboard-chains-row .war-dashboard-chain-box {
-    flex: 1;
-    min-width: 200px;
+.war-dashboard-chains-row.war-dashboard-chains-row--dual {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 700px) {
+    .war-dashboard-chains-row.war-dashboard-chains-row--dual {
+        grid-template-columns: 1fr;
+    }
+}
+
+.war-dashboard-chains-row.war-dashboard-chains-row--solo {
+    display: flex;
+    justify-content: center;
+}
+
+.war-dashboard-chains-row--solo .war-dashboard-chain-box {
+    flex: 0 1 420px;
+    width: 100%;
+    max-width: min(100%, 440px);
+}
+
+.war-dashboard-chains-row--dual .war-dashboard-chain-box {
+    min-width: 0;
 }
 
 /* Chain boxes: big, visible; flowing animation when active */

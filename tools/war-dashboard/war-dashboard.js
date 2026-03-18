@@ -599,6 +599,58 @@
         }
     }
 
+    /** Inline display must be grid/flex — setting display:block overrides CSS and stacked the chains. */
+    function applyChainsRowVisibleLayout(row) {
+        if (!row) return;
+        if (lastEnemyFactionId) {
+            row.style.display = 'grid';
+            row.style.gridTemplateColumns = (typeof window !== 'undefined' && window.innerWidth <= 700)
+                ? '1fr'
+                : 'repeat(2, minmax(0, 1fr))';
+            row.style.gap = '16px';
+            row.style.alignItems = 'stretch';
+            row.style.justifyContent = '';
+        } else {
+            row.style.display = 'flex';
+            row.style.justifyContent = 'center';
+            row.style.flexWrap = 'wrap';
+            row.style.gap = '16px';
+            row.style.gridTemplateColumns = '';
+            row.style.alignItems = 'stretch';
+        }
+    }
+
+    function updateChainsRowLayout() {
+        const row = document.getElementById('war-dashboard-chains-row');
+        if (!row) return;
+        if (lastEnemyFactionId) {
+            row.classList.add('war-dashboard-chains-row--dual');
+            row.classList.remove('war-dashboard-chains-row--solo');
+        } else {
+            row.classList.add('war-dashboard-chains-row--solo');
+            row.classList.remove('war-dashboard-chains-row--dual');
+        }
+        if (row.style.display !== 'none') {
+            applyChainsRowVisibleLayout(row);
+        }
+    }
+
+    function showWarDashboardChainsRow() {
+        const row = document.getElementById('war-dashboard-chains-row');
+        if (!row) return;
+        if (lastEnemyFactionId) {
+            row.classList.add('war-dashboard-chains-row--dual');
+            row.classList.remove('war-dashboard-chains-row--solo');
+        } else {
+            row.classList.add('war-dashboard-chains-row--solo');
+            row.classList.remove('war-dashboard-chains-row--dual');
+        }
+        applyChainsRowVisibleLayout(row);
+    }
+
+    /** Placeholder so enemy column shows side-by-side before chain API returns. */
+    const ENEMY_CHAIN_PLACEHOLDER = { current: 0, max: 0, timeout: 0, cooldown: 0, modifier: 0 };
+
     function renderChainBoxes() {
         renderChainBox(
             document.getElementById('war-dashboard-our-chain-box'),
@@ -607,13 +659,16 @@
             ourChainDisplay,
             'our'
         );
+        const enemyChainForUi = lastEnemyChain || (lastEnemyFactionId ? ENEMY_CHAIN_PLACEHOLDER : null);
+        const enemyDisplayForUi = lastEnemyChain ? enemyChainDisplay : { timeout: 0, cooldown: 0 };
         renderChainBox(
             document.getElementById('war-dashboard-enemy-chain-box'),
             'Enemy Chain',
-            lastEnemyChain,
-            enemyChainDisplay,
+            enemyChainForUi,
+            enemyDisplayForUi,
             'enemy'
         );
+        updateChainsRowLayout();
     }
 
     function renderEnemy(members, ffMap, bsMap, thresholds) {
@@ -924,7 +979,7 @@
                 currentUserAbroadCountry = me ? parseAbroadCountry(me) : null;
                 renderOurTeam(ourMembers, ourFF, ourBS, null);
                 renderChainBoxes();
-                document.getElementById('war-dashboard-chains-row').style.display = 'block';
+                showWarDashboardChainsRow();
                 document.getElementById('war-dashboard-our-team').style.display = 'block';
                 document.getElementById('war-dashboard-enemy-section').style.display = 'none';
                 const activitySection = document.getElementById('war-dashboard-activity-tracker');
@@ -1018,8 +1073,7 @@
             renderOurTeam(ourMembers, ourFF, ourBS, null);
             renderEnemy(enemyMembers, enemyFF, enemyBS, null);
             renderChainBoxes();
-
-            document.getElementById('war-dashboard-chains-row').style.display = 'block';
+            showWarDashboardChainsRow();
             document.getElementById('war-dashboard-enemy-section').style.display = 'block';
             document.getElementById('war-dashboard-our-team').style.display = 'block';
             const activitySection = document.getElementById('war-dashboard-activity-tracker');
