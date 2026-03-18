@@ -211,6 +211,72 @@ exports.getVipBalancesForAdmin = onCall(
   }
 );
 
+/** Admin-only: add/update VIP row from player ID + balance (missed events, free trials). Resolves name via Torn API. */
+exports.adminAddVipPlayer = onCall(
+  { maxInstances: 5 },
+  async (request) => {
+    const { apiKey, playerId, currentBalance, totalXanaxSent } = request.data || {};
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+    const pid = String(playerId ?? '').replace(/[^\d]/g, '');
+    if (!pid) throw new HttpsError('invalid-argument', 'Valid player ID required');
+    const bal = Number(currentBalance);
+    if (Number.isNaN(bal) || bal < 0 || Math.floor(bal) !== bal) {
+      throw new HttpsError('invalid-argument', 'Current balance must be a non-negative whole number');
+    }
+    let sent = 0;
+    if (totalXanaxSent != null && totalXanaxSent !== '') {
+      const t = Number(totalXanaxSent);
+      if (!Number.isNaN(t) && t >= 0 && Math.floor(t) === t) sent = t;
+    }
+    const key = String(apiKey || '').trim();
+    let playerName = '';
+    let factionName = '';
+    let factionId = '';
+    try {
+      const res = await fetch(`https://api.torn.com/user/${pid}?selections=basic&key=${key}`);
+      const data = await res.json();
+      if (data.error) {
+        throw new HttpsError('failed-precondition', String(data.error.error || data.error || 'Torn lookup failed'));
+      }
+      if (data.name) playerName = String(data.name);
+      const resF = await fetch(`https://api.torn.com/user/${pid}?selections=faction&key=${key}`);
+      const facData = await resF.json();
+      if (!facData.error && facData.faction && typeof facData.faction === 'object') {
+        const fac = facData.faction;
+        if (fac.faction_name) factionName = String(fac.faction_name);
+        if (fac.faction_id != null) factionId = String(fac.faction_id);
+      }
+    } catch (e) {
+      if (e instanceof HttpsError) throw e;
+    }
+    if (!playerName) playerName = `Player ${pid}`;
+    const vipLevel = vipLevelFromBalance(bal);
+    const nowIso = new Date().toISOString();
+    const doc = {
+      playerId: pid,
+      playerName,
+      totalXanaxSent: sent,
+      currentBalance: bal,
+      lastDeductionDate: nowIso,
+      vipLevel,
+      lastLoginDate: nowIso,
+    };
+    if (factionName) doc.factionName = factionName;
+    if (factionId) doc.factionId = factionId;
+    await db.collection(VIP_BALANCES_COLLECTION).doc(pid).set(doc, { merge: true });
+    await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
+      timestamp: nowIso,
+      playerId: pid,
+      playerName,
+      amount: bal,
+      transactionType: 'Manual add',
+      balanceAfter: bal,
+    });
+    return { success: true, playerName, playerId: pid };
+  }
+);
+
 /** Admin-only: return VIP transactions for a player (when they sent xanax / deductions). */
 exports.getVipTransactionsForAdmin = onCall(
   { maxInstances: 10 },
@@ -269,7 +335,7 @@ exports.importVipBalances = onCall(
         playerName: playerName,
         totalXanaxSent: amount,
         currentBalance: amount,
-        lastDeductionDate: null,
+        lastDeductionDate: now,
         vipLevel,
         lastLoginDate: now,
       }, { merge: true });
@@ -329,5 +395,130 @@ exports.sampleActivity = onSchedule(
     const batch = db.batch();
     oldSnap.docs.forEach((d) => batch.delete(d.ref));
     if (oldSnap.docs.length > 0) await batch.commit();
+  }
+);
+
+// 48 hours between deductions (1 xanax per 48h while balance > 0)
+const VIP_DEDUCTION_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
+
+/** Apply 1 xanax per 2 days from lastDeductionDate (last time we ran deductions for this player). */
+function vipDeductionsFromLastDate(lastDeductionDateIso, nowMs) {
+  if (!lastDeductionDateIso) return 0;
+  const lastMs = new Date(lastDeductionDateIso).getTime();
+  return Math.floor((nowMs - lastMs) / VIP_DEDUCTION_INTERVAL_MS);
+}
+
+exports.applyVipDeductions = onSchedule(
+  { schedule: 'every 6 hours', timeZone: 'UTC', timeoutSeconds: 300 },
+  async () => {
+    console.log('[applyVipDeductions] scheduled run start');
+    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    let updated = 0;
+    let errors = 0;
+
+    for (const doc of snap.docs) {
+      try {
+        const d = doc.data();
+        const playerId = doc.id;
+        const lastDeductionDate = d.lastDeductionDate ?? null;
+        if (!lastDeductionDate) continue;
+
+        const currentBalance = Number(d.currentBalance) ?? 0;
+        const deductions = vipDeductionsFromLastDate(lastDeductionDate, now);
+        if (deductions <= 0) continue;
+
+        const newBalance = Math.max(0, currentBalance - deductions);
+        const newLevel = vipLevelFromBalance(newBalance);
+
+        await db.collection(VIP_BALANCES_COLLECTION).doc(playerId).update({
+          currentBalance: newBalance,
+          lastDeductionDate: nowIso,
+          vipLevel: newLevel,
+        });
+
+        await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
+          timestamp: nowIso,
+          playerId,
+          playerName: d.playerName ?? '',
+          amount: deductions,
+          transactionType: 'Deduction',
+          balanceAfter: newBalance,
+        });
+        updated++;
+      } catch (e) {
+        errors++;
+        console.error('[applyVipDeductions] player doc error', doc.id, e && e.message);
+      }
+    }
+    console.log('[applyVipDeductions] done updated=', updated, 'errors=', errors);
+  }
+);
+
+/** Admin-only: run VIP deductions now (same logic as scheduled). Returns { updated: number }. */
+exports.applyVipDeductionsNow = onCall(
+  { maxInstances: 5 },
+  async (request) => {
+    const { apiKey } = request.data || {};
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+
+    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    let updated = 0;
+
+    for (const doc of snap.docs) {
+      const d = doc.data();
+      const playerId = doc.id;
+      const lastDeductionDate = d.lastDeductionDate ?? null;
+      if (!lastDeductionDate) continue;
+
+      const currentBalance = Number(d.currentBalance) ?? 0;
+      const deductions = vipDeductionsFromLastDate(lastDeductionDate, now);
+      if (deductions <= 0) continue;
+
+      const newBalance = Math.max(0, currentBalance - deductions);
+      const newLevel = vipLevelFromBalance(newBalance);
+
+      await db.collection(VIP_BALANCES_COLLECTION).doc(playerId).update({
+        currentBalance: newBalance,
+        lastDeductionDate: nowIso,
+        vipLevel: newLevel,
+      });
+
+      await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
+        timestamp: nowIso,
+        playerId,
+        playerName: d.playerName ?? '',
+        amount: deductions,
+        transactionType: 'Deduction',
+        balanceAfter: newBalance,
+      });
+      updated++;
+    }
+    return { updated };
+  }
+);
+
+/** One-time: set every VIP balance doc's lastDeductionDate to now so the next deduction is in 2 days. Admin-only. Use after restoring balances so they don't get zeroed again. */
+exports.resetVipDeductionClock = onCall(
+  { maxInstances: 1 },
+  async (request) => {
+    const { apiKey } = request.data || {};
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+
+    const nowIso = new Date().toISOString();
+    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    let reset = 0;
+
+    for (const doc of snap.docs) {
+      await doc.ref.update({ lastDeductionDate: nowIso });
+      reset++;
+    }
+
+    return { reset };
   }
 );

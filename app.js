@@ -542,16 +542,13 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
     
+    const VIP_DEDUCTION_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000; // 48 hours
     // Calculate deductions based on time elapsed (1 xanax per 2 days)
     function calculateDeductions(lastDeductionDate, currentDate) {
         if (!lastDeductionDate) return 0;
-        
         const lastDate = new Date(lastDeductionDate);
         const current = new Date(currentDate);
-        const daysElapsed = Math.floor((current - lastDate) / (1000 * 60 * 60 * 24));
-        
-        // Deduct 1 xanax every 2 days
-        return Math.floor(daysElapsed / 2);
+        return Math.floor((current - lastDate) / VIP_DEDUCTION_INTERVAL_MS);
     }
     
     // Determine VIP level from balance
@@ -890,7 +887,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     vipData.currentBalance
                 );
             } else if (!vipData.lastDeductionDate) {
-                // Start deduction clock from now; first deduction in 48 hours
+                // Start deduction clock from now; first deduction in 2 days
                 vipData.lastDeductionDate = now;
             }
             
@@ -1097,7 +1094,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     vipHtml += `
                         <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
-                            Maximum VIP level! (${vipData.currentBalance} Xanax remaining)
+                            ${vipData.currentBalance}/${VIP_LEVELS[3]} Xanax — Maximum VIP level!
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
+                                <div style="background: var(--accent-color); height: 100%; width: 100%; transition: width 0.3s;"></div>
+                            </div>
                         </div>
                     `;
                 }
@@ -1151,7 +1151,10 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 vipHtml += `
                     <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
-                        Maximum VIP level! (${vipData.currentBalance} Xanax remaining)
+                        ${vipData.currentBalance}/${VIP_LEVELS[3]} Xanax — Maximum VIP level!
+                        <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
+                            <div style="background: var(--accent-color); height: 100%; width: 100%; transition: width 0.3s;"></div>
+                        </div>
                     </div>
                 `;
             }
@@ -1922,6 +1925,9 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.admin-tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const tab = btn.getAttribute('data-tab');
+                if (tab === 'vip' && typeof window.__adminVipPullBalancesAndRender === 'function') {
+                    setTimeout(function() { window.__adminVipPullBalancesAndRender(); }, 0);
+                }
                 document.querySelectorAll('.admin-tab-panel').forEach(panel => {
                     panel.style.display = panel.id === `admin-tab-${tab}` ? 'block' : 'none';
                 });
@@ -1936,6 +1942,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const loadingEl = document.getElementById('admin-vip-loading');
             const contentEl = document.getElementById('admin-vip-content');
             if (!loadingEl || !contentEl) return;
+            if (window._adminVipCountdownInterval) {
+                clearInterval(window._adminVipCountdownInterval);
+                window._adminVipCountdownInterval = null;
+            }
             const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
             if (!apiKey) {
                 loadingEl.textContent = 'Enter your API key in the sidebar to load VIP balances.';
@@ -1946,42 +1956,149 @@ document.addEventListener('DOMContentLoaded', () => {
                     loadingEl.textContent = 'Firebase not loaded.';
                     return;
                 }
+                (function ensureAdminVipAddPlayerModal() {
+                    if (document.getElementById('admin-vip-add-player-modal')) return;
+                    const overlay = document.createElement('div');
+                    overlay.id = 'admin-vip-add-player-modal';
+                    overlay.className = 'app-modal-overlay';
+                    overlay.setAttribute('aria-hidden', 'true');
+                    overlay.style.display = 'none';
+                    overlay.innerHTML = '<div class="app-modal" role="dialog" style="max-width: 440px;" aria-labelledby="admin-vip-add-player-title">' +
+                        '<div class="app-modal-header">' +
+                        '<h2 id="admin-vip-add-player-title">Add VIP player</h2>' +
+                        '<button type="button" class="app-modal-close" id="admin-vip-add-player-modal-close" aria-label="Close">×</button>' +
+                        '</div>' +
+                        '<div class="app-modal-body">' +
+                        '<p style="font-size:0.9em;color:#95a5a6;margin:0 0 14px 0;">Profile link or player ID. Name and faction load from Torn. Deduction timer starts from now.</p>' +
+                        '<div class="app-modal-row"><label class="app-modal-label" for="admin-vip-add-profile-input">Profile link or player ID</label>' +
+                        '<input type="text" id="admin-vip-add-profile-input" class="app-modal-input" placeholder="https://www.torn.com/profiles.php?XID=1234567" autocomplete="off"></div>' +
+                        '<div class="app-modal-row"><label class="app-modal-label" for="admin-vip-add-balance-input">Current balance (Xanax)</label>' +
+                        '<input type="number" id="admin-vip-add-balance-input" class="app-modal-input" min="0" step="1" placeholder="25"></div>' +
+                        '<div class="app-modal-row"><label class="app-modal-label" for="admin-vip-add-totalsent-input">Total sent (optional)</label>' +
+                        '<input type="number" id="admin-vip-add-totalsent-input" class="app-modal-input" min="0" step="1" value="0">' +
+                        '<span style="font-size:0.8em;color:#888;display:block;margin-top:6px;">0 = free trial (gift balance only). Match balance if they actually sent that much.</span></div>' +
+                        '<div class="app-modal-actions">' +
+                        '<button type="button" class="fetch-button" id="admin-vip-add-player-cancel">Cancel</button>' +
+                        '<button type="button" class="fetch-button" id="admin-vip-add-player-save" style="background-color:#15803d;">Add / update</button>' +
+                        '</div></div></div>';
+                    document.body.appendChild(overlay);
+                    function closeAddPlayerModal() {
+                        overlay.style.display = 'none';
+                        overlay.setAttribute('aria-hidden', 'true');
+                    }
+                    overlay.querySelector('#admin-vip-add-player-modal-close').addEventListener('click', closeAddPlayerModal);
+                    overlay.querySelector('#admin-vip-add-player-cancel').addEventListener('click', closeAddPlayerModal);
+                    overlay.addEventListener('click', function(e) { if (e.target === overlay) closeAddPlayerModal(); });
+                    function parseTornProfilePlayerId(input) {
+                        const s = String(input || '').trim();
+                        if (!s) return null;
+                        if (/^\d+$/.test(s)) return s;
+                        const xid = s.match(/(?:^|[?&#])XID=(\d+)/i);
+                        if (xid) return xid[1];
+                        const m = s.match(/\/user\/(\d+)/i) || s.match(/torn\.com\/(\d+)(?:\/|[?#]|$)/i);
+                        if (m) return m[1];
+                        return null;
+                    }
+                    overlay.querySelector('#admin-vip-add-player-save').addEventListener('click', function() {
+                        const apiK = (localStorage.getItem('tornApiKey') || '').trim();
+                        const raw = document.getElementById('admin-vip-add-profile-input').value;
+                        const pid = parseTornProfilePlayerId(raw);
+                        if (!pid) {
+                            alert('Could not find a player ID. Paste a profile URL with XID=… or the numeric ID.');
+                            return;
+                        }
+                        const bal = parseInt(document.getElementById('admin-vip-add-balance-input').value, 10);
+                        if (isNaN(bal) || bal < 0) {
+                            alert('Enter a valid current balance (0 or more).');
+                            return;
+                        }
+                        const sentIn = document.getElementById('admin-vip-add-totalsent-input').value;
+                        const sent = sentIn === '' ? 0 : parseInt(sentIn, 10);
+                        if (isNaN(sent) || sent < 0) {
+                            alert('Total sent must be 0 or a positive number.');
+                            return;
+                        }
+                        const saveBtn = document.getElementById('admin-vip-add-player-save');
+                        saveBtn.disabled = true;
+                        firebase.functions().httpsCallable('adminAddVipPlayer')({
+                            apiKey: apiK.replace(/[^A-Za-z0-9]/g, ''),
+                            playerId: pid,
+                            currentBalance: bal,
+                            totalXanaxSent: sent
+                        }).then(function(result) {
+                            const name = (result && result.data && result.data.playerName) || pid;
+                            closeAddPlayerModal();
+                            alert('Saved: ' + name);
+                            if (typeof window.initAdminDashboard === 'function') {
+                                return window.initAdminDashboard();
+                            }
+                        }).then(function() {
+                            const tab = document.querySelector('.admin-tab-btn[data-tab="vip"]');
+                            if (tab) tab.click();
+                        }).catch(function(e) {
+                            console.error(e);
+                            alert((e && e.message) || (e && e.code) || 'Failed to add player');
+                        }).finally(function() { saveBtn.disabled = false; });
+                    });
+                    window.__openAdminVipAddPlayerModal = function() {
+                        document.getElementById('admin-vip-add-profile-input').value = '';
+                        document.getElementById('admin-vip-add-balance-input').value = '';
+                        document.getElementById('admin-vip-add-totalsent-input').value = '0';
+                        overlay.style.display = 'flex';
+                        overlay.setAttribute('aria-hidden', 'false');
+                        document.getElementById('admin-vip-add-profile-input').focus();
+                    };
+                })();
                 const fn = firebase.functions().httpsCallable('getVipBalancesForAdmin');
                 const res = await fn({ apiKey: apiKey });
                 const balances = (res && res.data && res.data.balances) || [];
                 loadingEl.style.display = 'none';
                 contentEl.style.display = 'block';
+                const toolbarHtml = '<div class="admin-vip-toolbar" style="margin-bottom: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">' +
+                    '<button type="button" class="fetch-button" id="admin-vip-add-player-btn" style="background-color: #15803d;">Add player</button>' +
+                    '<button type="button" class="fetch-button" id="admin-vip-apply-deductions-btn" style="background-color: var(--accent-color);">Apply deductions now</button>' +
+                    '<button type="button" class="fetch-button" id="admin-vip-reset-clock-btn" title="Set everyone\u2019s next deduction to 48 hours from now. Use after restoring balances so old timers don\u2019t wipe them.">Reset deduction clock</button>' +
+                    '<span id="admin-vip-apply-status" style="font-size: 0.9em; color: #888;"></span></div>';
                 if (balances.length === 0) {
-                    contentEl.innerHTML = '<p style="color: #888;">No VIP balances yet.</p>';
+                    contentEl.innerHTML = toolbarHtml + '<p style="color: #888;">No VIP balances yet. Use <strong>Add player</strong> to add someone by profile link.</p>';
+                    (function attachAdminVipEmptyToolbar() {
+                        const addBtn = document.getElementById('admin-vip-add-player-btn');
+                        if (addBtn) addBtn.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
+                    })();
                     return;
                 }
                 const sorted = balances.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
                 function formatNextDeductionCountdown(ms) {
-                    if (ms <= 0) return '0m';
+                    if (ms <= 0) return '0s';
+                    const sec = Math.floor(ms / 1000);
+                    if (sec < 60) return sec + 's';
                     const d = Math.floor(ms / (24 * 60 * 60 * 1000));
                     const h = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
                     const m = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+                    const s = Math.floor((ms % (60 * 1000)) / 1000);
                     if (d > 0) return d + 'd ' + h + 'h';
                     if (h > 0) return h + 'h ' + m + 'm';
-                    return m + 'm';
+                    if (s === 0) return m + 'm';
+                    return m + 'm ' + s + 's';
+                }
+                const ADMIN_VIP_NEXT_DED_MS = 2 * 24 * 60 * 60 * 1000; // 48 hours
+                function adminVipNextDeductionCellForRow(row) {
+                    const bal = Number(row.currentBalance) || 0;
+                    if (bal <= 0) return '<span class="admin-next-deduction-na" style="color:#888;">—</span>';
+                    var nextDedMs;
+                    if (row.lastDeductionDate) {
+                        nextDedMs = new Date(row.lastDeductionDate).getTime() + ADMIN_VIP_NEXT_DED_MS;
+                    } else {
+                        nextDedMs = Date.now() + ADMIN_VIP_NEXT_DED_MS;
+                    }
+                    var nextDedDate = new Date(nextDedMs);
+                    var countdownMs = Math.max(0, nextDedMs - Date.now());
+                    var nextDedTs = String(nextDedMs);
+                    return '<span class="admin-next-deduction-date">' + nextDedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + '</span><br><span class="admin-next-deduction-countdown" data-until="' + nextDedTs + '">' + formatNextDeductionCountdown(countdownMs) + '</span>';
                 }
                 let tableHtml = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
                 sorted.forEach(function(row) {
-                    let nextDedCell = '';
-                    let nextDedTs = '';
-                    const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
-                    let nextDedMs;
-                    if (row.lastDeductionDate) {
-                        const lastDedMs = new Date(row.lastDeductionDate).getTime();
-                        nextDedMs = lastDedMs + twoDaysMs;
-                    } else {
-                        // No stored date: treat next deduction as 48 hours from now (clock runs for everyone)
-                        nextDedMs = Date.now() + twoDaysMs;
-                    }
-                    const nextDedDate = new Date(nextDedMs);
-                    const countdownMs = Math.max(0, nextDedMs - Date.now());
-                    nextDedTs = String(nextDedMs);
-                    nextDedCell = '<span class="admin-next-deduction-date">' + nextDedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + '</span><br><span class="admin-next-deduction-countdown" data-until="' + nextDedTs + '">' + formatNextDeductionCountdown(countdownMs) + '</span>';
+                    var nextDedCell = adminVipNextDeductionCellForRow(row);
                     const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
                     tableHtml += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
                         '<td>' + String(row.playerId) + '</td>' +
@@ -1995,16 +2112,475 @@ document.addEventListener('DOMContentLoaded', () => {
                         '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
                 });
                 tableHtml += '</tbody></table>';
-                contentEl.innerHTML = tableHtml;
-                // Update next-deduction countdowns every 30 seconds
-                setInterval(function() {
+                contentEl.innerHTML = toolbarHtml + tableHtml;
+                // Apply deductions now button
+                (function attachApplyDeductionsListener() {
+                    const btn = document.getElementById('admin-vip-apply-deductions-btn');
+                    const statusEl = document.getElementById('admin-vip-apply-status');
+                    if (!btn) return;
+                    btn.onclick = function() {
+                        if (btn.disabled) return;
+                        btn.disabled = true;
+                        if (statusEl) statusEl.textContent = 'Applying…';
+                        firebase.functions().httpsCallable('applyVipDeductionsNow')({ apiKey: apiKey })
+                            .then(function(result) {
+                                const n = (result && result.data && result.data.updated) || 0;
+                                if (statusEl) statusEl.textContent = 'Updated ' + n + ' player(s). Refreshing…';
+                                return fn({ apiKey: apiKey });
+                            })
+                            .then(function(res) {
+                                const balances2 = (res && res.data && res.data.balances) || [];
+                                if (balances2.length === 0) {
+                                    contentEl.innerHTML = toolbarHtml + '<p style="color: #888;">No VIP balances yet.</p>';
+                                    btn.disabled = false;
+                                    if (statusEl) statusEl.textContent = '';
+                                    return;
+                                }
+                                const sorted2 = balances2.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
+                                let tableHtml2 = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+                                sorted2.forEach(function(row) {
+                                    var nextDedCell = adminVipNextDeductionCellForRow(row);
+                                    const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
+                                    tableHtml2 += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
+                                        '<td>' + String(row.playerId) + '</td>' +
+                                        '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
+                                        '<td>' + (row.factionName || (userStats[row.playerName] && userStats[row.playerName].factionName) || '—') + '</td>' +
+                                        '<td class="admin-vip-total-sent">' + (row.totalXanaxSent ?? 0) + '</td>' +
+                                        '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
+                                        '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
+                                        '<td class="admin-next-deduction-cell">' + nextDedCell + '</td>' +
+                                        '<td>' + lastLog + '</td>' +
+                                        '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
+                                });
+                                tableHtml2 += '</tbody></table>';
+                                contentEl.innerHTML = toolbarHtml + tableHtml2;
+                                if (statusEl) statusEl.textContent = '';
+                                btn.disabled = false;
+                                contentEl.querySelectorAll('.admin-vip-edit-btn').forEach(function(editBtn) {
+                                    (function bindEdit(btnEl, sortedArr) {
+                                        btnEl.addEventListener('click', function() {
+                                            const tr = btnEl.closest('tr');
+                                            const playerId = tr.getAttribute('data-player-id');
+                                            const row = sortedArr.find(function(r) { return String(r.playerId) === playerId; });
+                                            if (!row) return;
+                                            const totalSentInput = document.getElementById('admin-vip-edit-total-sent');
+                                            const balanceInput = document.getElementById('admin-vip-edit-balance');
+                                            if (!totalSentInput || !balanceInput) return;
+                                            totalSentInput.value = row.totalXanaxSent ?? 0;
+                                            balanceInput.value = row.currentBalance ?? 0;
+                                            vipEditOverlay.style.display = 'flex';
+                                            vipEditOverlay.setAttribute('aria-hidden', 'false');
+                                            totalSentInput.focus();
+                                            function closeModal() {
+                                                vipEditOverlay.style.display = 'none';
+                                                vipEditOverlay.setAttribute('aria-hidden', 'true');
+                                            }
+                                            function doSave() {
+                                                const totalSent = parseInt(totalSentInput.value, 10);
+                                                const num = parseInt(balanceInput.value, 10);
+                                                if (isNaN(totalSent) || totalSent < 0) { alert('Total sent must be a non-negative number.'); return; }
+                                                if (isNaN(num) || num < 0) { alert('Current balance must be a non-negative number.'); return; }
+                                                const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
+                                                btnEl.disabled = true;
+                                                firebase.functions().httpsCallable('updateVipBalance')({
+                                                    playerId: row.playerId, playerName: row.playerName, factionName: row.factionName, factionId: row.factionId,
+                                                    totalXanaxSent: totalSent, currentBalance: num, lastDeductionDate: new Date().toISOString(), vipLevel: newLevel, lastLoginDate: row.lastLoginDate
+                                                }).then(function() {
+                                                    tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
+                                                    tr.querySelector('.admin-vip-balance').textContent = num;
+                                                    tr.querySelector('td:nth-child(6)').textContent = 'VIP ' + newLevel;
+                                                    row.totalXanaxSent = totalSent; row.currentBalance = num; row.vipLevel = newLevel;
+                                                    closeModal();
+                                                    clearVipCache(row.playerId);
+                                                    const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                                                    if (apiKey2 && apiKey2.length === 16) {
+                                                        getUserData(apiKey2).then(function(ud) {
+                                                            if (ud && String(ud.playerId) === String(row.playerId)) updateWelcomeMessage();
+                                                        });
+                                                    }
+                                                }).catch(function(e) { console.error(e); alert('Update failed: ' + (e.message || e)); }).finally(function() { btnEl.disabled = false; });
+                                            }
+                                            vipEditOverlay.querySelector('#admin-vip-edit-save').onclick = doSave;
+                                            vipEditOverlay.querySelector('#admin-vip-edit-modal-close').onclick = closeModal;
+                                            vipEditOverlay.querySelector('#admin-vip-edit-cancel').onclick = closeModal;
+                                        });
+                                    })(editBtn, sorted2);
+                                });
+                                contentEl.querySelectorAll('.admin-vip-history-btn').forEach(function(historyBtn) {
+                                    historyBtn.addEventListener('click', function() {
+                                        const playerId = historyBtn.getAttribute('data-player-id');
+                                        const playerName = historyBtn.getAttribute('data-player-name');
+                                        const titleEl = document.getElementById('admin-vip-history-modal-title');
+                                        const bodyEl = document.getElementById('admin-vip-history-modal-body');
+                                        if (!titleEl || !bodyEl) return;
+                                        titleEl.textContent = 'Xanax history — ' + playerName;
+                                        bodyEl.innerHTML = '<p style="color: #888;">Loading...</p>';
+                                        vipHistoryOverlay.style.display = 'flex';
+                                        vipHistoryOverlay.setAttribute('aria-hidden', 'false');
+                                        const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                                        if (!apiKey2 || apiKey2.length !== 16) {
+                                            bodyEl.innerHTML = '<p style="color: #c0392b;">Enter your API key in the sidebar to load history.</p>';
+                                            return;
+                                        }
+                                        firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey2, playerId: playerId })
+                                            .then(function(result) {
+                                                const transactions = result.data && result.data.transactions ? result.data.transactions : [];
+                                                if (transactions.length === 0) { bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>'; return; }
+                                                let tableHtml3 = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
+                                                transactions.forEach(function(t) {
+                                                    const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
+                                                    tableHtml3 += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
+                                                });
+                                                tableHtml3 += '</tbody></table>';
+                                                bodyEl.innerHTML = tableHtml3;
+                                            })
+                                            .catch(function(e) { console.error(e); bodyEl.innerHTML = '<p style="color: #c0392b;">Failed to load history. ' + (e.message || e.code || '') + '</p>'; });
+                                    });
+                                });
+                                attachApplyDeductionsListener();
+                                attachResetClockListener();
+                                (function wireAddPlayer() {
+                                    var b = document.getElementById('admin-vip-add-player-btn');
+                                    if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
+                                })();
+                            })
+                            .catch(function(e) {
+                                console.error(e);
+                                if (statusEl) statusEl.textContent = 'Failed: ' + (e.message || e.code || '');
+                                btn.disabled = false;
+                            });
+                    };
+                })();
+                function attachResetClockListener() {
+                    const resetBtn = document.getElementById('admin-vip-reset-clock-btn');
+                    const statusEl = document.getElementById('admin-vip-apply-status');
+                    if (!resetBtn) return;
+                    resetBtn.onclick = function() {
+                        if (resetBtn.disabled) return;
+                        resetBtn.disabled = true;
+                        if (statusEl) statusEl.textContent = 'Resetting clock…';
+                        firebase.functions().httpsCallable('resetVipDeductionClock')({ apiKey: apiKey })
+                            .then(function(result) {
+                                const n = (result && result.data && result.data.reset) || 0;
+                                if (statusEl) statusEl.textContent = 'Reset ' + n + ' player(s). Refreshing…';
+                                return fn({ apiKey: apiKey });
+                            })
+                            .then(function(res) {
+                                const balances2 = (res && res.data && res.data.balances) || [];
+                                if (balances2.length === 0) {
+                                    resetBtn.disabled = false;
+                                    if (statusEl) statusEl.textContent = '';
+                                    return;
+                                }
+                                const sorted2 = balances2.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
+                                let tableHtml2 = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+                                sorted2.forEach(function(row) {
+                                    var nextDedCell = adminVipNextDeductionCellForRow(row);
+                                    const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
+                                    tableHtml2 += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
+                                        '<td>' + String(row.playerId) + '</td>' +
+                                        '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
+                                        '<td>' + (row.factionName || (userStats[row.playerName] && userStats[row.playerName].factionName) || '—') + '</td>' +
+                                        '<td class="admin-vip-total-sent">' + (row.totalXanaxSent ?? 0) + '</td>' +
+                                        '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
+                                        '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
+                                        '<td class="admin-next-deduction-cell">' + nextDedCell + '</td>' +
+                                        '<td>' + lastLog + '</td>' +
+                                        '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
+                                });
+                                tableHtml2 += '</tbody></table>';
+                                contentEl.innerHTML = toolbarHtml + tableHtml2;
+                                if (statusEl) statusEl.textContent = '';
+                                resetBtn.disabled = false;
+                                contentEl.querySelectorAll('.admin-vip-edit-btn').forEach(function(editBtn) {
+                                    (function bindEdit(btnEl, sortedArr) {
+                                        btnEl.addEventListener('click', function() {
+                                            const tr = btnEl.closest('tr');
+                                            const playerId = tr.getAttribute('data-player-id');
+                                            const row = sortedArr.find(function(r) { return String(r.playerId) === playerId; });
+                                            if (!row) return;
+                                            const totalSentInput = document.getElementById('admin-vip-edit-total-sent');
+                                            const balanceInput = document.getElementById('admin-vip-edit-balance');
+                                            if (!totalSentInput || !balanceInput) return;
+                                            totalSentInput.value = row.totalXanaxSent ?? 0;
+                                            balanceInput.value = row.currentBalance ?? 0;
+                                            vipEditOverlay.style.display = 'flex';
+                                            vipEditOverlay.setAttribute('aria-hidden', 'false');
+                                            totalSentInput.focus();
+                                            function closeModal() {
+                                                vipEditOverlay.style.display = 'none';
+                                                vipEditOverlay.setAttribute('aria-hidden', 'true');
+                                            }
+                                            function doSave() {
+                                                const totalSent = parseInt(totalSentInput.value, 10);
+                                                const num = parseInt(balanceInput.value, 10);
+                                                if (isNaN(totalSent) || totalSent < 0) { alert('Total sent must be a non-negative number.'); return; }
+                                                if (isNaN(num) || num < 0) { alert('Current balance must be a non-negative number.'); return; }
+                                                const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
+                                                btnEl.disabled = true;
+                                                firebase.functions().httpsCallable('updateVipBalance')({
+                                                    playerId: row.playerId, playerName: row.playerName, factionName: row.factionName, factionId: row.factionId,
+                                                    totalXanaxSent: totalSent, currentBalance: num, lastDeductionDate: new Date().toISOString(), vipLevel: newLevel, lastLoginDate: row.lastLoginDate
+                                                }).then(function() {
+                                                    tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
+                                                    tr.querySelector('.admin-vip-balance').textContent = num;
+                                                    tr.querySelector('td:nth-child(6)').textContent = 'VIP ' + newLevel;
+                                                    row.totalXanaxSent = totalSent; row.currentBalance = num; row.vipLevel = newLevel;
+                                                    closeModal();
+                                                    clearVipCache(row.playerId);
+                                                    const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                                                    if (apiKey2 && apiKey2.length === 16) {
+                                                        getUserData(apiKey2).then(function(ud) {
+                                                            if (ud && String(ud.playerId) === String(row.playerId)) updateWelcomeMessage();
+                                                        });
+                                                    }
+                                                }).catch(function(e) { console.error(e); alert('Update failed: ' + (e.message || e)); }).finally(function() { btnEl.disabled = false; });
+                                            }
+                                            vipEditOverlay.querySelector('#admin-vip-edit-save').onclick = doSave;
+                                            vipEditOverlay.querySelector('#admin-vip-edit-modal-close').onclick = closeModal;
+                                            vipEditOverlay.querySelector('#admin-vip-edit-cancel').onclick = closeModal;
+                                        });
+                                    })(editBtn, sorted2);
+                                });
+                                contentEl.querySelectorAll('.admin-vip-history-btn').forEach(function(historyBtn) {
+                                    historyBtn.addEventListener('click', function() {
+                                        const playerId = historyBtn.getAttribute('data-player-id');
+                                        const playerName = historyBtn.getAttribute('data-player-name');
+                                        const titleEl = document.getElementById('admin-vip-history-modal-title');
+                                        const bodyEl = document.getElementById('admin-vip-history-modal-body');
+                                        if (!titleEl || !bodyEl) return;
+                                        titleEl.textContent = 'Xanax history — ' + playerName;
+                                        bodyEl.innerHTML = '<p style="color: #888;">Loading...</p>';
+                                        vipHistoryOverlay.style.display = 'flex';
+                                        vipHistoryOverlay.setAttribute('aria-hidden', 'false');
+                                        const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                                        if (!apiKey2 || apiKey2.length !== 16) {
+                                            bodyEl.innerHTML = '<p style="color: #c0392b;">Enter your API key in the sidebar to load history.</p>';
+                                            return;
+                                        }
+                                        firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey2, playerId: playerId })
+                                            .then(function(result) {
+                                                const transactions = result.data && result.data.transactions ? result.data.transactions : [];
+                                                if (transactions.length === 0) { bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>'; return; }
+                                                let tableHtml3 = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
+                                                transactions.forEach(function(t) {
+                                                    const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
+                                                    tableHtml3 += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
+                                                });
+                                                tableHtml3 += '</tbody></table>';
+                                                bodyEl.innerHTML = tableHtml3;
+                                            })
+                                            .catch(function(e) { console.error(e); bodyEl.innerHTML = '<p style="color: #c0392b;">Failed to load history. ' + (e.message || e.code || '') + '</p>'; });
+                                    });
+                                });
+                                attachApplyDeductionsListener();
+                                attachResetClockListener();
+                                (function wireAddPlayer() {
+                                    var b = document.getElementById('admin-vip-add-player-btn');
+                                    if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
+                                })();
+                            })
+                            .catch(function(e) {
+                                console.error(e);
+                                if (statusEl) statusEl.textContent = 'Failed: ' + (e.message || e.code || '');
+                                resetBtn.disabled = false;
+                            });
+                    };
+                }
+                attachResetClockListener();
+                (function wireAddPlayer() {
+                    var b = document.getElementById('admin-vip-add-player-btn');
+                    if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
+                })();
+                window._adminVipCountdownInterval = setInterval(function() {
+                    const panel = document.getElementById('admin-tab-vip');
+                    if (!panel || panel.style.display === 'none') return;
+                    let anyOverdue = false;
                     contentEl.querySelectorAll('.admin-next-deduction-countdown[data-until]').forEach(function(el) {
                         const until = parseInt(el.getAttribute('data-until'), 10);
                         if (isNaN(until)) return;
-                        const countdownMs = Math.max(0, until - Date.now());
-                        el.textContent = formatNextDeductionCountdown(countdownMs);
+                        const msLeft = until - Date.now();
+                        el.textContent = formatNextDeductionCountdown(Math.max(0, msLeft));
+                        if (msLeft <= 0) anyOverdue = true;
                     });
-                }, 30 * 1000);
+                    if (anyOverdue && typeof window.__adminVipPullBalancesAndRender === 'function') {
+                        const t = Date.now();
+                        if (!window._adminVipOverduePullAt || t - window._adminVipOverduePullAt >= 1000) {
+                            window._adminVipOverduePullAt = t;
+                            window.__adminVipPullBalancesAndRender();
+                        }
+                        // Scheduler often lags; after ~8s overdue run same logic as "Apply deductions now" once
+                        if (!window._adminVipOverdueSince) window._adminVipOverdueSince = t;
+                        const overdueFor = t - window._adminVipOverdueSince;
+                        const adminK = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                        if (overdueFor >= 8000 && adminK.length === 16 && !window._adminVipAutoDeductionInFlight) {
+                            window._adminVipAutoDeductionInFlight = true;
+                            var st = document.getElementById('admin-vip-apply-status');
+                            if (st) st.textContent = 'Applying deductions (auto)…';
+                            firebase.functions().httpsCallable('applyVipDeductionsNow')({ apiKey: adminK })
+                                .then(function() {
+                                    if (typeof window.__adminVipPullBalancesAndRender === 'function') {
+                                        return window.__adminVipPullBalancesAndRender();
+                                    }
+                                })
+                                .catch(function(e) {
+                                    console.error('Auto VIP deduction failed', e);
+                                    if (st) st.textContent = (e && e.message) || 'Auto apply failed — use button';
+                                })
+                                .finally(function() {
+                                    window._adminVipAutoDeductionInFlight = false;
+                                    window._adminVipOverdueSince = Date.now();
+                                });
+                        }
+                    } else {
+                        window._adminVipOverduePullAt = 0;
+                        window._adminVipOverdueSince = 0;
+                    }
+                }, 1000);
+                var _adminVipPullInFlight = false;
+                var _adminVipPullQueued = false;
+                if (!window._adminVipVisibilityHooked) {
+                    window._adminVipVisibilityHooked = true;
+                    document.addEventListener('visibilitychange', function() {
+                        if (document.visibilityState !== 'visible') return;
+                        var p = document.getElementById('admin-tab-vip');
+                        if (p && p.style.display !== 'none' && typeof window.__adminVipPullBalancesAndRender === 'function') {
+                            window.__adminVipPullBalancesAndRender();
+                        }
+                    });
+                }
+                // Live VIP tab: refetch while visible. Queue prevents overlapping requests (stale responses used to overwrite fresh data → stuck 0s).
+                function adminVipPullBalancesAndRender() {
+                    const panel = document.getElementById('admin-tab-vip');
+                    if (!panel || panel.style.display === 'none') return;
+                    if (_adminVipPullInFlight) {
+                        _adminVipPullQueued = true;
+                        return;
+                    }
+                    _adminVipPullInFlight = true;
+                    fn({ apiKey: apiKey }).then(function(res) {
+                        const balances2 = (res && res.data && res.data.balances) || [];
+                        if (balances2.length === 0) return;
+                        const sorted2 = balances2.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
+                        let tableHtml2 = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+                        sorted2.forEach(function(row) {
+                            var nextDedCell = adminVipNextDeductionCellForRow(row);
+                            const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
+                            tableHtml2 += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
+                                '<td>' + String(row.playerId) + '</td>' +
+                                '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
+                                '<td>' + (row.factionName || (userStats[row.playerName] && userStats[row.playerName].factionName) || '—') + '</td>' +
+                                '<td class="admin-vip-total-sent">' + (row.totalXanaxSent ?? 0) + '</td>' +
+                                '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
+                                '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
+                                '<td class="admin-next-deduction-cell">' + nextDedCell + '</td>' +
+                                '<td>' + lastLog + '</td>' +
+                                '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
+                        });
+                        tableHtml2 += '</tbody></table>';
+                        contentEl.innerHTML = toolbarHtml + tableHtml2;
+                        contentEl.querySelectorAll('.admin-vip-edit-btn').forEach(function(editBtn) {
+                            (function bindEdit(btnEl, sortedArr) {
+                                btnEl.addEventListener('click', function() {
+                                    const tr = btnEl.closest('tr');
+                                    const playerId = tr.getAttribute('data-player-id');
+                                    const row = sortedArr.find(function(r) { return String(r.playerId) === playerId; });
+                                    if (!row) return;
+                                    const totalSentInput = document.getElementById('admin-vip-edit-total-sent');
+                                    const balanceInput = document.getElementById('admin-vip-edit-balance');
+                                    if (!totalSentInput || !balanceInput) return;
+                                    totalSentInput.value = row.totalXanaxSent ?? 0;
+                                    balanceInput.value = row.currentBalance ?? 0;
+                                    vipEditOverlay.style.display = 'flex';
+                                    vipEditOverlay.setAttribute('aria-hidden', 'false');
+                                    totalSentInput.focus();
+                                    function closeModal() {
+                                        vipEditOverlay.style.display = 'none';
+                                        vipEditOverlay.setAttribute('aria-hidden', 'true');
+                                    }
+                                    function doSave() {
+                                        const totalSent = parseInt(totalSentInput.value, 10);
+                                        const num = parseInt(balanceInput.value, 10);
+                                        if (isNaN(totalSent) || totalSent < 0) { alert('Total sent must be a non-negative number.'); return; }
+                                        if (isNaN(num) || num < 0) { alert('Current balance must be a non-negative number.'); return; }
+                                        const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
+                                        btnEl.disabled = true;
+                                        firebase.functions().httpsCallable('updateVipBalance')({
+                                            playerId: row.playerId, playerName: row.playerName, factionName: row.factionName, factionId: row.factionId,
+                                            totalXanaxSent: totalSent, currentBalance: num, lastDeductionDate: new Date().toISOString(), vipLevel: newLevel, lastLoginDate: row.lastLoginDate
+                                        }).then(function() {
+                                            tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
+                                            tr.querySelector('.admin-vip-balance').textContent = num;
+                                            tr.querySelector('td:nth-child(6)').textContent = 'VIP ' + newLevel;
+                                            row.totalXanaxSent = totalSent; row.currentBalance = num; row.vipLevel = newLevel;
+                                            closeModal();
+                                            clearVipCache(row.playerId);
+                                            const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                                            if (apiKey2 && apiKey2.length === 16) {
+                                                getUserData(apiKey2).then(function(ud) {
+                                                    if (ud && String(ud.playerId) === String(row.playerId)) updateWelcomeMessage();
+                                                });
+                                            }
+                                        }).catch(function(e) { console.error(e); alert('Update failed: ' + (e.message || e)); }).finally(function() { btnEl.disabled = false; });
+                                    }
+                                    vipEditOverlay.querySelector('#admin-vip-edit-save').onclick = doSave;
+                                    vipEditOverlay.querySelector('#admin-vip-edit-modal-close').onclick = closeModal;
+                                    vipEditOverlay.querySelector('#admin-vip-edit-cancel').onclick = closeModal;
+                                });
+                            })(editBtn, sorted2);
+                        });
+                        contentEl.querySelectorAll('.admin-vip-history-btn').forEach(function(historyBtn) {
+                            historyBtn.addEventListener('click', function() {
+                                const playerId = historyBtn.getAttribute('data-player-id');
+                                const playerName = historyBtn.getAttribute('data-player-name');
+                                const titleEl = document.getElementById('admin-vip-history-modal-title');
+                                const bodyEl = document.getElementById('admin-vip-history-modal-body');
+                                if (!titleEl || !bodyEl) return;
+                                titleEl.textContent = 'Xanax history — ' + playerName;
+                                bodyEl.innerHTML = '<p style="color: #888;">Loading...</p>';
+                                vipHistoryOverlay.style.display = 'flex';
+                                vipHistoryOverlay.setAttribute('aria-hidden', 'false');
+                                const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                                if (!apiKey2 || apiKey2.length !== 16) {
+                                    bodyEl.innerHTML = '<p style="color: #c0392b;">Enter your API key in the sidebar to load history.</p>';
+                                    return;
+                                }
+                                firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey2, playerId: playerId })
+                                    .then(function(result) {
+                                        const transactions = result.data && result.data.transactions ? result.data.transactions : [];
+                                        if (transactions.length === 0) { bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>'; return; }
+                                        let tableHtml3 = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
+                                        transactions.forEach(function(t) {
+                                            const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
+                                            tableHtml3 += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
+                                        });
+                                        tableHtml3 += '</tbody></table>';
+                                        bodyEl.innerHTML = tableHtml3;
+                                    })
+                                    .catch(function(e) { console.error(e); bodyEl.innerHTML = '<p style="color: #c0392b;">Failed to load history. ' + (e.message || e.code || '') + '</p>'; });
+                            });
+                        });
+                        attachApplyDeductionsListener();
+                        attachResetClockListener();
+                        (function wireAddPlayer() {
+                            var b = document.getElementById('admin-vip-add-player-btn');
+                            if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
+                        })();
+                        getUserData(apiKey).then(function(ud) {
+                            if (ud && ud.playerId) clearVipCache(ud.playerId);
+                            updateWelcomeMessage();
+                        });
+                    }).catch(function(e) { console.error(e); }).finally(function() {
+                        _adminVipPullInFlight = false;
+                        if (_adminVipPullQueued) {
+                            _adminVipPullQueued = false;
+                            setTimeout(function() { adminVipPullBalancesAndRender(); }, 150);
+                        }
+                    });
+                }
+                window.__adminVipPullBalancesAndRender = adminVipPullBalancesAndRender;
+                if (window.adminVipRefreshInterval) clearInterval(window.adminVipRefreshInterval);
+                window.adminVipRefreshInterval = setInterval(adminVipPullBalancesAndRender, 2000);
                 // Ensure VIP edit modal exists (one per dashboard load)
                 let vipEditOverlay = document.getElementById('admin-vip-edit-modal');
                 if (!vipEditOverlay) {
@@ -2135,7 +2711,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 factionId: row.factionId,
                                 totalXanaxSent: totalSent,
                                 currentBalance: num,
-                                lastDeductionDate: row.lastDeductionDate,
+                                lastDeductionDate: new Date().toISOString(),
                                 vipLevel: newLevel,
                                 lastLoginDate: row.lastLoginDate
                             }).then(function() {
