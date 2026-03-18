@@ -1,9 +1,9 @@
 <div class="container">
     <h1>Vault Checker</h1>
-    <p class="vault-checker-intro">See what's in your faction vault and who has loaned items. We flag players who have 2+ weapons of the same type (Primary, Secondary, Melee) or multiple armour in the same slot (e.g. two pairs of gloves).</p>
+    <p class="vault-checker-intro">See what's in your faction vault and who has loaned items. Borrower names come from the API when available; when the API omits them (common for &ldquo;loan yourself&rdquo;), we backfill from recent faction armory news. We flag players who have 2+ weapons of the same type (Primary, Secondary, Melee) or multiple armour in the same slot.</p>
 
     <div id="vault-checker-tool-container">
-        <p style="color: #b0b0b0; font-size: 14px; margin-bottom: 16px;">A limited API key with <strong>Faction</strong> access is required.</p>
+        <p style="color: #b0b0b0; font-size: 14px; margin-bottom: 16px;"><strong>API key selections</strong> (add these on your custom key if anything fails): Faction &rarr; weapons &amp; armour; User &rarr; profile &amp; basic; Faction (v2) &rarr; members; Faction news &rarr; armory (for borrower backfill). The same key can power your other tools.</p>
 
         <div id="vault-checker-loading" class="loading-bar" style="display: none;">
             <div class="loading-spinner"></div>

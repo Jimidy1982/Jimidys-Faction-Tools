@@ -18,9 +18,15 @@
 
     async function getUserProfile(apiKey) {
         const data = await fetchJson(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+        let playerId = null;
+        try {
+            const b = await fetchJson(`https://api.torn.com/user/?selections=basic&key=${apiKey}`);
+            playerId = b.player_id != null ? String(b.player_id) : (b.id != null ? String(b.id) : null);
+        } catch (e) { /* key may lack basic */ }
         return {
             factionId: data.faction_id || data.faction?.faction_id || null,
-            factionName: data.faction_name || data.faction?.faction_name || ''
+            factionName: data.faction_name || data.faction?.faction_name || '',
+            playerId
         };
     }
 
@@ -46,10 +52,127 @@
         return Array.isArray(raw) ? raw : Object.values(raw);
     }
 
-    /** Parse loaned_to string "id1,id2,id3" into list of player IDs (one per loaned item). */
-    function parseLoanedTo(loanedTo) {
-        if (!loanedTo || typeof loanedTo !== 'string') return [];
-        return loanedTo.split(',').map(s => s.trim()).filter(Boolean);
+    function normItemName(s) {
+        return String(s || '').replace(/<[^>]+>/g, ' ').toLowerCase().replace(/\s+/g, ' ').trim();
+    }
+
+    /**
+     * Torn often returns loaned_to as a comma string, but also as a single number, array, or id->count map.
+     * When several copies are loaned to the same player, API sometimes lists one ID once — expand to match loaned count.
+     */
+    function rawBorrowerIdsFromItem(item) {
+        const loaned = Math.max(0, parseInt(item.loaned, 10) || 0);
+        const lt = item.loaned_to != null ? item.loaned_to : item.loanedTo;
+        let ids = [];
+
+        if (lt == null || lt === '') {
+            /* empty */
+        } else if (typeof lt === 'number' && Number.isFinite(lt)) {
+            ids = [String(Math.trunc(lt))];
+        } else if (typeof lt === 'string') {
+            const numeric = lt.split(/[,\s;|]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
+            ids = numeric.length ? numeric : lt.split(',').map(s => s.trim()).filter(Boolean);
+        } else if (Array.isArray(lt)) {
+            lt.forEach(x => {
+                if (x != null && typeof x === 'object' && x.id != null) ids.push(String(x.id));
+                else if (Number.isFinite(Number(x))) ids.push(String(Math.trunc(Number(x))));
+            });
+        } else if (typeof lt === 'object') {
+            Object.keys(lt).forEach(k => {
+                const pid = parseInt(k, 10);
+                if (!Number.isFinite(pid)) return;
+                const cnt = parseInt(lt[k], 10);
+                const n = Number.isFinite(cnt) && cnt > 0 ? Math.min(cnt, loaned || 999) : 1;
+                for (let i = 0; i < n; i++) ids.push(String(pid));
+            });
+        }
+
+        if (ids.length === 1 && loaned > 1) {
+            const one = ids[0];
+            while (ids.length < loaned) ids.push(one);
+        }
+
+        while (ids.length > loaned && loaned > 0) ids.pop();
+        return { ids, loaned };
+    }
+
+    /** Pull recent armory loans from v2 news — fills gaps when API omits loaned_to (e.g. "You loaned yourself"). */
+    async function fetchArmoryLoanHints(apiKey, keyOwnerId) {
+        const hints = [];
+        const now = Math.floor(Date.now() / 1000);
+        const fromTs = now - 21 * 24 * 3600;
+        let toTs = now;
+        for (let page = 0; page < 5; page++) {
+            const newsUrl = `https://api.torn.com/v2/faction/news?striptags=false&limit=100&sort=DESC&cat=armoryAction&to=${toTs}&from=${fromTs}&key=${apiKey}`;
+            const res = await fetch(newsUrl);
+            const data = await res.json();
+            if (data.error) break;
+            const news = data.news || [];
+            if (!news.length) break;
+
+            news.forEach(entry => {
+                const html = entry.news || entry.text || '';
+                if (!html || /returned\s+.+\s+to\s+the\s+faction\s+armory/i.test(html.replace(/\s+/g, ' '))) return;
+
+                const push = (borrowerId, qty, itemFragment) => {
+                    if (!borrowerId || !qty) return;
+                    const itemName = normItemName(itemFragment);
+                    if (!itemName) return;
+                    const ts = entry.timestamp || 0;
+                    for (let q = 0; q < qty; q++) hints.push({ borrowerId: String(borrowerId), itemName, ts });
+                };
+
+                if (keyOwnerId && /You loaned yourself/i.test(html)) {
+                    const m = html.match(/You loaned yourself (\d+)x\s*(.+?)\s+from the faction armory/i);
+                    if (m) push(keyOwnerId, parseInt(m[1], 10) || 1, m[2]);
+                }
+
+                let re = /profiles\.php\?XID=(\d+)[^>]*>[\s\S]*?<\/a>\s*loaned themselves (\d+)x\s*([\s\S]+?)\s+from the faction armory/gi;
+                let mm;
+                while ((mm = re.exec(html)) !== null) {
+                    push(mm[1], parseInt(mm[2], 10) || 1, mm[3]);
+                }
+
+                re = /profiles\.php\?XID=(\d+)[^>]*>[\s\S]*?<\/a>\s+loaned\s+<a[^>]*XID=(\d+)[^>]*>[\s\S]*?<\/a>\s+(\d+)x\s*([\s\S]+?)\s+from the faction armory/gi;
+                while ((mm = re.exec(html)) !== null) {
+                    push(mm[2], parseInt(mm[3], 10) || 1, mm[4]);
+                }
+            });
+
+            const oldest = Math.min(...news.map(e => e.timestamp || now));
+            if (oldest <= fromTs) break;
+            toTs = oldest - 1;
+        }
+
+        hints.sort((a, b) => b.ts - a.ts);
+        return hints;
+    }
+
+    function itemNamesMatch(apiName, hintName) {
+        const a = normItemName(apiName);
+        const b = normItemName(hintName);
+        if (!a || !b) return false;
+        if (a === b) return true;
+        if (a.includes(b) || b.includes(a)) return true;
+        return false;
+    }
+
+    /** Full borrower list for one vault row (API + news backfill). */
+    function resolveBorrowerIdsForItem(item, hints, usedHintIdx) {
+        const { ids, loaned } = rawBorrowerIdsFromItem(item);
+        const out = ids.slice();
+        const name = item.name || item.ID;
+        let need = loaned - out.length;
+        if (need <= 0) return out;
+
+        for (let i = 0; i < hints.length && need > 0; i++) {
+            if (usedHintIdx[i]) continue;
+            if (!itemNamesMatch(name, hints[i].itemName)) continue;
+            out.push(hints[i].borrowerId);
+            usedHintIdx[i] = true;
+            need--;
+        }
+        return out;
     }
 
     /** Infer armour slot from item name (same-purpose grouping: gloves, boots, helmet, legs, body). */
@@ -81,7 +204,7 @@
         weaponsList.forEach(item => {
             const name = item.name || `ID ${item.ID}`;
             const type = (item.type && String(item.type).trim()) || 'Other';
-            const ids = parseLoanedTo(item.loaned_to);
+            const ids = item._borrowerIds || rawBorrowerIdsFromItem(item).ids;
             ids.forEach(pid => {
                 const p = ensurePlayer(String(pid));
                 p.weaponByType[type] = (p.weaponByType[type] || 0) + 1;
@@ -93,7 +216,7 @@
         armorList.forEach(item => {
             const name = item.name || `ID ${item.ID}`;
             const slot = getArmorSlot(name);
-            const ids = parseLoanedTo(item.loaned_to);
+            const ids = item._borrowerIds || rawBorrowerIdsFromItem(item).ids;
             ids.forEach(pid => {
                 const p = ensurePlayer(String(pid));
                 p.armorBySlot[slot] = (p.armorBySlot[slot] || 0) + 1;
@@ -220,15 +343,22 @@
         if (!items.length) return `<p style="color: #888;">No ${isWeapon ? 'weapons' : 'armour'}.</p>`;
         const typeLabel = isWeapon ? 'Type' : 'Slot';
         const rows = items.map(item => {
-            const loanedTo = parseLoanedTo(item.loaned_to);
+            const loanedNum = parseInt(item.loaned, 10) || 0;
+            const loanedTo = item._borrowerIds || rawBorrowerIdsFromItem(item).ids;
+            const unknown = Math.max(0, loanedNum - loanedTo.length);
             const byPlayer = {};
             loanedTo.forEach(pid => { byPlayer[pid] = (byPlayer[pid] || 0) + 1; });
-            const loanedSummary = Object.entries(byPlayer)
+            let loanedSummary = Object.entries(byPlayer)
                 .map(([pid, n]) => {
                     const displayName = (nameMap && nameMap[pid]) ? nameMap[pid] : pid;
                     return n > 1 ? `<a href="https://www.torn.com/profiles.php?XID=${escapeHtml(pid)}" target="_blank" rel="noopener">${escapeHtml(displayName)}</a> (×${n})` : `<a href="https://www.torn.com/profiles.php?XID=${escapeHtml(pid)}" target="_blank" rel="noopener">${escapeHtml(displayName)}</a>`;
                 })
-                .join(', ') || '—';
+                .join(', ');
+            if (unknown > 0) {
+                const unk = unknown > 1 ? `Unknown (×${unknown})` : 'Unknown';
+                loanedSummary = loanedSummary ? `${loanedSummary}, <span style="color:#888;" title="API did not list borrower; not in recent armory news">${unk}</span>` : `<span style="color:#888;" title="API did not list borrower">${unk}</span>`;
+            }
+            if (!loanedSummary) loanedSummary = '—';
             const typeOrSlot = isWeapon ? (item.type || '—') : getArmorSlot(item.name);
             return `<tr>
                 <td>${escapeHtml(item.name || item.ID)}</td>
@@ -281,14 +411,22 @@
                 return;
             }
 
-            const [weaponsData, armorData, nameMap] = await Promise.all([
+            const [weaponsData, armorData, nameMap, loanHints] = await Promise.all([
                 fetchJson(`https://api.torn.com/faction/${profile.factionId}?selections=weapons&key=${apiKey}`),
                 fetchJson(`https://api.torn.com/faction/${profile.factionId}?selections=armor&key=${apiKey}`),
-                fetchFactionMembers(apiKey, null).catch(() => ({}))
+                fetchFactionMembers(apiKey, null).catch(() => ({})),
+                fetchArmoryLoanHints(apiKey, profile.playerId).catch(() => [])
             ]);
 
             const weaponsList = toItemList(weaponsData.weapons);
             const armorList = toItemList(armorData.armor);
+            const usedHintIdx = {};
+            weaponsList.forEach(item => {
+                item._borrowerIds = resolveBorrowerIdsForItem(item, loanHints, usedHintIdx);
+            });
+            armorList.forEach(item => {
+                item._borrowerIds = resolveBorrowerIdsForItem(item, loanHints, usedHintIdx);
+            });
 
             const playerStats = buildPlayerStats(weaponsList, armorList);
 
