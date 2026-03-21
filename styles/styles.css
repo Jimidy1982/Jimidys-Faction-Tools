@@ -2924,7 +2924,7 @@ th small {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.6);
-    z-index: 1000;
+    z-index: 10050; /* above admin / mobile nav so VIP add-player modal is visible */
     display: flex;
     align-items: center;
     justify-content: center;

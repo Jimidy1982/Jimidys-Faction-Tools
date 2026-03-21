@@ -1925,9 +1925,6 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.admin-tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const tab = btn.getAttribute('data-tab');
-                if (tab === 'vip' && typeof window.__adminVipPullBalancesAndRender === 'function') {
-                    setTimeout(function() { window.__adminVipPullBalancesAndRender(); }, 0);
-                }
                 document.querySelectorAll('.admin-tab-panel').forEach(panel => {
                     panel.style.display = panel.id === `admin-tab-${tab}` ? 'block' : 'none';
                 });
@@ -1946,9 +1943,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 clearInterval(window._adminVipCountdownInterval);
                 window._adminVipCountdownInterval = null;
             }
-            const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
-            if (!apiKey) {
-                loadingEl.textContent = 'Enter your API key in the sidebar to load VIP balances.';
+            const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+            if (!apiKey || apiKey.length !== 16) {
+                loadingEl.textContent = 'Enter your 16-character API key in the sidebar to load VIP balances.';
                 return;
             }
             try {
@@ -1957,7 +1954,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 (function ensureAdminVipAddPlayerModal() {
-                    if (document.getElementById('admin-vip-add-player-modal')) return;
+                    const existingOverlay = document.getElementById('admin-vip-add-player-modal');
+                    if (existingOverlay) {
+                        window.__openAdminVipAddPlayerModal = function () {
+                            const o = document.getElementById('admin-vip-add-player-modal');
+                            const prof = document.getElementById('admin-vip-add-profile-input');
+                            const bal = document.getElementById('admin-vip-add-balance-input');
+                            const sent = document.getElementById('admin-vip-add-totalsent-input');
+                            if (!o || !prof) return;
+                            prof.value = '';
+                            if (bal) bal.value = '';
+                            if (sent) sent.value = '0';
+                            o.style.display = 'flex';
+                            o.setAttribute('aria-hidden', 'false');
+                            prof.focus();
+                        };
+                        return;
+                    }
                     const overlay = document.createElement('div');
                     overlay.id = 'admin-vip-add-player-modal';
                     overlay.className = 'app-modal-overlay';
@@ -2056,15 +2069,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 contentEl.style.display = 'block';
                 const toolbarHtml = '<div class="admin-vip-toolbar" style="margin-bottom: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">' +
                     '<button type="button" class="fetch-button" id="admin-vip-add-player-btn" style="background-color: #15803d;">Add player</button>' +
+                    '<button type="button" class="fetch-button" id="admin-vip-refresh-list-btn" title="Fetch latest balances from the server">Refresh list</button>' +
                     '<button type="button" class="fetch-button" id="admin-vip-apply-deductions-btn" style="background-color: var(--accent-color);">Apply deductions now</button>' +
                     '<button type="button" class="fetch-button" id="admin-vip-reset-clock-btn" title="Set everyone\u2019s next deduction to 48 hours from now. Use after restoring balances so old timers don\u2019t wipe them.">Reset deduction clock</button>' +
                     '<span id="admin-vip-apply-status" style="font-size: 0.9em; color: #888;"></span></div>';
+                function wireAdminVipToolbarButtons() {
+                    var addBtn = document.getElementById('admin-vip-add-player-btn');
+                    if (addBtn) addBtn.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
+                    var refBtn = document.getElementById('admin-vip-refresh-list-btn');
+                    if (refBtn) refBtn.onclick = function() {
+                        if (typeof window.__adminVipPullBalancesAndRender === 'function') window.__adminVipPullBalancesAndRender();
+                    };
+                }
                 if (balances.length === 0) {
                     contentEl.innerHTML = toolbarHtml + '<p style="color: #888;">No VIP balances yet. Use <strong>Add player</strong> to add someone by profile link.</p>';
-                    (function attachAdminVipEmptyToolbar() {
-                        const addBtn = document.getElementById('admin-vip-add-player-btn');
-                        if (addBtn) addBtn.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
-                    })();
+                    wireAdminVipToolbarButtons();
                     return;
                 }
                 const sorted = balances.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
@@ -2113,8 +2132,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 tableHtml += '</tbody></table>';
                 contentEl.innerHTML = toolbarHtml + tableHtml;
-                // Apply deductions now button
-                (function attachApplyDeductionsListener() {
+                // Apply deductions now button (must be a scoped function, not an IIFE name — adminVipPullBalancesAndRender calls this)
+                function attachApplyDeductionsListener() {
                     const btn = document.getElementById('admin-vip-apply-deductions-btn');
                     const statusEl = document.getElementById('admin-vip-apply-status');
                     if (!btn) return;
@@ -2134,6 +2153,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                     contentEl.innerHTML = toolbarHtml + '<p style="color: #888;">No VIP balances yet.</p>';
                                     btn.disabled = false;
                                     if (statusEl) statusEl.textContent = '';
+                                    attachApplyDeductionsListener();
+                                    attachResetClockListener();
+                                    wireAdminVipToolbarButtons();
                                     return;
                                 }
                                 const sorted2 = balances2.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
@@ -2239,10 +2261,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 });
                                 attachApplyDeductionsListener();
                                 attachResetClockListener();
-                                (function wireAddPlayer() {
-                                    var b = document.getElementById('admin-vip-add-player-btn');
-                                    if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
-                                })();
+                                wireAdminVipToolbarButtons();
                             })
                             .catch(function(e) {
                                 console.error(e);
@@ -2250,7 +2269,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 btn.disabled = false;
                             });
                     };
-                })();
+                }
+                attachApplyDeductionsListener();
                 function attachResetClockListener() {
                     const resetBtn = document.getElementById('admin-vip-reset-clock-btn');
                     const statusEl = document.getElementById('admin-vip-apply-status');
@@ -2375,10 +2395,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 });
                                 attachApplyDeductionsListener();
                                 attachResetClockListener();
-                                (function wireAddPlayer() {
-                                    var b = document.getElementById('admin-vip-add-player-btn');
-                                    if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
-                                })();
+                                wireAdminVipToolbarButtons();
                             })
                             .catch(function(e) {
                                 console.error(e);
@@ -2388,10 +2405,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     };
                 }
                 attachResetClockListener();
-                (function wireAddPlayer() {
-                    var b = document.getElementById('admin-vip-add-player-btn');
-                    if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
-                })();
+                wireAdminVipToolbarButtons();
                 window._adminVipCountdownInterval = setInterval(function() {
                     const panel = document.getElementById('admin-tab-vip');
                     if (!panel || panel.style.display === 'none') return;
@@ -2405,7 +2419,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                     if (anyOverdue && typeof window.__adminVipPullBalancesAndRender === 'function') {
                         const t = Date.now();
-                        if (!window._adminVipOverduePullAt || t - window._adminVipOverduePullAt >= 1000) {
+                        if (!window._adminVipOverduePullAt || t - window._adminVipOverduePullAt >= 60000) {
                             window._adminVipOverduePullAt = t;
                             window.__adminVipPullBalancesAndRender();
                         }
@@ -2439,17 +2453,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }, 1000);
                 var _adminVipPullInFlight = false;
                 var _adminVipPullQueued = false;
-                if (!window._adminVipVisibilityHooked) {
-                    window._adminVipVisibilityHooked = true;
-                    document.addEventListener('visibilitychange', function() {
-                        if (document.visibilityState !== 'visible') return;
-                        var p = document.getElementById('admin-tab-vip');
-                        if (p && p.style.display !== 'none' && typeof window.__adminVipPullBalancesAndRender === 'function') {
-                            window.__adminVipPullBalancesAndRender();
-                        }
-                    });
-                }
-                // Live VIP tab: refetch while visible. Queue prevents overlapping requests (stale responses used to overwrite fresh data → stuck 0s).
+                // No periodic VIP refetch — balances change on ~48h deductions; use "Refresh list" or actions below.
                 function adminVipPullBalancesAndRender() {
                     const panel = document.getElementById('admin-tab-vip');
                     if (!panel || panel.style.display === 'none') return;
@@ -2562,15 +2566,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                         attachApplyDeductionsListener();
                         attachResetClockListener();
-                        (function wireAddPlayer() {
-                            var b = document.getElementById('admin-vip-add-player-btn');
-                            if (b) b.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
-                        })();
+                        wireAdminVipToolbarButtons();
                         getUserData(apiKey).then(function(ud) {
                             if (ud && ud.playerId) clearVipCache(ud.playerId);
                             updateWelcomeMessage();
                         });
-                    }).catch(function(e) { console.error(e); }).finally(function() {
+                    }).catch(function(e) {
+                        console.error(e);
+                    }).finally(function() {
                         _adminVipPullInFlight = false;
                         if (_adminVipPullQueued) {
                             _adminVipPullQueued = false;
@@ -2579,8 +2582,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 }
                 window.__adminVipPullBalancesAndRender = adminVipPullBalancesAndRender;
-                if (window.adminVipRefreshInterval) clearInterval(window.adminVipRefreshInterval);
-                window.adminVipRefreshInterval = setInterval(adminVipPullBalancesAndRender, 2000);
+                if (window.adminVipRefreshInterval) {
+                    clearInterval(window.adminVipRefreshInterval);
+                    window.adminVipRefreshInterval = null;
+                }
                 // Ensure VIP edit modal exists (one per dashboard load)
                 let vipEditOverlay = document.getElementById('admin-vip-edit-modal');
                 if (!vipEditOverlay) {
