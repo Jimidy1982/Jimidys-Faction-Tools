@@ -111,6 +111,15 @@ document.addEventListener('DOMContentLoaded', () => {
         window.apiCallTracker.push(Date.now());
         cleanOldCalls();
     };
+
+    /** Seconds to wait before retrying after Torn rate-limit — uses same rolling window as preemptive limiter (respects user’s calls/min setting). */
+    const getRollingWindowRateLimitWaitSeconds = () => {
+        cleanOldCalls();
+        if (!window.apiCallTracker.length) return 2;
+        const oldestCall = Math.min(...window.apiCallTracker);
+        const msLeft = 60000 - (Date.now() - oldestCall);
+        return Math.min(60, Math.max(1, Math.ceil(msLeft / 1000)));
+    };
     
     // ==================== GLOBAL BATCH API CALLS WITH RATE LIMITING ====================
     /**
@@ -184,10 +193,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (progressMessage) {
                         progressMessage.textContent = 'Waiting for API Limit...';
                     }
-                    const waitSeconds = Math.ceil(retryDelay / 1000);
+                    const waitSeconds = getRollingWindowRateLimitWaitSeconds();
                     for (let j = waitSeconds; j > 0; j--) {
                         if (progressDetails) {
-                            progressDetails.textContent = `API rate limit reached, waiting ${j} seconds...`;
+                            progressDetails.textContent = `API rate limit (server) — resuming in ${j}s…`;
                         }
                         await sleep(1000);
                     }
@@ -364,10 +373,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (progressMessage) {
                             progressMessage.textContent = 'Waiting for API Limit...';
                         }
-                        const waitSeconds = Math.ceil(retryDelay / 1000);
+                        const waitSeconds = getRollingWindowRateLimitWaitSeconds();
                         for (let j = waitSeconds; j > 0; j--) {
                             if (progressDetails) {
-                                progressDetails.textContent = `API rate limit reached, waiting ${j} seconds...`;
+                                progressDetails.textContent = `API rate limit (server) — resuming in ${j}s…`;
                             }
                             await sleep(1000);
                         }
@@ -3739,7 +3748,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     alert('Could not load your faction (you may not be in a faction).');
                     return;
                 }
-                factionIdInput.value = userData.factionId;
+                factionIdInput.value = String(userData.factionId).trim();
                 const label = userData.factionName ? `My Faction [${userData.factionName}]` : 'My Faction';
                 myFactionBtn.textContent = label;
                 handleBattleStatsFetch();
@@ -3768,10 +3777,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const BATTLE_STATS_MAIN_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
     const BATTLE_STATS_ACTIVITY_PAST_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
     const BATTLE_STATS_ACTIVITY_NOW_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
+    /** Extra passes after the main batch: re-fetch only snapshots still missing (errors / parse fails / rate limits). */
+    const BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS = 2;
+    const BATTLE_STATS_ACTIVITY_RETRY_BASE_DELAY_MS = 2000;
+
+    function normalizeBattleStatsFactionId(factionID) {
+        return String(factionID == null ? '' : factionID).trim();
+    }
 
     function getBattleStatsMainCache(factionID) {
+        const fid = normalizeBattleStatsFactionId(factionID);
         try {
-            const raw = localStorage.getItem(BATTLE_STATS_MAIN_PREFIX + factionID);
+            const raw = localStorage.getItem(BATTLE_STATS_MAIN_PREFIX + fid);
             if (!raw) return null;
             const obj = JSON.parse(raw);
             if (!obj.cachedAt || (Date.now() - obj.cachedAt) > BATTLE_STATS_MAIN_TTL_MS) return null;
@@ -3779,12 +3796,30 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { return null; }
     }
     function setBattleStatsMainCache(factionID, data) {
+        const fid = normalizeBattleStatsFactionId(factionID);
         try {
-            localStorage.setItem(BATTLE_STATS_MAIN_PREFIX + factionID, JSON.stringify({
+            localStorage.setItem(BATTLE_STATS_MAIN_PREFIX + fid, JSON.stringify({
                 cachedAt: Date.now(),
                 ...data
             }));
         } catch (e) { /* ignore */ }
+    }
+
+    /** Only treat as cache hit when timeplayed is a real number (null/string/undefined = miss). */
+    function coerceCachedTimeplayedValue(raw) {
+        if (typeof raw === 'number' && !isNaN(raw)) return raw;
+        if (typeof raw === 'string' && raw.trim() !== '') {
+            const n = parseInt(raw.trim(), 10);
+            if (!isNaN(n)) return n;
+        }
+        return null;
+    }
+
+    function hasActivityTimeplayedSnapshot(store, playerId, timestamp) {
+        if (!store || timestamp == null || isNaN(Number(timestamp))) return false;
+        const id = String(playerId);
+        const v = store[id]?.[timestamp];
+        return typeof v === 'number' && !isNaN(v);
     }
 
     function getBattleStatsActivityCache(keyPrefix, keySuffix, ttlMs) {
@@ -3799,7 +3834,415 @@ document.addEventListener('DOMContentLoaded', () => {
     function setBattleStatsActivityCache(keyPrefix, keySuffix, data) {
         try {
             localStorage.setItem(keyPrefix + keySuffix, JSON.stringify({ cachedAt: Date.now(), data }));
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+            console.warn('Activity cache write failed (quota or private mode?):', keyPrefix + keySuffix, e);
+        }
+    }
+
+    /** Merge new snapshot map into existing TTL cache entry so partial writes don’t wipe data. */
+    function mergeBattleStatsActivityCache(keyPrefix, keySuffix, ttlMs, newData) {
+        if (!newData || typeof newData !== 'object') return;
+        const prev = getBattleStatsActivityCache(keyPrefix, keySuffix, ttlMs);
+        const merged = Object.assign({}, prev || {}, newData);
+        setBattleStatsActivityCache(keyPrefix, keySuffix, merged);
+    }
+
+    /** Parse Torn v2 personalstats (timeplayed) — only return a number when the API clearly returned one. */
+    function extractTimeplayedFromPersonalstatsResponse(data) {
+        if (!data || data.personalstats == null) return null;
+        const ps = data.personalstats;
+        if (Array.isArray(ps) && ps.length > 0) {
+            const item = ps[0];
+            if (item && typeof item.value === 'number' && !isNaN(item.value)) return item.value;
+            if (item && typeof item.value === 'string' && item.value !== '') {
+                const n = parseInt(item.value, 10);
+                return !isNaN(n) ? n : null;
+            }
+        }
+        if (typeof ps === 'object' && !Array.isArray(ps) && ps.timeplayed != null) {
+            const v = ps.timeplayed;
+            if (typeof v === 'number' && !isNaN(v)) return v;
+            if (typeof v === 'string' && v !== '') {
+                const n = parseInt(v, 10);
+                return !isNaN(n) ? n : null;
+            }
+        }
+        return null;
+    }
+
+    /** Activity hours for a member: number (incl. 0) or null if unknown / incomplete fetch. */
+    function getActivityHoursForMember(activityHoursMap, memberID) {
+        if (memberID == null || memberID === '') return null;
+        const idStr = String(memberID);
+        const idNum = parseInt(memberID, 10);
+        let raw = activityHoursMap[memberID];
+        if (raw === undefined) raw = activityHoursMap[idStr];
+        if (raw === undefined && !isNaN(idNum)) raw = activityHoursMap[idNum];
+        if (raw === undefined || raw === null) return null;
+        if (typeof raw === 'number' && !isNaN(raw)) return raw;
+        return null;
+    }
+
+    function activityHoursSortValue(hours) {
+        if (hours == null || typeof hours !== 'number' || isNaN(hours)) return -Infinity;
+        return hours;
+    }
+
+    /**
+     * Best-effort Unix time when the player started on Torn (faction /members payload).
+     * Uses signed_up-style fields if present, else `age` in days (Torn often includes this).
+     * Do not use faction-join `joined` — that is not account age.
+     */
+    function getMemberAccountStartTimestamp(member) {
+        if (!member || typeof member !== 'object') return null;
+        const tryUnix = (val) => {
+            if (val == null || val === '') return null;
+            const n = typeof val === 'number' ? val : parseInt(String(val).replace(/[^\d]/g, ''), 10);
+            if (!isNaN(n) && n > 1e9 && n < 2e10) return Math.floor(n);
+            return null;
+        };
+        const raw = member.signed_up ?? member.sign_up ?? member.user_joined
+            ?? member.signedUp ?? member.signUp ?? member.userJoined
+            ?? member.signup;
+        const fromRaw = tryUnix(raw);
+        if (fromRaw != null) return fromRaw;
+        const basic = member.basic;
+        if (basic && typeof basic === 'object') {
+            const b = tryUnix(basic.signed_up ?? basic.sign_up ?? basic.user_joined ?? basic.signup);
+            if (b != null) return b;
+        }
+        const life = member.life;
+        if (life && typeof life === 'object') {
+            const l = tryUnix(life.created ?? life.created_at ?? life.started);
+            if (l != null) return l;
+        }
+        const age = member.age ?? basic?.age;
+        if (age != null && age !== '') {
+            const ageDays = parseInt(String(age).replace(/[^\d]/g, '') || '0', 10);
+            if (!isNaN(ageDays) && ageDays >= 0 && ageDays < 10000) {
+                return Math.floor(Date.now() / 1000) - ageDays * 86400;
+            }
+        }
+        return null;
+    }
+
+    /** v1 user/?selections=profile — fills account start when faction /members omits it. */
+    function extractAccountStartFromUserProfilePayload(data) {
+        if (!data || typeof data !== 'object') return null;
+        const profile = data.profile;
+        const bag = profile && typeof profile === 'object' ? Object.assign({}, data, profile) : data;
+        const tryUnix = (val) => {
+            if (val == null || val === '') return null;
+            const n = typeof val === 'number' ? val : parseInt(String(val).replace(/[^\d]/g, ''), 10);
+            if (!isNaN(n) && n > 1e9 && n < 2e10) return Math.floor(n);
+            return null;
+        };
+        const u = tryUnix(bag.signed_up ?? bag.sign_up ?? bag.user_joined ?? bag.signup);
+        if (u != null) return u;
+        const age = bag.age;
+        if (age != null && age !== '') {
+            const ageDays = parseInt(String(age).replace(/[^\d]/g, '') || '0', 10);
+            if (!isNaN(ageDays) && ageDays >= 0 && ageDays < 10000) {
+                return Math.floor(Date.now() / 1000) - ageDays * 86400;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Faction v2 /members often omits signup; fetch v1 profile for members missing accountStartTimestamp
+     * so effective past = account creation (players newer than the activity window).
+     */
+    async function enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, textProgress = null) {
+        const need = memberIDs
+            .map(id => String(id))
+            .filter(id => {
+                const m = membersObject[id];
+                return m && (m.accountStartTimestamp == null || m.accountStartTimestamp === '' || isNaN(Number(m.accountStartTimestamp)));
+            });
+        if (need.length === 0) return;
+        // Text-only progress (call counts) — do NOT pass progressPercentage / progressFill so the bar only fills once (activity phase).
+        const requests = need.map(id => ({
+            playerId: id,
+            url: `https://api.torn.com/user/${encodeURIComponent(id)}?selections=profile&key=${encodeURIComponent(apiKey)}`
+        }));
+        await window.batchApiCallsWithRateLimit(requests, {
+            progressMessage: textProgress?.progressMessage,
+            progressDetails: textProgress?.progressDetails,
+            onSuccess: (data, request) => {
+                const id = String(request.playerId);
+                const ts = extractAccountStartFromUserProfilePayload(data);
+                if (ts == null || !membersObject[id]) return;
+                membersObject[id].accountStartTimestamp = ts;
+            },
+            onError: (err, request) => {
+                console.warn('Profile lookup for account start failed:', request?.playerId, err);
+            }
+        });
+        const bs = window.battleStatsData;
+        if (bs && Array.isArray(bs.membersArray)) {
+            bs.membersArray.forEach(m => {
+                const id = String(m.id);
+                const ts = membersObject[id]?.accountStartTimestamp;
+                if (ts != null && !isNaN(ts)) {
+                    m.signed_up = ts;
+                }
+            });
+        }
+        // Persist signups on the roster we’re viewing so refresh / next load skips bulk profile calls.
+        if (bs && bs.factionID != null && membersObject === bs.membersObject) {
+            try {
+                setBattleStatsMainCache(bs.factionID, {
+                    tornData: bs.tornData,
+                    ffData: bs.ffData,
+                    factionName: bs.factionName,
+                    membersArray: bs.membersArray,
+                    memberIDs: bs.memberIDs,
+                    membersObject: bs.membersObject,
+                    ffScores: bs.ffScores,
+                    battleStatsEstimates: bs.battleStatsEstimates,
+                    lastUpdated: bs.lastUpdated
+                });
+            } catch (e) {
+                console.warn('Battle stats: could not persist member signups to main cache', e);
+            }
+        }
+    }
+
+    /** Past snapshot time for timeplayed: not before the player existed on Torn. */
+    function getEffectiveActivityPastTimestamp(nominalPastTs, member) {
+        const n = Math.floor(Number(nominalPastTs));
+        if (isNaN(n)) return nominalPastTs;
+        const start = member && member.accountStartTimestamp != null ? Number(member.accountStartTimestamp) : null;
+        if (start != null && !isNaN(start) && start > n) {
+            return Math.floor(start);
+        }
+        return n;
+    }
+
+    /** Read past activity cache entry: supports legacy plain number (nominal past only) or { t, v }. */
+    function parsePastCacheEntry(entry, nominalPastTs, effectivePastTs) {
+        if (entry == null) return null;
+        if (typeof entry === 'number' && !isNaN(entry)) {
+            const v = coerceCachedTimeplayedValue(entry);
+            if (v == null) return null;
+            if (effectivePastTs === nominalPastTs) return { t: nominalPastTs, v };
+            return null;
+        }
+        if (typeof entry === 'object' && entry.t != null && entry.v != null) {
+            const t = Math.floor(Number(entry.t));
+            const v = coerceCachedTimeplayedValue(entry.v);
+            const eff = Math.floor(Number(effectivePastTs));
+            if (!isNaN(t) && v != null && !isNaN(eff)) {
+                if (t === eff) return { t: eff, v };
+                // Nominal "past" unix time moves ~1s/sec with Date.now(); repeat Check Activity seconds apart must still hit cache.
+                // Keep slack modest: pastTimestampDay buckets a full UTC day, so huge slack would wrongly reuse snapshots hours apart.
+                const PAST_TS_SLACK_SEC = 3600; // 1h — same session / quick repeats; longer gap refetches
+                if (Math.abs(t - eff) <= PAST_TS_SLACK_SEC) return { t: eff, v };
+            }
+        }
+        return null;
+    }
+
+    /** Map v2 faction /members array to membersObject (includes last_action for Last online — same payload as War Dashboard). */
+    function buildBattleStatsMembersObject(membersArray) {
+        const obj = {};
+        if (!Array.isArray(membersArray)) return obj;
+        membersArray.forEach(member => {
+            const idStr = String(member.id);
+            const la = member.last_action || {};
+            const ts = la.timestamp != null ? Number(la.timestamp) : null;
+            const accountStart = getMemberAccountStartTimestamp(member);
+            obj[idStr] = {
+                name: member.name,
+                level: member.level != null ? member.level : 'Unknown',
+                lastActionRelative: (la.relative != null && String(la.relative).trim()) || '',
+                lastActionTimestamp: ts != null && !isNaN(ts) ? ts : null,
+                lastActionStatus: (la.status != null && String(la.status).trim()) || '',
+                accountStartTimestamp: accountStart != null && !isNaN(accountStart) ? accountStart : null
+            };
+        });
+        return obj;
+    }
+
+    /** Build v2 personalstats requests for any member missing a valid numeric timeplayed at now and/or effective past timestamp. */
+    function buildMissingTimeplayedRequests(memberIDs, activityStore, nowTimestamp, nominalPastTimestamp, apiKey, membersObject) {
+        const out = [];
+        memberIDs.forEach(memberID => {
+            const id = String(memberID);
+            const member = membersObject[id] || membersObject[memberID];
+            const pastTs = getEffectiveActivityPastTimestamp(nominalPastTimestamp, member);
+            const hasCurrent = hasActivityTimeplayedSnapshot(activityStore, id, nowTimestamp);
+            const hasPast = hasActivityTimeplayedSnapshot(activityStore, id, pastTs);
+            if (!hasCurrent) {
+                out.push({
+                    playerId: id,
+                    timestamp: nowTimestamp,
+                    url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+                });
+            }
+            if (!hasPast) {
+                out.push({
+                    playerId: id,
+                    timestamp: pastTs,
+                    url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${pastTs}&key=${apiKey}`
+                });
+            }
+        });
+        return out;
+    }
+
+    /** Activity window: exact day count, stable cache key segment, human-readable chart/title label. */
+    function buildBattleStatsActivityPeriodConfig(radioValue, customDaysRaw) {
+        const v = String(radioValue || '1').trim();
+        if (v === 'custom') {
+            const d = Math.min(365, Math.max(1, parseInt(String(customDaysRaw ?? '7').trim(), 10) || 7));
+            return { periodDays: d, cacheKeySegment: `d${d}`, labelTitle: `Last ${d} Days` };
+        }
+        const m = parseInt(v, 10);
+        if (m === 1) return { periodDays: 30, cacheKeySegment: '1', labelTitle: 'Last Month' };
+        return { periodDays: 90, cacheKeySegment: '3', labelTitle: 'Last 3 Months' };
+    }
+
+    function getBattleStatsActivityPeriodConfigFromUI() {
+        const radio = document.querySelector('input[name="activityPeriod"]:checked');
+        const val = radio ? radio.value : '1';
+        const customEl = document.getElementById('activityPeriodCustomDays');
+        return buildBattleStatsActivityPeriodConfig(val, customEl ? customEl.value : '7');
+    }
+
+    function wireBattleStatsActivityPeriodRadios(container) {
+        const root = container || document;
+        const customInput = root.querySelector('#activityPeriodCustomDays');
+        const sync = () => {
+            const customRadio = root.querySelector('input[name="activityPeriod"][value="custom"]');
+            const on = customRadio && customRadio.checked;
+            if (customInput) {
+                customInput.disabled = !on;
+                customInput.style.opacity = on ? '1' : '0.55';
+            }
+        };
+        root.querySelectorAll('input[name="activityPeriod"]').forEach(r => {
+            r.addEventListener('change', sync);
+        });
+        sync();
+    }
+
+    /** periodConfig for charts/cache from window.currentActivityData (supports legacy periodMonths). */
+    function resolvePeriodConfigFromActivityContext(ctx) {
+        if (!ctx) return buildBattleStatsActivityPeriodConfig('3');
+        if (ctx.periodConfig && ctx.periodConfig.cacheKeySegment && ctx.periodConfig.labelTitle) {
+            return ctx.periodConfig;
+        }
+        const ts = ctx.activityTimestamps;
+        if (ts && ts.periodConfig && ts.periodConfig.cacheKeySegment) {
+            return ts.periodConfig;
+        }
+        const pm = ts?.periodMonths ?? ctx.periodMonths;
+        if (pm === 1) return buildBattleStatsActivityPeriodConfig('1');
+        return buildBattleStatsActivityPeriodConfig('3');
+    }
+
+    const BATTLE_STATS_COPY_BTN_STYLE = 'background-color: rgba(42, 42, 42, 0.9); color: #ccc; border: 1px solid #555; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; opacity: 0.7; transition: opacity 0.2s;';
+
+    /**
+     * Copy a battle-stats table (current DOM order). Excludes listed data-column keys (default FF Score).
+     */
+    async function battleStatsCopyTableToClipboard(copyBtn, tableEl, options = {}) {
+        const factionTitle = options.factionTitle != null ? String(options.factionTitle) : 'Faction';
+        const excludeColumns = options.excludeColumns !== undefined ? options.excludeColumns : ['ffscore'];
+        const excludeSet = new Set(excludeColumns);
+        if (!tableEl) {
+            alert('Table not found');
+            return;
+        }
+        const showCopied = () => {
+            const originalText = copyBtn.textContent;
+            const originalBgColor = copyBtn.style.backgroundColor;
+            copyBtn.textContent = '✓ Copied!';
+            copyBtn.style.backgroundColor = 'rgba(76, 175, 80, 0.9)';
+            copyBtn.style.opacity = '1';
+            setTimeout(() => {
+                copyBtn.textContent = originalText;
+                copyBtn.style.backgroundColor = originalBgColor;
+                copyBtn.style.opacity = '0.7';
+            }, 2000);
+        };
+        try {
+            const tableClone = tableEl.cloneNode(true);
+            tableClone.querySelectorAll('thead th[data-column], tbody td[data-column]').forEach(cell => {
+                const col = cell.getAttribute('data-column');
+                if (col && excludeSet.has(col)) cell.remove();
+            });
+            tableClone.querySelectorAll('thead th').forEach(th => {
+                const indicator = th.querySelector('.sort-indicator');
+                if (indicator) indicator.remove();
+            });
+            const htmlTable = `
+                            <div>
+                                <span style="font-size: 18px;"><strong>${factionTitle}:</strong></span>
+                            </div>
+                            <div>&nbsp;</div>
+                            ${tableClone.outerHTML}
+                        `;
+
+            const headerCells = Array.from(tableEl.querySelectorAll('thead th[data-column]'))
+                .filter(th => !excludeSet.has(th.getAttribute('data-column')));
+            const headers = headerCells.map(th => th.textContent.replace(/[↑↓\s]+$/, '').replace(/\s+/g, ' ').trim());
+
+            const rows = Array.from(tableEl.querySelectorAll('tbody tr'));
+            const rowData = rows.map(row => {
+                return Array.from(row.querySelectorAll('td[data-column]'))
+                    .filter(td => !excludeSet.has(td.getAttribute('data-column')))
+                    .map((cell) => {
+                        let text = cell.textContent.trim();
+                        const link = cell.querySelector('a');
+                        if (link) text = link.textContent.trim();
+                        return text;
+                    });
+            });
+
+            let textTable = `${factionTitle}\n\n`;
+            textTable += headers.join('\t') + '\n';
+            rowData.forEach(row => {
+                textTable += row.join('\t') + '\n';
+            });
+
+            const clipboardItem = new ClipboardItem({
+                'text/html': new Blob([htmlTable], { type: 'text/html' }),
+                'text/plain': new Blob([textTable], { type: 'text/plain' })
+            });
+            await navigator.clipboard.write([clipboardItem]);
+            showCopied();
+        } catch (error) {
+            console.error('Error copying table:', error);
+            try {
+                const headerCells = Array.from(tableEl.querySelectorAll('thead th[data-column]'))
+                    .filter(th => !excludeSet.has(th.getAttribute('data-column')));
+                const headers = headerCells.map(th => th.textContent.replace(/[↑↓\s]+$/, '').replace(/\s+/g, ' ').trim());
+                const rows = Array.from(tableEl.querySelectorAll('tbody tr'));
+                const rowData = rows.map(row => {
+                    return Array.from(row.querySelectorAll('td[data-column]'))
+                        .filter(td => !excludeSet.has(td.getAttribute('data-column')))
+                        .map((cell) => {
+                            let text = cell.textContent.trim();
+                            const link = cell.querySelector('a');
+                            if (link) text = link.textContent.trim();
+                            return text;
+                        });
+                });
+                let textTable = `${factionTitle}\n\n`;
+                textTable += headers.join('\t') + '\n';
+                rowData.forEach(row => {
+                    textTable += row.join('\t') + '\n';
+                });
+                await navigator.clipboard.writeText(textTable);
+                showCopied();
+            } catch (fallbackError) {
+                console.error('Fallback copy also failed:', fallbackError);
+                alert('Failed to copy table. Please try again.');
+            }
+        }
     }
 
     const fetchInChunks = async (url, items, chunkSize) => {
@@ -3852,9 +4295,25 @@ document.addEventListener('DOMContentLoaded', () => {
             if (cachedMain) {
                 tornData = cachedMain.tornData;
                 factionName = cachedMain.factionName;
-                membersArray = cachedMain.membersArray;
-                memberIDs = cachedMain.memberIDs;
-                membersObject = cachedMain.membersObject;
+                membersArray = Array.isArray(cachedMain.membersArray) ? cachedMain.membersArray : [];
+                memberIDs = Array.isArray(cachedMain.memberIDs) ? cachedMain.memberIDs : [];
+                if (membersArray.length) {
+                    membersObject = buildBattleStatsMembersObject(membersArray);
+                } else if (cachedMain.membersObject && typeof cachedMain.membersObject === 'object' && Object.keys(cachedMain.membersObject).length) {
+                    membersObject = { ...cachedMain.membersObject };
+                    if (!memberIDs.length) {
+                        memberIDs = Object.keys(membersObject);
+                    }
+                } else {
+                    membersObject = {};
+                }
+                if (!membersArray.length && tornData?.factionMembers?.members?.length) {
+                    membersArray = tornData.factionMembers.members;
+                    membersObject = buildBattleStatsMembersObject(membersArray);
+                    if (!memberIDs.length) {
+                        memberIDs = membersArray.map(m => String(m.id));
+                    }
+                }
                 ffScores = cachedMain.ffScores;
                 battleStatsEstimates = cachedMain.battleStatsEstimates;
                 lastUpdated = cachedMain.lastUpdated;
@@ -3913,13 +4372,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 membersArray = tornData.factionMembers?.members || [];
                 memberIDs = membersArray.map(member => member.id.toString());
-                membersObject = {};
-                membersArray.forEach(member => {
-                    membersObject[member.id] = {
-                        name: member.name,
-                        level: member.level || 'Unknown'
-                    };
-                });
+                membersObject = buildBattleStatsMembersObject(membersArray);
 
                 console.log(`Successfully fetched ${memberIDs.length} members.`);
 
@@ -3952,6 +4405,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     battleStatsEstimates,
                     lastUpdated
                 });
+            }
+
+            // Normalise IDs for lookups (do not filter the list — that emptied the table when cache was partial)
+            memberIDs = (memberIDs || []).map(id => String(id));
+            if (memberIDs.length === 0 && Array.isArray(membersArray) && membersArray.length) {
+                memberIDs = membersArray.map(m => String(m.id));
+            }
+            if (membersArray && membersArray.length && (!membersObject || Object.keys(membersObject).length === 0)) {
+                membersObject = buildBattleStatsMembersObject(membersArray);
             }
 
             const myTotalStats = tornData?.userStats?.personalstats?.totalstats;
@@ -3992,7 +4454,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                         ` : ''}
                     </div>
-                    <div style="display: flex; align-items: center; margin-left: 10px; gap: 12px; background-color: var(--secondary-color); padding: 8px 15px; border-radius: 5px; ${!hasVipLevel1 ? 'opacity: 0.6; pointer-events: none;' : ''}">
+                    <div style="display: flex; align-items: center; flex-wrap: wrap; margin-left: 10px; gap: 10px; background-color: var(--secondary-color); padding: 8px 15px; border-radius: 5px; ${!hasVipLevel1 ? 'opacity: 0.6; pointer-events: none;' : ''}">
                         <span style="color: var(--accent-color); font-weight: bold; font-size: 14px; white-space: nowrap;">Activity Period:</span>
                         <label class="activity-period-label" style="color: var(--text-color); display: flex; align-items: center; cursor: pointer; padding: 6px 12px; border-radius: 4px; transition: all 0.2s; white-space: nowrap;" onmouseover="this.style.backgroundColor='rgba(255, 215, 0, 0.1)'" onmouseout="this.style.backgroundColor='transparent'">
                             <input type="radio" name="activityPeriod" value="1" checked style="margin-right: 6px; cursor: pointer; accent-color: var(--accent-color); width: 16px; height: 16px;" ${!hasVipLevel1 ? 'disabled' : ''}>
@@ -4002,47 +4464,66 @@ document.addEventListener('DOMContentLoaded', () => {
                             <input type="radio" name="activityPeriod" value="3" style="margin-right: 6px; cursor: pointer; accent-color: var(--accent-color); width: 16px; height: 16px;" ${!hasVipLevel1 ? 'disabled' : ''}>
                             <span style="font-size: 14px;">3 Months</span>
                         </label>
+                        <label class="activity-period-label" style="color: var(--text-color); display: flex; align-items: center; cursor: pointer; padding: 6px 12px; border-radius: 4px; transition: all 0.2s; flex-wrap: wrap; gap: 6px;" onmouseover="this.style.backgroundColor='rgba(255, 215, 0, 0.1)'" onmouseout="this.style.backgroundColor='transparent'">
+                            <span style="display: inline-flex; align-items: center;">
+                                <input type="radio" name="activityPeriod" value="custom" style="margin-right: 6px; cursor: pointer; accent-color: var(--accent-color); width: 16px; height: 16px;" ${!hasVipLevel1 ? 'disabled' : ''}>
+                                <span style="font-size: 14px;">Custom</span>
+                            </span>
+                            <span style="display: inline-flex; align-items: center; gap: 6px;">
+                                <input type="number" id="activityPeriodCustomDays" min="1" max="365" value="7" title="Number of days to compare (1–365). Select Custom to enable." disabled style="width: 56px; padding: 4px 6px; border-radius: 4px; border: 1px solid #555; background: var(--primary-color); color: var(--text-color); font-size: 13px; opacity: 0.55;">
+                                <span style="font-size: 13px; color: var(--text-color);">days</span>
+                            </span>
+                        </label>
                     </div>
                 </div>
                 <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName}</h2>
                 
                 <!-- Table Wrapper (SCROLLABLE) -->
                 <div style="position: relative; margin-bottom: 5px;">
-                    <button id="copyTableBtn" class="btn" style="background-color: rgba(42, 42, 42, 0.9); color: #ccc; border: 1px solid #555; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Copy table to clipboard">
+                    <button type="button" id="copyTableBtn" class="btn" style="${BATTLE_STATS_COPY_BTN_STYLE}" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Copy table to clipboard">
                         📋 Copy
                     </button>
                 </div>
                 <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
-                    <table id="membersTable" style="min-width: 600px; font-size: 13px;">
+                    <table id="membersTable" style="min-width: 760px; font-size: 13px;">
                         <thead>
                             <tr>
                                 <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left; user-select: text;">Member <span class="sort-indicator"></span></th>
                                 <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left; user-select: text;">Level <span class="sort-indicator"></span></th>
                                 <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">Estimated Stats <span class="sort-indicator"></span></th>
                                 <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left; user-select: text;">FF Score <span class="sort-indicator"></span></th>
-                                <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">Last Updated <span class="sort-indicator"></span></th>
+                                <th data-column="lastonline" style="min-width: 130px; cursor: pointer; text-align: left; user-select: text;">Last online <span class="sort-indicator"></span></th>
+                                <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">FFS Last Updated <span class="sort-indicator"></span></th>
                             </tr>
                         </thead>
                         <tbody>`;
             for (const memberID of memberIDs) {
-                const member = membersObject[memberID];
-                const fairFightScore = ffScores[memberID] || 'Unknown';
-                const lastUpdatedTimestamp = lastUpdated[memberID];
+                const id = String(memberID);
+                const member = membersObject[id] || membersObject[memberID];
+                if (!member) {
+                    console.warn('Battle stats: skip row, no member object for id', id);
+                    continue;
+                }
+                const fairFightScore = ffScores[id] || ffScores[memberID] || 'Unknown';
+                const lastUpdatedTimestamp = lastUpdated[id] ?? lastUpdated[memberID];
 
                 // Use FF Scouter's precise battle stats estimate instead of calculating
-                const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
+                const rawEstimatedStat = battleStatsEstimates[id] ?? battleStatsEstimates[memberID] ?? 'N/A';
                 const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
                 
                 const lastUpdatedDate = lastUpdatedTimestamp 
                     ? formatRelativeTime(lastUpdatedTimestamp * 1000) 
                     : 'N/A';
+                const lastOnlineDisplay = formatMemberLastOnlineDisplay(member);
+                const lastOnlineSort = getMemberLastOnlineSortValue(member);
 
                 tableHtml += `
                     <tr>
-                        <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${memberID}]</a></td>
+                        <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${id}]</a></td>
                         <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
                         <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
                         <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
+                        <td data-column="lastonline" data-value="${lastOnlineSort}">${lastOnlineDisplay}</td>
                         <td data-column="lastupdated" data-value="${lastUpdatedTimestamp || 0}">${lastUpdatedDate}</td>
                     </tr>`;
             }
@@ -4052,6 +4533,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>`;
             resultsContainer.innerHTML = tableHtml;
             resultsContainer.style.display = 'block';
+            wireBattleStatsActivityPeriodRadios(resultsContainer);
 
             // Add sorting functionality (matching consumption tracker style)
             const table = document.getElementById('membersTable');
@@ -4127,10 +4609,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
 
-            // Store data globally for activity comparison
+            // Store data globally for activity comparison + enrich persist (needs full main-cache shape)
             window.battleStatsData = {
                 memberIDs,
+                membersArray,
                 membersObject,
+                tornData,
+                ffData,
                 ffScores,
                 battleStatsEstimates,
                 lastUpdated,
@@ -4151,10 +4636,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!newBtn.disabled) {
                     // Button is enabled (VIP Level 1+)
                     newBtn.addEventListener('click', async () => {
-                        // Get selected period
-                        const periodRadio = document.querySelector('input[name="activityPeriod"]:checked');
-                        const periodMonths = periodRadio ? parseInt(periodRadio.value) : 3;
-                        await handleActivityComparison(memberIDs, membersObject, apiKey, factionName, factionID, periodMonths);
+                        const periodConfig = getBattleStatsActivityPeriodConfigFromUI();
+                        await handleActivityComparison(memberIDs, membersObject, apiKey, factionName, factionID, periodConfig);
                     });
                 } else {
                     // Button is disabled (needs VIP Level 1+)
@@ -4168,155 +4651,26 @@ document.addEventListener('DOMContentLoaded', () => {
             const copyTableBtn = document.getElementById('copyTableBtn');
             if (copyTableBtn) {
                 copyTableBtn.addEventListener('click', async () => {
-                    try {
-                        // Get the table element (respects current sort order)
-                        const table = document.getElementById('membersTable');
-                        if (!table) {
-                            alert('Table not found');
-                            return;
-                        }
-
-                        // Clone the table to preserve structure
-                        const tableClone = table.cloneNode(true);
-                        
-                        // Remove FF Score column (data-column="ffscore")
-                        const ffScoreHeaders = tableClone.querySelectorAll('thead th[data-column="ffscore"]');
-                        const ffScoreCells = tableClone.querySelectorAll('tbody td[data-column="ffscore"]');
-                        ffScoreHeaders.forEach(th => th.remove());
-                        ffScoreCells.forEach(td => td.remove());
-                        
-                        // Remove sort indicators from headers
-                        const headerCells = tableClone.querySelectorAll('thead th');
-                        headerCells.forEach(th => {
-                            const indicator = th.querySelector('.sort-indicator');
-                            if (indicator) {
-                                indicator.remove();
-                            }
-                        });
-
-                        // Create HTML table with faction name (matching game's format)
-                        const htmlTable = `
-                            <div>
-                                <span style="font-size: 18px;"><strong>${factionName}:</strong></span>
-                            </div>
-                            <div>&nbsp;</div>
-                            ${tableClone.outerHTML}
-                        `;
-
-                        // Create plain text fallback (excluding FF Score column)
-                        const headerRow = table.querySelector('thead tr');
-                        const headers = Array.from(headerRow.querySelectorAll('th[data-column]'))
-                            .filter(th => th.getAttribute('data-column') !== 'ffscore')
-                            .map(th => {
-                                const text = th.textContent.replace(/[↑↓\s]+$/, '').trim();
-                                return text;
-                            });
-
-                        const rows = Array.from(table.querySelectorAll('tbody tr'));
-                        const rowData = rows.map(row => {
-                            return Array.from(row.querySelectorAll('td'))
-                                .filter(td => td.getAttribute('data-column') !== 'ffscore')
-                                .map((cell) => {
-                                    let text = cell.textContent.trim();
-                                    const link = cell.querySelector('a');
-                                    if (link) {
-                                        text = link.textContent.trim();
-                                    }
-                                    return text;
-                                });
-                        });
-
-                        let textTable = `${factionName}\n\n`;
-                        textTable += headers.join('\t') + '\n';
-                        rowData.forEach(row => {
-                            textTable += row.join('\t') + '\n';
-                        });
-
-                        // Copy both HTML and plain text formats
-                        const clipboardItem = new ClipboardItem({
-                            'text/html': new Blob([htmlTable], { type: 'text/html' }),
-                            'text/plain': new Blob([textTable], { type: 'text/plain' })
-                        });
-
-                        await navigator.clipboard.write([clipboardItem]);
-                        
-                        // Show feedback
-                        const originalText = copyTableBtn.textContent;
-                        const originalBgColor = copyTableBtn.style.backgroundColor;
-                        copyTableBtn.textContent = '✓ Copied!';
-                        copyTableBtn.style.backgroundColor = 'rgba(76, 175, 80, 0.9)';
-                        copyTableBtn.style.opacity = '1';
-                        setTimeout(() => {
-                            copyTableBtn.textContent = originalText;
-                            copyTableBtn.style.backgroundColor = originalBgColor;
-                            copyTableBtn.style.opacity = '0.7';
-                        }, 2000);
-                    } catch (error) {
-                        console.error('Error copying table:', error);
-                        // Fallback to plain text if ClipboardItem is not supported
-                        try {
-                            const table = document.getElementById('membersTable');
-                            const headerRow = table.querySelector('thead tr');
-                            const headers = Array.from(headerRow.querySelectorAll('th[data-column]'))
-                                .filter(th => th.getAttribute('data-column') !== 'ffscore')
-                                .map(th => {
-                                    const text = th.textContent.replace(/[↑↓\s]+$/, '').trim();
-                                    return text;
-                                });
-                            const rows = Array.from(table.querySelectorAll('tbody tr'));
-                            const rowData = rows.map(row => {
-                                return Array.from(row.querySelectorAll('td'))
-                                    .filter(td => td.getAttribute('data-column') !== 'ffscore')
-                                    .map((cell) => {
-                                        let text = cell.textContent.trim();
-                                        const link = cell.querySelector('a');
-                                        if (link) {
-                                            text = link.textContent.trim();
-                                        }
-                                        return text;
-                                    });
-                            });
-                            let textTable = `${factionName}\n\n`;
-                            textTable += headers.join('\t') + '\n';
-                            rowData.forEach(row => {
-                                textTable += row.join('\t') + '\n';
-                            });
-                            await navigator.clipboard.writeText(textTable);
-                            
-                            // Show feedback
-                            const originalText = copyTableBtn.textContent;
-                            const originalBgColor = copyTableBtn.style.backgroundColor;
-                            copyTableBtn.textContent = '✓ Copied!';
-                            copyTableBtn.style.backgroundColor = 'rgba(76, 175, 80, 0.9)';
-                            copyTableBtn.style.opacity = '1';
-                            setTimeout(() => {
-                                copyTableBtn.textContent = originalText;
-                                copyTableBtn.style.backgroundColor = originalBgColor;
-                                copyTableBtn.style.opacity = '0.7';
-                            }, 2000);
-                        } catch (fallbackError) {
-                            console.error('Fallback copy also failed:', fallbackError);
-                            alert('Failed to copy table. Please try again.');
-                        }
-                    }
+                    const table = document.getElementById('membersTable');
+                    await battleStatsCopyTableToClipboard(copyTableBtn, table, { factionTitle: factionName, excludeColumns: ['ffscore'] });
                 });
             }
 
             document.getElementById('exportCsvBtn').addEventListener('click', () => {
                 // 1. Create a list of members with all their data
                 const memberExportData = memberIDs.map(memberID => {
-                    const member = membersObject[memberID];
-                    const fairFightScore = ffScores[memberID] || 'Unknown';
-                    // Use FF Scouter's precise battle stats estimate instead of calculating
-                    const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
-                    
+                    const id = String(memberID);
+                    const member = membersObject[id] || membersObject[memberID];
+                    if (!member) return null;
+                    const fairFightScore = ffScores[id] || ffScores[memberID] || 'Unknown';
+                    const rawEstimatedStat = battleStatsEstimates[id] ?? battleStatsEstimates[memberID] ?? 'N/A';
                     return {
-                        memberID,
+                        memberID: id,
                         name: member.name,
                         fairFightScore,
                         rawEstimatedStat
                     };
-                });
+                }).filter(Boolean);
 
                 // 2. Sort the list by estimated stats, descending.
                 memberExportData.sort((a, b) => {
@@ -4388,7 +4742,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     
     // Function to fetch and compare activity data
-    const handleActivityComparison = async (memberIDs, membersObject, apiKey, factionName, factionID, periodMonths = 3) => {
+    const handleActivityComparison = async (memberIDs, membersObject, apiKey, factionName, factionID, periodConfigIn) => {
+        const periodConfig = periodConfigIn && periodConfigIn.periodDays != null && periodConfigIn.cacheKeySegment
+            ? periodConfigIn
+            : buildBattleStatsActivityPeriodConfig('3');
         // Prevent concurrent execution
         if (window.activityComparisonInProgress) {
             return;
@@ -4418,12 +4775,20 @@ document.addEventListener('DOMContentLoaded', () => {
             if (progressMessage) progressMessage.textContent = 'Fetching activity data...';
             if (progressPercentage) progressPercentage.textContent = '0%';
             if (progressFill) progressFill.style.width = '0%';
-            if (progressDetails) progressDetails.textContent = 'Initializing...';
+            if (progressDetails) progressDetails.textContent = 'Preparing…';
         }
         
         try {
-            // Calculate timestamps based on selected period
-            const periodDays = periodMonths * 30;
+            // v2 faction /members often omits signup — resolve so "younger than period" uses real account start
+            await enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, {
+                progressMessage,
+                progressDetails
+            });
+
+            // Calculate timestamps based on selected period (exact days for custom)
+            const periodDays = periodConfig.periodDays;
+            const cacheKeySegment = periodConfig.cacheKeySegment;
+            const fid = normalizeBattleStatsFactionId(factionID);
             const nowTimestamp = Math.floor(Date.now() / 1000);
             const pastTimestamp = Math.floor((Date.now() - (periodDays * 24 * 60 * 60 * 1000)) / 1000);
             const pastTimestampDay = Math.floor(pastTimestamp / 86400) * 86400; // same day = same cache key
@@ -4432,83 +4797,131 @@ document.addEventListener('DOMContentLoaded', () => {
             // Load from local cache (1 week for past, 1 day for now)
             const pastCache = getBattleStatsActivityCache(
                 BATTLE_STATS_ACTIVITY_PAST_PREFIX,
-                `${factionID}_${periodMonths}_${pastTimestampDay}`,
+                `${fid}_${cacheKeySegment}_${pastTimestampDay}`,
                 BATTLE_STATS_ACTIVITY_PAST_TTL_MS
             );
             const nowCache = getBattleStatsActivityCache(
                 BATTLE_STATS_ACTIVITY_NOW_PREFIX,
-                `${factionID}_${dateKey}`,
+                `${fid}_${dateKey}`,
                 BATTLE_STATS_ACTIVITY_NOW_TTL_MS
             );
 
             const activityData = {};
             memberIDs.forEach(memberID => {
-                activityData[memberID] = {};
-                if (pastCache && pastCache[memberID] !== undefined) {
-                    activityData[memberID][pastTimestamp] = pastCache[memberID];
+                const id = String(memberID);
+                const member = membersObject[id] || membersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                activityData[id] = {};
+                if (pastCache) {
+                    const rawPast = pastCache[id] !== undefined ? pastCache[id] : pastCache[memberID];
+                    const parsedPast = parsePastCacheEntry(rawPast, pastTimestamp, pastEff);
+                    if (parsedPast) {
+                        activityData[id][parsedPast.t] = parsedPast.v;
+                    }
                 }
-                if (nowCache && nowCache[memberID] !== undefined) {
-                    activityData[memberID][nowTimestamp] = nowCache[memberID];
+                const nowVal = coerceCachedTimeplayedValue(nowCache?.[id] ?? nowCache?.[memberID]);
+                if (nowVal != null) {
+                    activityData[id][nowTimestamp] = nowVal;
                 }
             });
 
-            // Only request (playerId, timestamp) pairs we don't have
+            // Only request (playerId, timestamp) pairs we don't have (past uses per-member effective time if account is younger than the period)
             const activityRequests = [];
             memberIDs.forEach(memberID => {
-                if (activityData[memberID][nowTimestamp] === undefined) {
+                const id = String(memberID);
+                const member = membersObject[id] || membersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                if (!hasActivityTimeplayedSnapshot(activityData, id, nowTimestamp)) {
                     activityRequests.push({
-                        playerId: memberID,
+                        playerId: id,
                         timestamp: nowTimestamp,
-                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+                        url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
                     });
                 }
-                if (activityData[memberID][pastTimestamp] === undefined) {
+                if (!hasActivityTimeplayedSnapshot(activityData, id, pastEff)) {
                     activityRequests.push({
-                        playerId: memberID,
-                        timestamp: pastTimestamp,
-                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
+                        playerId: id,
+                        timestamp: pastEff,
+                        url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${pastEff}&key=${apiKey}`
                     });
                 }
             });
+
+            const activityFetchBatchOptions = {
+                progressMessage,
+                progressDetails,
+                progressPercentage,
+                progressFill,
+                onSuccess: (data, request) => {
+                    const timeplayed = extractTimeplayedFromPersonalstatsResponse(data);
+                    const pid = String(request.playerId);
+                    if (timeplayed === null) {
+                        console.warn(`Activity: could not parse timeplayed for player ${pid} at ts ${request.timestamp}`, data);
+                        return;
+                    }
+                    if (!activityData[pid]) {
+                        activityData[pid] = {};
+                    }
+                    activityData[pid][request.timestamp] = timeplayed;
+                },
+                onError: (error, request) => {
+                    console.error(`Error fetching activity for player ${request.playerId} at timestamp ${request.timestamp}:`, error);
+                }
+            };
 
             if (activityRequests.length > 0) {
                 if (progressDetails) progressDetails.textContent = activityRequests.length < memberIDs.length * 2
                     ? `Fetching activity... (${activityRequests.length} of ${memberIDs.length * 2} from API, rest from cache)`
                     : `Fetching activity data for ${memberIDs.length} members...`;
-                await window.batchApiCallsWithRateLimit(activityRequests, {
-                    progressMessage,
-                    progressDetails,
-                    progressPercentage,
-                    progressFill,
-                    onSuccess: (data, request) => {
-                        const timeplayed = data.personalstats?.[0]?.value || 0;
-                        if (!activityData[request.playerId]) {
-                            activityData[request.playerId] = {};
-                        }
-                        activityData[request.playerId][request.timestamp] = timeplayed;
-                    },
-                    onError: (error, request) => {
-                        console.error(`Error fetching activity for player ${request.playerId} at timestamp ${request.timestamp}:`, error);
-                    }
-                });
+                await window.batchApiCallsWithRateLimit(activityRequests, activityFetchBatchOptions);
+            }
+
+            // Re-fetch only missing snapshots (failed API calls, parse errors, etc.) — a few extra passes with backoff.
+            const totalActivityPasses = 1 + BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS;
+            for (let retryRound = 0; retryRound < BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS; retryRound++) {
+                const retryRequests = buildMissingTimeplayedRequests(memberIDs, activityData, nowTimestamp, pastTimestamp, apiKey, membersObject);
+                if (retryRequests.length === 0) break;
+                if (progressDetails) {
+                    progressDetails.textContent = `Retrying ${retryRequests.length} missing snapshot(s) (pass ${retryRound + 2} of ${totalActivityPasses})...`;
+                }
+                await sleep(BATTLE_STATS_ACTIVITY_RETRY_BASE_DELAY_MS + retryRound * 1500);
+                await window.batchApiCallsWithRateLimit(retryRequests, activityFetchBatchOptions);
+            }
+
+            const stillMissingCount = buildMissingTimeplayedRequests(memberIDs, activityData, nowTimestamp, pastTimestamp, apiKey, membersObject).length;
+            if (stillMissingCount > 0) {
+                console.warn(`Activity: after ${totalActivityPasses} pass(es), ${stillMissingCount} snapshot(s) still missing — those members show "-" until you run Check Activity again.`);
             }
 
             // Persist to local cache for next time (past: 1 week, now: 1 day)
             const pastDataToSave = {};
             const nowDataToSave = {};
             memberIDs.forEach(memberID => {
-                if (activityData[memberID][pastTimestamp] !== undefined) {
-                    pastDataToSave[memberID] = activityData[memberID][pastTimestamp];
+                const id = String(memberID);
+                const member = membersObject[id] || membersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                if (hasActivityTimeplayedSnapshot(activityData, id, pastEff)) {
+                    pastDataToSave[id] = { t: pastEff, v: activityData[id][pastEff] };
                 }
-                if (activityData[memberID][nowTimestamp] !== undefined) {
-                    nowDataToSave[memberID] = activityData[memberID][nowTimestamp];
+                if (hasActivityTimeplayedSnapshot(activityData, id, nowTimestamp)) {
+                    nowDataToSave[id] = activityData[id][nowTimestamp];
                 }
             });
             if (Object.keys(pastDataToSave).length > 0) {
-                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_PAST_PREFIX, `${factionID}_${periodMonths}_${pastTimestampDay}`, pastDataToSave);
+                mergeBattleStatsActivityCache(
+                    BATTLE_STATS_ACTIVITY_PAST_PREFIX,
+                    `${fid}_${cacheKeySegment}_${pastTimestampDay}`,
+                    BATTLE_STATS_ACTIVITY_PAST_TTL_MS,
+                    pastDataToSave
+                );
             }
             if (Object.keys(nowDataToSave).length > 0) {
-                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_NOW_PREFIX, `${factionID}_${dateKey}`, nowDataToSave);
+                mergeBattleStatsActivityCache(
+                    BATTLE_STATS_ACTIVITY_NOW_PREFIX,
+                    `${fid}_${dateKey}`,
+                    BATTLE_STATS_ACTIVITY_NOW_TTL_MS,
+                    nowDataToSave
+                );
             }
 
             window.lastActivityFetchTime = Date.now();
@@ -4524,20 +4937,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 progressContainer.style.display = 'none';
             }
             
-            // Calculate activity differences (current - X months ago) in hours
+            // Calculate activity differences (current - X months ago) in hours.
+            // If either snapshot is missing, use null — do not treat as 0 (that hid API failures as "0:00").
             const activityHours = {};
             memberIDs.forEach(memberID => {
-                const currentTime = activityData[memberID]?.[nowTimestamp] || 0;
-                const pastTime = activityData[memberID]?.[pastTimestamp] || 0;
-                const differenceSeconds = currentTime - pastTime;
-                const differenceHours = differenceSeconds / 3600; // Convert seconds to hours
-                activityHours[memberID] = Math.max(0, differenceHours); // Ensure non-negative
+                const id = String(memberID);
+                const member = membersObject[id] || membersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                const currentRaw = activityData[id]?.[nowTimestamp];
+                const pastRaw = activityData[id]?.[pastEff];
+                const hasCurrent = typeof currentRaw === 'number' && !isNaN(currentRaw);
+                const hasPast = typeof pastRaw === 'number' && !isNaN(pastRaw);
+                if (!hasCurrent || !hasPast) {
+                    activityHours[id] = null;
+                    return;
+                }
+                const differenceSeconds = currentRaw - pastRaw;
+                if (differenceSeconds < 0) {
+                    console.warn(`Activity: negative delta for member ${id} (current < past); check API/cache.`);
+                }
+                activityHours[id] = Math.max(0, differenceSeconds) / 3600;
             });
             
             console.log('Activity data calculated:', activityHours);
             
             // Store timestamp of when this fetch completed for rate limit tracking
             window.lastActivityFetchTime = Date.now();
+            
+            window.battleStatsLastIncompleteActivityCount = memberIDs.filter(mid => activityHours[String(mid)] == null).length;
             
             // Get existing data for the table
             const battleStatsData = window.battleStatsData || {};
@@ -4546,7 +4973,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const lastUpdated = battleStatsData.lastUpdated || {};
             
             // Update the table with activity column and create graph
-            updateTableWithActivity(memberIDs, membersObject, activityHours, ffScores, battleStatsEstimates, lastUpdated, factionName, factionID, apiKey, periodMonths);
+            const activityTimestamps = {
+                nowTimestamp,
+                pastTimestamp,
+                pastTimestampDay,
+                dateKey,
+                factionID,
+                normalizedFactionId: fid,
+                periodConfig,
+                cacheKeySegment,
+                periodDays
+            };
+            updateTableWithActivity(memberIDs, membersObject, activityHours, ffScores, battleStatsEstimates, lastUpdated, factionName, factionID, apiKey, periodConfig, activityTimestamps);
             
             spinner.style.display = 'none';
             
@@ -4564,16 +5002,26 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     // Function to update table with activity data and create graph
-    const updateTableWithActivity = (memberIDs, membersObject, activityHours, ffScores, battleStatsEstimates, lastUpdated, factionName, factionID, apiKey, periodMonths = 3) => {
+    const updateTableWithActivity = (memberIDs, membersObject, activityHours, ffScores, battleStatsEstimates, lastUpdated, factionName, factionID, apiKey, periodConfigIn = null, activityTimestamps = null) => {
+        const periodConfig = periodConfigIn && periodConfigIn.periodDays != null && periodConfigIn.labelTitle
+            ? periodConfigIn
+            : buildBattleStatsActivityPeriodConfig('3');
         const resultsContainer = document.getElementById('battle-stats-results');
         if (!resultsContainer) return;
         
         // Sort members by activity (most active first)
         const sortedMemberIDs = [...memberIDs].sort((a, b) => {
-            const activityA = activityHours[a] || 0;
-            const activityB = activityHours[b] || 0;
+            const idA = String(a);
+            const idB = String(b);
+            const activityA = activityHoursSortValue(activityHours[idA]);
+            const activityB = activityHoursSortValue(activityHours[idB]);
             return activityB - activityA; // Descending (most active first)
         });
+        
+        const incompleteActivityMembers = window.battleStatsLastIncompleteActivityCount || 0;
+        const incompleteActivityNotice = incompleteActivityMembers > 0
+            ? `<p id="activity-incomplete-notice" style="text-align:center;color:#ffb74d;font-size:13px;margin:-8px 12px 16px;line-height:1.45;max-width:720px;margin-left:auto;margin-right:auto;">${incompleteActivityMembers} member(s) still show &quot;-&quot; after automatic retries — the API didn&apos;t return full timeplayed data for them. Use the <strong>↻</strong> button next to a dash to retry that member, or run <strong>Check Activity</strong> again.</p>`
+            : '';
         
         let tableHtml = `
             <!-- Summary Section (NOT scrollable) -->
@@ -4588,7 +5036,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     Check Activity (Loaded)
                 </button>
             </div>
-            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName} - Activity Comparison (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})</h2>
+            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName} - Activity Comparison (${periodConfig.labelTitle})</h2>
+            ${incompleteActivityNotice}
             
             <!-- Activity Graph -->
             <div style="margin-bottom: 30px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
@@ -4603,9 +5052,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             </div>
             
+            <div style="position: relative; margin-bottom: 5px;">
+                <button type="button" id="copyTableBtn" class="btn" style="${BATTLE_STATS_COPY_BTN_STYLE}" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Copy table to clipboard (FF Score omitted)">
+                    📋 Copy
+                </button>
+            </div>
             <!-- Table Wrapper (SCROLLABLE) -->
             <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
-                <table id="membersTable" style="min-width: 700px; font-size: 13px;">
+                <table id="membersTable" style="min-width: 860px; font-size: 13px;">
                     <thead>
                         <tr>
                             <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
@@ -4613,33 +5067,42 @@ document.addEventListener('DOMContentLoaded', () => {
                             <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
                             <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
                             <th data-column="activity" style="min-width: 120px; cursor: pointer; text-align: left;">Activity (Hours) <span class="sort-indicator">↓</span></th>
-                            <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">Last Updated <span class="sort-indicator"></span></th>
+                            <th data-column="lastonline" style="min-width: 130px; cursor: pointer; text-align: left;">Last online <span class="sort-indicator"></span></th>
+                            <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left;">FFS Last Updated <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>`;
         
         for (const memberID of sortedMemberIDs) {
-            const member = membersObject[memberID];
-            const fairFightScore = ffScores[memberID] || 'Unknown';
-            const lastUpdatedTimestamp = lastUpdated[memberID];
-            const activity = activityHours[memberID] || 0;
+            const id = String(memberID);
+            const member = membersObject[id] || membersObject[memberID];
+            const fairFightScore = ffScores[id] || ffScores[memberID] || 'Unknown';
+            const lastUpdatedTimestamp = lastUpdated[id] ?? lastUpdated[memberID];
+            const activity = activityHours[id] ?? null;
             
-            const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
+            const rawEstimatedStat = battleStatsEstimates[id] || battleStatsEstimates[memberID] || 'N/A';
             const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
             
             const lastUpdatedDate = lastUpdatedTimestamp 
                 ? formatRelativeTime(lastUpdatedTimestamp * 1000) 
                 : 'N/A';
+            const lastOnlineDisplay = formatMemberLastOnlineDisplay(member);
+            const lastOnlineSort = getMemberLastOnlineSortValue(member);
             
-            const displayActivity = formatHoursMinutes(activity);
+            const displayActivity = typeof activity === 'number' ? formatHoursMinutes(activity) : '-';
+            const activitySortValue = typeof activity === 'number' ? activity : -1e9;
+            const activityCellInner = typeof activity === 'number'
+                ? displayActivity
+                : `<span class="activity-cell-wrap" style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;"><span>-</span><button type="button" class="btn activity-retry-btn" data-player-id="${id}" title="Fetch timeplayed for this member (both snapshots). Use if this row shows a dash after cache or a failed load." aria-label="Retry activity fetch for this member" style="padding:2px 8px;font-size:12px;line-height:1.2;min-width:auto;background:#1976D2;color:#fff;border:none;border-radius:4px;cursor:pointer;">↻</button></span>`;
             
             tableHtml += `
-                <tr>
-                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${memberID}]</a></td>
+                <tr data-player-id="${id}">
+                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${id}]</a></td>
                     <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
                     <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
                     <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
-                    <td data-column="activity" data-value="${activity}">${displayActivity}</td>
+                    <td data-column="activity" data-value="${activitySortValue}">${activityCellInner}</td>
+                    <td data-column="lastonline" data-value="${lastOnlineSort}">${lastOnlineDisplay}</td>
                     <td data-column="lastupdated" data-value="${lastUpdatedTimestamp || 0}">${lastUpdatedDate}</td>
                 </tr>`;
         }
@@ -4652,9 +5115,10 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsContainer.innerHTML = tableHtml;
         resultsContainer.style.display = 'block';
         
-        // Store data for comparison (preserve myTotalStats if it exists)
+        // Store data for comparison (normalize sorted IDs to strings for consistent lookups)
+        const sortedMemberIDsStr = sortedMemberIDs.map(id => String(id));
         window.currentActivityData = {
-            sortedMemberIDs,
+            sortedMemberIDs: sortedMemberIDsStr,
             membersObject,
             activityHours,
             factionName,
@@ -4662,18 +5126,19 @@ document.addEventListener('DOMContentLoaded', () => {
             ffScores,
             battleStatsEstimates,
             lastUpdated,
-            periodMonths,
+            periodConfig,
+            activityTimestamps: activityTimestamps || window.currentActivityData?.activityTimestamps || null,
             myTotalStats: window.currentActivityData?.myTotalStats || window.battleStatsData?.myTotalStats || window.myTotalStats || 0
         };
         
         // Create activity graph - wait a bit for DOM to update
         setTimeout(() => {
-            createActivityGraph(sortedMemberIDs, membersObject, activityHours, null, periodMonths);
+            createActivityGraph(sortedMemberIDsStr, membersObject, activityHours, null, periodConfig.labelTitle);
         }, 100);
         
         // Add compare to own faction button functionality
         document.getElementById('compareOwnFactionBtn').addEventListener('click', async () => {
-            await handleCompareToOwnFaction(apiKey, periodMonths);
+            await handleCompareToOwnFaction(apiKey, periodConfig);
         });
         
         // Add sorting functionality
@@ -4745,21 +5210,24 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Re-attach event listeners
         document.getElementById('exportCsvBtn').addEventListener('click', () => {
-            const headers = ['Member', 'Level', 'Estimated Stats', 'FF Score', 'Activity (Hours)', 'Last Updated'];
+            const headers = ['Member', 'Level', 'Estimated Stats', 'FF Score', 'Activity (Hours)', 'Last online', 'FFS Last Updated'];
             let csvContent = headers.join(',') + '\r\n';
             
-            sortedMemberIDs.forEach(memberID => {
-                const member = membersObject[memberID];
-                const fairFightScore = ffScores[memberID] || 'Unknown';
-                const rawEstimatedStat = battleStatsEstimates[memberID] || 'N/A';
+            sortedMemberIDsStr.forEach(memberID => {
+                const id = String(memberID);
+                const member = membersObject[id] || membersObject[memberID];
+                const fairFightScore = ffScores[id] || ffScores[memberID] || 'Unknown';
+                const rawEstimatedStat = battleStatsEstimates[id] || battleStatsEstimates[memberID] || 'N/A';
                 const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
-                const lastUpdatedTimestamp = lastUpdated[memberID];
+                const lastUpdatedTimestamp = lastUpdated[id] ?? lastUpdated[memberID];
                 const lastUpdatedDate = lastUpdatedTimestamp 
                     ? new Date(lastUpdatedTimestamp * 1000).toLocaleString() 
                     : 'N/A';
-                const activity = formatHoursMinutes(activityHours[memberID] || 0);
+                const act = activityHours[id];
+                const activity = typeof act === 'number' ? formatHoursMinutes(act) : '-';
+                const lastOnlineCsv = formatMemberLastOnlineDisplay(member);
                 
-                csvContent += `"${member.name} [${memberID}]",${member.level},"${displayEstimatedStat}",${fairFightScore},${activity},"${lastUpdatedDate}"\r\n`;
+                csvContent += `"${member.name} [${id}]",${member.level},"${displayEstimatedStat}",${fairFightScore},${activity},"${String(lastOnlineCsv).replace(/"/g, '""')}","${lastUpdatedDate}"\r\n`;
             });
             
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -4796,10 +5264,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
+
+        const copyTableBtnAct = document.getElementById('copyTableBtn');
+        if (copyTableBtnAct) {
+            copyTableBtnAct.addEventListener('click', async () => {
+                const tbl = document.getElementById('membersTable');
+                await battleStatsCopyTableToClipboard(copyTableBtnAct, tbl, {
+                    factionTitle: `${factionName} (${periodConfig.labelTitle})`,
+                    excludeColumns: ['ffscore']
+                });
+            });
+        }
     };
     
     // Function to compare to own faction
-    const handleCompareToOwnFaction = async (apiKey, periodMonths = 3) => {
+    const handleCompareToOwnFaction = async (apiKey, periodConfigOverride = null) => {
         const compareBtn = document.getElementById('compareOwnFactionBtn');
         const progressContainer = document.getElementById('progressContainer');
         const progressMessage = document.getElementById('progressMessage');
@@ -4812,9 +5291,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
-        // Get period from current data if not provided
         const currentData = window.currentActivityData;
-        const period = periodMonths || (currentData && currentData.periodMonths) || 3;
+        const periodConfig = (periodConfigOverride && periodConfigOverride.periodDays != null && periodConfigOverride.cacheKeySegment)
+            ? periodConfigOverride
+            : (currentData && currentData.periodConfig)
+            || (currentData && currentData.periodMonths != null
+                ? buildBattleStatsActivityPeriodConfig(currentData.periodMonths === 1 ? '1' : '3')
+                : buildBattleStatsActivityPeriodConfig('3'));
+        const cacheKeySegment = periodConfig.cacheKeySegment;
+        const periodDays = periodConfig.periodDays;
         
         // Disable button and show progress
         compareBtn.disabled = true;
@@ -4852,18 +5337,17 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const ownMembersArray = membersData.members || [];
             const ownMemberIDs = ownMembersArray.map(member => member.id.toString());
-            const ownMembersObject = {};
-            ownMembersArray.forEach(member => {
-                ownMembersObject[member.id] = {
-                    name: member.name,
-                    level: member.level || 'Unknown'
-                };
-            });
+            const ownMembersObject = buildBattleStatsMembersObject(ownMembersArray);
             
             console.log(`Fetched ${ownMemberIDs.length} members from own faction`);
             
-            // Fetch activity data for own faction (use same local cache as activity checker: 1 week past, 1 day now)
-            const periodDays = period * 30;
+            await enrichBattleStatsMembersAccountStart(ownMemberIDs, ownMembersObject, apiKey, {
+                progressMessage,
+                progressDetails
+            });
+            
+            // Fetch activity data for own faction (same window + cache key segment as viewed faction)
+            const ownFid = normalizeBattleStatsFactionId(ownFactionId);
             const nowTimestamp = Math.floor(Date.now() / 1000);
             const pastTimestamp = Math.floor((Date.now() - (periodDays * 24 * 60 * 60 * 1000)) / 1000);
             const pastTimestampDay = Math.floor(pastTimestamp / 86400) * 86400;
@@ -4871,109 +5355,156 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const pastCache = getBattleStatsActivityCache(
                 BATTLE_STATS_ACTIVITY_PAST_PREFIX,
-                `${ownFactionId}_${period}_${pastTimestampDay}`,
+                `${ownFid}_${cacheKeySegment}_${pastTimestampDay}`,
                 BATTLE_STATS_ACTIVITY_PAST_TTL_MS
             );
             const nowCache = getBattleStatsActivityCache(
                 BATTLE_STATS_ACTIVITY_NOW_PREFIX,
-                `${ownFactionId}_${dateKey}`,
+                `${ownFid}_${dateKey}`,
                 BATTLE_STATS_ACTIVITY_NOW_TTL_MS
             );
 
             const ownActivityData = {};
             ownMemberIDs.forEach(memberID => {
-                ownActivityData[memberID] = {};
-                if (pastCache && pastCache[memberID] !== undefined) {
-                    ownActivityData[memberID][pastTimestamp] = pastCache[memberID];
+                const id = String(memberID);
+                const member = ownMembersObject[id] || ownMembersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                ownActivityData[id] = {};
+                if (pastCache) {
+                    const rawPast = pastCache[id] !== undefined ? pastCache[id] : pastCache[memberID];
+                    const parsedPast = parsePastCacheEntry(rawPast, pastTimestamp, pastEff);
+                    if (parsedPast) {
+                        ownActivityData[id][parsedPast.t] = parsedPast.v;
+                    }
                 }
-                if (nowCache && nowCache[memberID] !== undefined) {
-                    ownActivityData[memberID][nowTimestamp] = nowCache[memberID];
+                const ownNowVal = coerceCachedTimeplayedValue(nowCache?.[id] ?? nowCache?.[memberID]);
+                if (ownNowVal != null) {
+                    ownActivityData[id][nowTimestamp] = ownNowVal;
                 }
             });
 
             const ownActivityRequests = [];
             ownMemberIDs.forEach(memberID => {
-                if (ownActivityData[memberID][nowTimestamp] === undefined) {
+                const id = String(memberID);
+                const member = ownMembersObject[id] || ownMembersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                if (!hasActivityTimeplayedSnapshot(ownActivityData, id, nowTimestamp)) {
                     ownActivityRequests.push({
-                        playerId: memberID,
+                        playerId: id,
                         timestamp: nowTimestamp,
-                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+                        url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
                     });
                 }
-                if (ownActivityData[memberID][pastTimestamp] === undefined) {
+                if (!hasActivityTimeplayedSnapshot(ownActivityData, id, pastEff)) {
                     ownActivityRequests.push({
-                        playerId: memberID,
-                        timestamp: pastTimestamp,
-                        url: `https://api.torn.com/v2/user/${memberID}/personalstats?stat=timeplayed&timestamp=${pastTimestamp}&key=${apiKey}`
+                        playerId: id,
+                        timestamp: pastEff,
+                        url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${pastEff}&key=${apiKey}`
                     });
                 }
             });
+
+            const ownActivityFetchBatchOptions = {
+                progressMessage,
+                progressDetails,
+                progressPercentage,
+                progressFill,
+                onSuccess: (data, request) => {
+                    const timeplayed = extractTimeplayedFromPersonalstatsResponse(data);
+                    const pid = String(request.playerId);
+                    if (timeplayed === null) {
+                        console.warn(`Activity (own faction): could not parse timeplayed for ${pid} at ts ${request.timestamp}`, data);
+                        return;
+                    }
+                    if (!ownActivityData[pid]) {
+                        ownActivityData[pid] = {};
+                    }
+                    ownActivityData[pid][request.timestamp] = timeplayed;
+                },
+                onError: (error, request) => {
+                    console.error(`Error fetching activity for own faction member ${request.playerId}:`, error);
+                }
+            };
 
             if (ownActivityRequests.length > 0) {
                 if (progressDetails) progressDetails.textContent = ownActivityRequests.length < ownMemberIDs.length * 2
                     ? `Fetching activity for your faction... (${ownActivityRequests.length} of ${ownMemberIDs.length * 2} from API, rest from cache)`
                     : `Fetching activity data for ${ownMemberIDs.length} members...`;
-                await window.batchApiCallsWithRateLimit(ownActivityRequests, {
-                    progressMessage,
-                    progressDetails,
-                    progressPercentage,
-                    progressFill,
-                    onSuccess: (data, request) => {
-                        const timeplayed = data.personalstats?.[0]?.value || 0;
-                        if (!ownActivityData[request.playerId]) {
-                            ownActivityData[request.playerId] = {};
-                        }
-                        ownActivityData[request.playerId][request.timestamp] = timeplayed;
-                    },
-                    onError: (error, request) => {
-                        console.error(`Error fetching activity for own faction member ${request.playerId}:`, error);
-                    }
-                });
+                await window.batchApiCallsWithRateLimit(ownActivityRequests, ownActivityFetchBatchOptions);
             } else if (progressDetails) {
                 progressDetails.textContent = 'Activity data loaded from cache.';
+            }
+
+            const totalOwnPasses = 1 + BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS;
+            for (let retryRound = 0; retryRound < BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS; retryRound++) {
+                const retryOwn = buildMissingTimeplayedRequests(ownMemberIDs, ownActivityData, nowTimestamp, pastTimestamp, apiKey, ownMembersObject);
+                if (retryOwn.length === 0) break;
+                if (progressDetails) {
+                    progressDetails.textContent = `Retrying ${retryOwn.length} missing snapshot(s) for your faction (pass ${retryRound + 2} of ${totalOwnPasses})...`;
+                }
+                await sleep(BATTLE_STATS_ACTIVITY_RETRY_BASE_DELAY_MS + retryRound * 1500);
+                await window.batchApiCallsWithRateLimit(retryOwn, ownActivityFetchBatchOptions);
             }
 
             // Persist to cache for next time
             const pastDataToSave = {};
             const nowDataToSave = {};
             ownMemberIDs.forEach(memberID => {
-                if (ownActivityData[memberID][pastTimestamp] !== undefined) {
-                    pastDataToSave[memberID] = ownActivityData[memberID][pastTimestamp];
+                const id = String(memberID);
+                const member = ownMembersObject[id] || ownMembersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                if (hasActivityTimeplayedSnapshot(ownActivityData, id, pastEff)) {
+                    pastDataToSave[id] = { t: pastEff, v: ownActivityData[id][pastEff] };
                 }
-                if (ownActivityData[memberID][nowTimestamp] !== undefined) {
-                    nowDataToSave[memberID] = ownActivityData[memberID][nowTimestamp];
+                if (hasActivityTimeplayedSnapshot(ownActivityData, id, nowTimestamp)) {
+                    nowDataToSave[id] = ownActivityData[id][nowTimestamp];
                 }
             });
             if (Object.keys(pastDataToSave).length > 0) {
-                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_PAST_PREFIX, `${ownFactionId}_${period}_${pastTimestampDay}`, pastDataToSave);
+                mergeBattleStatsActivityCache(
+                    BATTLE_STATS_ACTIVITY_PAST_PREFIX,
+                    `${ownFid}_${cacheKeySegment}_${pastTimestampDay}`,
+                    BATTLE_STATS_ACTIVITY_PAST_TTL_MS,
+                    pastDataToSave
+                );
             }
             if (Object.keys(nowDataToSave).length > 0) {
-                setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_NOW_PREFIX, `${ownFactionId}_${dateKey}`, nowDataToSave);
+                mergeBattleStatsActivityCache(
+                    BATTLE_STATS_ACTIVITY_NOW_PREFIX,
+                    `${ownFid}_${dateKey}`,
+                    BATTLE_STATS_ACTIVITY_NOW_TTL_MS,
+                    nowDataToSave
+                );
             }
 
-            // Calculate own faction activity hours
-            // Store with both string and number keys to ensure matching works
+            // Calculate own faction activity hours (null if either snapshot missing)
             const ownActivityHours = {};
-            console.log('Calculating activity hours - nowTimestamp:', nowTimestamp, 'pastTimestamp:', pastTimestamp, 'period:', period);
+            console.log('Calculating activity hours - nowTimestamp:', nowTimestamp, 'pastTimestamp:', pastTimestamp, 'periodDays:', periodDays, 'cacheKeySegment:', cacheKeySegment);
             ownMemberIDs.forEach(memberID => {
-                const currentTime = ownActivityData[memberID]?.[nowTimestamp] || 0;
-                const pastTime = ownActivityData[memberID]?.[pastTimestamp] || 0;
-                const differenceSeconds = currentTime - pastTime;
-                const differenceHours = differenceSeconds / 3600;
-                const hours = Math.max(0, differenceHours);
-                // Store with both string and number keys for reliable matching
-                ownActivityHours[memberID] = hours;
-                ownActivityHours[String(memberID)] = hours;
-                ownActivityHours[parseInt(memberID)] = hours;
+                const id = String(memberID);
+                const member = ownMembersObject[id] || ownMembersObject[memberID];
+                const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+                const currentRaw = ownActivityData[id]?.[nowTimestamp];
+                const pastRaw = ownActivityData[id]?.[pastEff];
+                const hasCurrent = typeof currentRaw === 'number' && !isNaN(currentRaw);
+                const hasPast = typeof pastRaw === 'number' && !isNaN(pastRaw);
+                if (!hasCurrent || !hasPast) {
+                    ownActivityHours[id] = null;
+                    return;
+                }
+                const differenceSeconds = currentRaw - pastRaw;
+                ownActivityHours[id] = Math.max(0, differenceSeconds) / 3600;
             });
             
             console.log('Calculated own faction activity hours:', ownActivityHours);
             
             // Sort own faction members by activity (most active first) for FF Scouter fetch
-            const ownSortedMemberIDs = Object.keys(ownActivityHours).sort((a, b) => {
-                const activityA = ownActivityHours[a] || ownActivityHours[parseInt(a)] || 0;
-                const activityB = ownActivityHours[b] || ownActivityHours[parseInt(b)] || 0;
-                return activityB - activityA; // Descending (most active first)
+            const ownSortedMemberIDs = [...ownMemberIDs].sort((a, b) => {
+                const idA = String(a);
+                const idB = String(b);
+                const activityA = activityHoursSortValue(ownActivityHours[idA]);
+                const activityB = activityHoursSortValue(ownActivityHours[idB]);
+                return activityB - activityA;
             });
             
             // Fetch FF Scouter data for own faction members to get estimated stats
@@ -5000,7 +5531,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             // Update graph and table with both datasets
-            updateGraphWithComparison(currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, period, ownBattleStatsEstimates);
+            updateGraphWithComparison(currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, periodConfig, ownBattleStatsEstimates);
             
             // Hide progress
             progressContainer.style.display = 'none';
@@ -5018,16 +5549,20 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     // Function to update graph and table with comparison data
-    const updateGraphWithComparison = (currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, periodMonths = 3, ownBattleStatsEstimates = {}) => {
+    const updateGraphWithComparison = (currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, periodConfigIn = null, ownBattleStatsEstimates = {}) => {
+        const periodConfig = periodConfigIn && periodConfigIn.labelTitle
+            ? periodConfigIn
+            : resolvePeriodConfigFromActivityContext(currentData);
+        const labelTitle = periodConfig.labelTitle;
         // Graph will be created after table HTML is inserted (in setTimeout below)
         
         // Sort each faction's players separately by activity (most active to least active)
         // Selected faction is already sorted in currentData.sortedMemberIDs
         // Sort own faction's players by activity
         const ownSortedMemberIDs = Object.keys(ownActivityHours).sort((a, b) => {
-            const activityA = ownActivityHours[a] || ownActivityHours[parseInt(a)] || 0;
-            const activityB = ownActivityHours[b] || ownActivityHours[parseInt(b)] || 0;
-            return activityB - activityA; // Descending (most active first)
+            const activityA = activityHoursSortValue(ownActivityHours[a]);
+            const activityB = activityHoursSortValue(ownActivityHours[b]);
+            return activityB - activityA;
         });
         
         // Determine the maximum number of positions (use the larger of the two factions)
@@ -5058,7 +5593,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const currentFactionData = Array.from({ length: maxPositions }, (_, i) => {
             if (i < currentData.sortedMemberIDs.length) {
                 const memberID = currentData.sortedMemberIDs[i];
-                return currentData.activityHours[memberID] || currentData.activityHours[parseInt(memberID)] || 0;
+                const v = getActivityHoursForMember(currentData.activityHours, memberID);
+                return v == null ? NaN : v;
             }
             return null;
         });
@@ -5066,15 +5602,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const ownFactionData = Array.from({ length: maxPositions }, (_, i) => {
             if (i < ownSortedMemberIDs.length) {
                 const memberID = ownSortedMemberIDs[i];
-                const idStr = String(memberID);
-                const idNum = parseInt(memberID);
-                if (ownActivityHours[idStr] !== undefined) {
-                    return ownActivityHours[idStr];
-                }
-                if (ownActivityHours[idNum] !== undefined) {
-                    return ownActivityHours[idNum];
-                }
-                return 0;
+                const v = getActivityHoursForMember(ownActivityHours, memberID);
+                return v == null ? NaN : v;
             }
             return null;
         });
@@ -5095,7 +5624,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Update the table to show side-by-side comparison (this creates the canvas element)
         // Pass the sorted member IDs from both factions for the table
-        updateComparisonTable(currentData.sortedMemberIDs, ownSortedMemberIDs, currentData, ownMembersObject, ownActivityHours, ownFactionName, currentFfScores, currentBattleStatsEstimates, periodMonths, ownBattleStatsEstimates);
+        updateComparisonTable(currentData.sortedMemberIDs, ownSortedMemberIDs, currentData, ownMembersObject, ownActivityHours, ownFactionName, currentFfScores, currentBattleStatsEstimates, periodConfig, ownBattleStatsEstimates);
         
         // Create line chart with two datasets (similar to admin dashboard) - wait for DOM to update
         setTimeout(() => {
@@ -5117,7 +5646,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     labels: labels,
                     datasets: [
                         {
-                            label: `${currentData.factionName} (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})`,
+                            label: `${currentData.factionName} (${labelTitle})`,
                             data: currentFactionData,
                             borderColor: '#ffd700', // Yellow to match app styling
                             backgroundColor: 'rgba(255, 215, 0, 0.1)',
@@ -5131,7 +5660,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             pointBorderWidth: 1
                         },
                         {
-                            label: `${ownFactionName} (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})`,
+                            label: `${ownFactionName} (${labelTitle})`,
                             data: ownFactionData,
                             borderColor: '#9C27B0', // Purple
                             backgroundColor: 'rgba(156, 39, 176, 0.1)',
@@ -5171,8 +5700,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             borderWidth: 1,
                             callbacks: {
                                 label: function(context) {
-                                    if (context.parsed.y === null) return '';
-                                    return `${context.dataset.label}: ${formatHoursMinutes(context.parsed.y)}`;
+                                    const y = context.parsed.y;
+                                    if (y == null || (typeof y === 'number' && isNaN(y))) {
+                                        return `${context.dataset.label}: incomplete`;
+                                    }
+                                    return `${context.dataset.label}: ${formatHoursMinutes(y)}`;
                                 }
                             }
                         }
@@ -5226,7 +5758,11 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     // Function to update table with side-by-side comparison
-    const updateComparisonTable = (currentSortedMemberIDs, ownSortedMemberIDs, currentData, ownMembersObject, ownActivityHours, ownFactionName, currentFfScores, currentBattleStatsEstimates, periodMonths = 3, ownBattleStatsEstimates = {}) => {
+    const updateComparisonTable = (currentSortedMemberIDs, ownSortedMemberIDs, currentData, ownMembersObject, ownActivityHours, ownFactionName, currentFfScores, currentBattleStatsEstimates, periodConfigIn = null, ownBattleStatsEstimates = {}) => {
+        const periodConfig = periodConfigIn && periodConfigIn.labelTitle
+            ? periodConfigIn
+            : resolvePeriodConfigFromActivityContext(currentData);
+        const labelTitle = periodConfig.labelTitle;
         const resultsContainer = document.getElementById('battle-stats-results');
         if (!resultsContainer) return;
         
@@ -5236,6 +5772,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Get the original table HTML to keep it below
         const originalTable = resultsContainer.querySelector('#membersTable')?.closest('.table-scroll-wrapper');
         const originalTableHtml = originalTable ? originalTable.outerHTML : '';
+        const patchedOriginalHtml = originalTableHtml
+            ? originalTableHtml.replace(/id="membersTable"/, 'id="membersTableActivityDetail"')
+            : '';
         
         let tableHtml = `
             <!-- Summary Section (NOT scrollable) -->
@@ -5253,7 +5792,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     Comparison Loaded
                 </button>
             </div>
-            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">Faction Activity Comparison (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})</h2>
+            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">Faction Activity Comparison (${labelTitle})</h2>
             
             <!-- Activity Graph -->
             <div style="margin-bottom: 30px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
@@ -5265,6 +5804,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             </div>
             
+            <div style="position: relative; margin-bottom: 5px;">
+                <button type="button" id="copyComparisonTableBtn" class="btn" style="${BATTLE_STATS_COPY_BTN_STYLE}" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Copy side-by-side comparison table">
+                    📋 Copy
+                </button>
+            </div>
             <!-- Comparison Table Wrapper (SCROLLABLE) -->
             <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
                 <table id="membersTable" style="width: 100%; font-size: 13px;">
@@ -5297,7 +5841,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Get player from selected faction (if exists)
             const currentPlayerID = currentData.sortedMemberIDs[i];
             const currentMember = currentPlayerID ? currentData.membersObject[currentPlayerID] : null;
-            const currentActivity = currentPlayerID ? (currentData.activityHours[currentPlayerID] || 0) : null;
+            const currentActivity = currentPlayerID ? getActivityHoursForMember(currentData.activityHours, currentPlayerID) : null;
             const currentLevel = currentMember ? (currentMember.level || 'Unknown') : null;
             const currentName = currentMember ? currentMember.name : null;
             const currentEstimatedStat = currentPlayerID ? (currentBattleStatsEstimates[currentPlayerID] || 'N/A') : null;
@@ -5306,7 +5850,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Get player from own faction (if exists)
             const ownPlayerID = ownSortedMemberIDs[i];
             const ownMember = ownPlayerID ? (ownMembersObject[ownPlayerID] || ownMembersObject[parseInt(ownPlayerID)]) : null;
-            const ownActivity = ownPlayerID ? (ownActivityHours[ownPlayerID] || ownActivityHours[parseInt(ownPlayerID)] || 0) : null;
+            const ownActivity = ownPlayerID ? getActivityHoursForMember(ownActivityHours, ownPlayerID) : null;
             const ownLevel = ownMember ? (ownMember.level || 'Unknown') : null;
             const ownName = ownMember ? ownMember.name : null;
             const ownEstimatedStat = ownPlayerID ? (ownBattleStatsEstimates[ownPlayerID] || ownBattleStatsEstimates[parseInt(ownPlayerID)] || 'N/A') : null;
@@ -5319,13 +5863,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     </td>
                     <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}">${currentLevel || '-'}</td>
                     <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}">${displayCurrentEstimatedStat}</td>
-                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding-right: 10px;">${currentActivity !== null ? formatHoursMinutes(currentActivity) : '-'}</td>
+                    <td data-column="activity1" data-value="${typeof currentActivity === 'number' ? currentActivity : -1e9}" style="border-right: 2px solid var(--accent-color); padding-right: 10px;">${typeof currentActivity === 'number' ? formatHoursMinutes(currentActivity) : '-'}</td>
                     <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}">
                         ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
                     </td>
                     <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}">${ownLevel || '-'}</td>
                     <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}">${displayOwnEstimatedStat}</td>
-                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding-right: 10px;">${ownActivity !== null ? formatHoursMinutes(ownActivity) : '-'}</td>
+                    <td data-column="activity2" data-value="${typeof ownActivity === 'number' ? ownActivity : -1e9}" style="padding-right: 10px;">${typeof ownActivity === 'number' ? formatHoursMinutes(ownActivity) : '-'}</td>
                 </tr>`;
         }
         
@@ -5335,7 +5879,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             
             <!-- Original Table (kept below comparison) -->
-            ${originalTableHtml ? `<div style="margin-top: 40px;"><h3 style="color: var(--accent-color); margin-bottom: 15px;">${currentFactionName} - Original View</h3>${originalTableHtml}</div>` : ''}`;
+            ${patchedOriginalHtml ? `<div style="margin-top: 40px;"><h3 style="color: var(--accent-color); margin-bottom: 15px;">${currentFactionName} - Original View</h3><div style="position: relative; margin-bottom: 5px;"><button type="button" id="copyActivityDetailTableBtn" class="btn" style="${BATTLE_STATS_COPY_BTN_STYLE}" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Copy activity member list below (FF Score omitted)">📋 Copy</button></div>${patchedOriginalHtml}</div>` : ''}`;
         
         resultsContainer.innerHTML = tableHtml;
         resultsContainer.style.display = 'block';
@@ -5352,8 +5896,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     currentData.sortedMemberIDs.forEach(id => allPlayerIDs.add(String(id)));
                     Object.keys(ownActivityHours).forEach(id => allPlayerIDs.add(String(id)));
                     const sortedAllPlayerIDsForGraph = Array.from(allPlayerIDs).sort((a, b) => {
-                        const activityA = currentData.activityHours[a] || currentData.activityHours[parseInt(a)] || ownActivityHours[a] || ownActivityHours[parseInt(a)] || 0;
-                        const activityB = currentData.activityHours[b] || currentData.activityHours[parseInt(b)] || ownActivityHours[b] || ownActivityHours[parseInt(b)] || 0;
+                        const activityA = Math.max(
+                            activityHoursSortValue(getActivityHoursForMember(currentData.activityHours, a)),
+                            activityHoursSortValue(getActivityHoursForMember(ownActivityHours, a))
+                        );
+                        const activityB = Math.max(
+                            activityHoursSortValue(getActivityHoursForMember(currentData.activityHours, b)),
+                            activityHoursSortValue(getActivityHoursForMember(ownActivityHours, b))
+                        );
                         return activityB - activityA;
                     });
                     const labels = sortedAllPlayerIDsForGraph.map(id => {
@@ -5362,14 +5912,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         return member ? `${member.name}${isOwnFaction ? ' (Your Faction)' : ''}` : `Player ${id}`;
                     });
                     const currentFactionData = sortedAllPlayerIDsForGraph.map(id => {
-                        return currentData.activityHours[id] || currentData.activityHours[parseInt(id)] || null;
+                        const v = getActivityHoursForMember(currentData.activityHours, id);
+                        return v == null ? NaN : v;
                     });
                     const ownFactionData = sortedAllPlayerIDsForGraph.map(id => {
-                        const idStr = String(id);
-                        const idNum = parseInt(id);
-                        if (ownActivityHours[idStr] !== undefined) return ownActivityHours[idStr];
-                        if (ownActivityHours[idNum] !== undefined) return ownActivityHours[idNum];
-                        return null;
+                        const v = getActivityHoursForMember(ownActivityHours, id);
+                        return v == null ? NaN : v;
                     });
                     const ctx = canvas.getContext('2d');
                     window.activityChart = new Chart(ctx, {
@@ -5378,7 +5926,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             labels: labels,
                             datasets: [
                                 {
-                                    label: `${currentData.factionName} (Last 3 Months)`,
+                                    label: `${currentData.factionName} (${labelTitle})`,
                                     data: currentFactionData,
                                     borderColor: '#ffd700',
                                     backgroundColor: 'rgba(255, 215, 0, 0.1)',
@@ -5392,7 +5940,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     pointBorderWidth: 1
                                 },
                                 {
-                                    label: `${ownFactionName} (${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`})`,
+                                    label: `${ownFactionName} (${labelTitle})`,
                                     data: ownFactionData,
                                     borderColor: '#9C27B0',
                                     backgroundColor: 'rgba(156, 39, 176, 0.1)',
@@ -5429,8 +5977,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                     borderWidth: 1,
                                     callbacks: {
                                         label: function(context) {
-                                            if (context.parsed.y === null) return '';
-                                            return `${context.dataset.label}: ${formatHoursMinutes(context.parsed.y)}`;
+                                            const y = context.parsed.y;
+                                            if (y == null || (typeof y === 'number' && isNaN(y))) {
+                                                return `${context.dataset.label}: incomplete`;
+                                            }
+                                            return `${context.dataset.label}: ${formatHoursMinutes(y)}`;
                                         }
                                     }
                                 }
@@ -5508,8 +6059,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     aValue = currentBattleStatsEstimates[a] || -1;
                     bValue = currentBattleStatsEstimates[b] || -1;
                 } else if (baseColumn === 'activity') {
-                    aValue = currentData.activityHours[a] || currentData.activityHours[parseInt(a)] || 0;
-                    bValue = currentData.activityHours[b] || currentData.activityHours[parseInt(b)] || 0;
+                    aValue = activityHoursSortValue(getActivityHoursForMember(currentData.activityHours, a));
+                    bValue = activityHoursSortValue(getActivityHoursForMember(currentData.activityHours, b));
                 } else {
                     return 0;
                 }
@@ -5543,12 +6094,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     aValue = ownBattleStatsEstimates[a] || ownBattleStatsEstimates[parseInt(a)] || -1;
                     bValue = ownBattleStatsEstimates[b] || ownBattleStatsEstimates[parseInt(b)] || -1;
                 } else if (baseColumn === 'activity') {
-                    const aStr = String(a);
-                    const aNum = parseInt(a);
-                    aValue = ownActivityHours[aStr] || ownActivityHours[aNum] || 0;
-                    const bStr = String(b);
-                    const bNum = parseInt(b);
-                    bValue = ownActivityHours[bStr] || ownActivityHours[bNum] || 0;
+                    aValue = activityHoursSortValue(getActivityHoursForMember(ownActivityHours, a));
+                    bValue = activityHoursSortValue(getActivityHoursForMember(ownActivityHours, b));
                 } else {
                     return 0;
                 }
@@ -5590,7 +6137,7 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < maxRows; i++) {
                 const currentPlayerID = sortedCurrentIDs[i];
                 const currentMember = currentPlayerID ? currentData.membersObject[currentPlayerID] : null;
-                const currentActivity = currentPlayerID ? (currentData.activityHours[currentPlayerID] || 0) : null;
+                const currentActivity = currentPlayerID ? getActivityHoursForMember(currentData.activityHours, currentPlayerID) : null;
                 const currentLevel = currentMember ? (currentMember.level || 'Unknown') : null;
                 const currentName = currentMember ? currentMember.name : null;
                 const currentEstimatedStat = currentPlayerID ? (currentBattleStatsEstimates[currentPlayerID] || 'N/A') : null;
@@ -5598,7 +6145,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 const ownPlayerID = sortedOwnIDs[i];
                 const ownMember = ownPlayerID ? (ownMembersObject[ownPlayerID] || ownMembersObject[parseInt(ownPlayerID)]) : null;
-                const ownActivity = ownPlayerID ? (ownActivityHours[ownPlayerID] || ownActivityHours[parseInt(ownPlayerID)] || 0) : null;
+                const ownActivity = ownPlayerID ? getActivityHoursForMember(ownActivityHours, ownPlayerID) : null;
                 const ownLevel = ownMember ? (ownMember.level || 'Unknown') : null;
                 const ownName = ownMember ? ownMember.name : null;
                 const ownEstimatedStat = ownPlayerID ? (ownBattleStatsEstimates[ownPlayerID] || ownBattleStatsEstimates[parseInt(ownPlayerID)] || 'N/A') : null;
@@ -5611,13 +6158,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     </td>
                     <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}" style="padding: 8px 6px;">${currentLevel || '-'}</td>
                     <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}" style="padding: 8px 6px;">${displayCurrentEstimatedStat}</td>
-                    <td data-column="activity1" data-value="${currentActivity !== null ? currentActivity : -1}" style="border-right: 2px solid var(--accent-color); padding: 8px 6px;">${currentActivity !== null ? formatHoursMinutes(currentActivity) : '-'}</td>
+                    <td data-column="activity1" data-value="${typeof currentActivity === 'number' ? currentActivity : -1e9}" style="border-right: 2px solid var(--accent-color); padding: 8px 6px;">${typeof currentActivity === 'number' ? formatHoursMinutes(currentActivity) : '-'}</td>
                     <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}" style="padding: 8px 6px;">
                         ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
                     </td>
                     <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}" style="padding: 8px 6px;">${ownLevel || '-'}</td>
                     <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}" style="padding: 8px 6px;">${displayOwnEstimatedStat}</td>
-                    <td data-column="activity2" data-value="${ownActivity !== null ? ownActivity : -1}" style="padding: 8px 6px;">${ownActivity !== null ? formatHoursMinutes(ownActivity) : '-'}</td>
+                    <td data-column="activity2" data-value="${typeof ownActivity === 'number' ? ownActivity : -1e9}" style="padding: 8px 6px;">${typeof ownActivity === 'number' ? formatHoursMinutes(ownActivity) : '-'}</td>
                 `;
                 tbody.appendChild(row);
             }
@@ -5653,7 +6200,7 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < maxRows; i++) {
                 const currentPlayerID = currentData.sortedMemberIDs[i];
                 const currentMember = currentPlayerID ? currentData.membersObject[currentPlayerID] : null;
-                const currentActivity = currentPlayerID ? (currentData.activityHours[currentPlayerID] || 0) : null;
+                const currentActivity = currentPlayerID ? getActivityHoursForMember(currentData.activityHours, currentPlayerID) : null;
                 const currentLevel = currentMember ? (currentMember.level || 'Unknown') : null;
                 const currentName = currentMember ? currentMember.name : null;
                 const currentEstimatedStat = currentPlayerID ? (currentBattleStatsEstimates[currentPlayerID] || 'N/A') : null;
@@ -5661,13 +6208,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 const ownPlayerID = ownSortedMemberIDs[i];
                 const ownMember = ownPlayerID ? (ownMembersObject[ownPlayerID] || ownMembersObject[parseInt(ownPlayerID)]) : null;
-                const ownActivity = ownPlayerID ? (ownActivityHours[ownPlayerID] || ownActivityHours[parseInt(ownPlayerID)] || 0) : null;
+                const ownActivity = ownPlayerID ? getActivityHoursForMember(ownActivityHours, ownPlayerID) : null;
                 const ownLevel = ownMember ? (ownMember.level || 'Unknown') : null;
                 const ownName = ownMember ? ownMember.name : null;
                 const ownEstimatedStat = ownPlayerID ? (ownBattleStatsEstimates[ownPlayerID] || ownBattleStatsEstimates[parseInt(ownPlayerID)] || 'N/A') : null;
                 const displayOwnEstimatedStat = (ownEstimatedStat && ownEstimatedStat !== 'N/A') ? ownEstimatedStat.toLocaleString() : (ownEstimatedStat || '-');
                 
-                csvContent += `"${currentName || '-'}",${currentLevel || '-'},"${displayCurrentEstimatedStat}","${currentActivity !== null ? formatHoursMinutes(currentActivity) : '-'}","${ownName || '-'}",${ownLevel || '-'},"${displayOwnEstimatedStat}","${ownActivity !== null ? formatHoursMinutes(ownActivity) : '-'}"\r\n`;
+                csvContent += `"${currentName || '-'}",${currentLevel || '-'},"${displayCurrentEstimatedStat}","${typeof currentActivity === 'number' ? formatHoursMinutes(currentActivity) : '-'}","${ownName || '-'}",${ownLevel || '-'},"${displayOwnEstimatedStat}","${typeof ownActivity === 'number' ? formatHoursMinutes(ownActivity) : '-'}"\r\n`;
             }
             
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -5680,10 +6227,31 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.removeChild(a);
             window.URL.revokeObjectURL(url);
         });
+
+        const copyComparisonTableBtn = document.getElementById('copyComparisonTableBtn');
+        if (copyComparisonTableBtn) {
+            copyComparisonTableBtn.addEventListener('click', async () => {
+                const tbl = document.getElementById('membersTable');
+                await battleStatsCopyTableToClipboard(copyComparisonTableBtn, tbl, {
+                    factionTitle: `Faction Activity Comparison (${labelTitle}) — ${currentFactionName} vs ${ownFactionName}`,
+                    excludeColumns: []
+                });
+            });
+        }
+        const copyActivityDetailTableBtn = document.getElementById('copyActivityDetailTableBtn');
+        if (copyActivityDetailTableBtn) {
+            copyActivityDetailTableBtn.addEventListener('click', async () => {
+                const detailTbl = document.getElementById('membersTableActivityDetail');
+                await battleStatsCopyTableToClipboard(copyActivityDetailTableBtn, detailTbl, {
+                    factionTitle: `${currentFactionName} — activity list (${labelTitle})`,
+                    excludeColumns: ['ffscore']
+                });
+            });
+        }
     };
     
     // Function to create activity graph
-    const createActivityGraph = (sortedMemberIDs, membersObject, activityHours, ownFactionData = null, periodMonths = 3) => {
+    const createActivityGraph = (sortedMemberIDs, membersObject, activityHours, ownFactionData = null, activityPeriodLabel = 'Last 3 Months') => {
         const canvas = document.getElementById('activityGraph');
         if (!canvas) return;
         
@@ -5696,11 +6264,17 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Prepare data (already sorted: most active to least active)
         const labels = sortedMemberIDs.map(id => {
-            const member = membersObject[id];
-            return member.name;
+            const idStr = String(id);
+            const member = membersObject[idStr] || membersObject[id];
+            return member ? member.name : `Player ${idStr}`;
         });
         
-        const data = sortedMemberIDs.map(id => activityHours[id] || 0);
+        const data = sortedMemberIDs.map(id => {
+            const idStr = String(id);
+            const v = activityHours[idStr] ?? activityHours[id];
+            if (v == null || typeof v !== 'number' || isNaN(v)) return NaN;
+            return v;
+        });
         
         // Create line chart (similar to admin dashboard)
         window.activityChart = new Chart(ctx, {
@@ -5708,7 +6282,7 @@ document.addEventListener('DOMContentLoaded', () => {
             data: {
                 labels: labels,
                 datasets: [{
-                    label: `Activity (Hours) - ${periodMonths === 1 ? 'Last Month' : `Last ${periodMonths} Months`}`,
+                    label: `Activity (Hours) - ${activityPeriodLabel}`,
                     data: data,
                     borderColor: '#ffd700', // Yellow to match app styling
                     backgroundColor: 'rgba(255, 215, 0, 0.1)',
@@ -5747,7 +6321,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         borderWidth: 1,
                         callbacks: {
                             label: function(context) {
-                                return `Activity: ${formatHoursMinutes(context.parsed.y)}`;
+                                const y = context.parsed.y;
+                                if (y == null || (typeof y === 'number' && isNaN(y))) {
+                                    return 'Activity: incomplete (re-run Check Activity)';
+                                }
+                                return `Activity: ${formatHoursMinutes(y)}`;
                             }
                         }
                     }
@@ -5798,6 +6376,168 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     };
+
+    /**
+     * Re-fetch timeplayed (now + period start) for one member, merge into activity caches, update row + graph.
+     * Used when Check Activity left "-" (cache-only or failed snapshots).
+     */
+    async function retryBattleStatsActivityForPlayer(playerId, buttonEl) {
+        const apiKey = localStorage.getItem('tornApiKey');
+        if (!apiKey) {
+            alert('Please set your API key in the sidebar first.');
+            return;
+        }
+        const ctx = window.currentActivityData;
+        if (!ctx || !ctx.sortedMemberIDs) {
+            alert('Run Check Activity first, then use retry.');
+            return;
+        }
+        let ts = ctx.activityTimestamps;
+        const cfgRetry = resolvePeriodConfigFromActivityContext(ctx);
+        if (!ts && ctx.factionID && (ctx.periodConfig || ctx.periodMonths != null)) {
+            const periodDays = cfgRetry.periodDays;
+            const pastTs = Math.floor((Date.now() - (periodDays * 24 * 60 * 60 * 1000)) / 1000);
+            ts = {
+                nowTimestamp: Math.floor(Date.now() / 1000),
+                pastTimestamp: pastTs,
+                pastTimestampDay: Math.floor(pastTs / 86400) * 86400,
+                dateKey: new Date().toISOString().split('T')[0],
+                factionID: ctx.factionID,
+                normalizedFactionId: normalizeBattleStatsFactionId(ctx.factionID),
+                periodConfig: cfgRetry,
+                cacheKeySegment: cfgRetry.cacheKeySegment,
+                periodDays: cfgRetry.periodDays
+            };
+            ctx.activityTimestamps = ts;
+        }
+        if (!ts) {
+            alert('Activity session expired. Run Check Activity again.');
+            return;
+        }
+        const id = String(playerId);
+        const { nowTimestamp, pastTimestamp, pastTimestampDay, dateKey, factionID } = ts;
+        const fidRetry = normalizeBattleStatsFactionId(ts.normalizedFactionId ?? factionID);
+        const cacheSeg = ts.cacheKeySegment || ts.periodConfig?.cacheKeySegment || String(ts.periodMonths ?? '3');
+        const member = ctx.membersObject[id] || ctx.membersObject[playerId];
+        const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
+
+        const requests = [
+            {
+                playerId: id,
+                timestamp: nowTimestamp,
+                url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
+            },
+            {
+                playerId: id,
+                timestamp: pastEff,
+                url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${pastEff}&key=${apiKey}`
+            }
+        ];
+
+        const fetched = {};
+        const ingest = (data, request) => {
+            const timeplayed = extractTimeplayedFromPersonalstatsResponse(data);
+            const pid = String(request.playerId);
+            if (timeplayed === null) return;
+            if (!fetched[pid]) fetched[pid] = {};
+            fetched[pid][request.timestamp] = timeplayed;
+        };
+
+        const origHtml = buttonEl.innerHTML;
+        buttonEl.disabled = true;
+        buttonEl.textContent = '…';
+        buttonEl.style.opacity = '0.7';
+
+        try {
+            await window.batchApiCallsWithRateLimit(requests, {
+                onSuccess: (data, req) => ingest(data, req),
+                onError: (err, req) => console.error('Activity retry:', req?.playerId, err)
+            });
+
+            const nowVal = fetched[id]?.[nowTimestamp];
+            const pastVal = fetched[id]?.[pastEff];
+            const hasC = typeof nowVal === 'number' && !isNaN(nowVal);
+            const hasP = typeof pastVal === 'number' && !isNaN(pastVal);
+
+            if (!hasC || !hasP) {
+                buttonEl.disabled = false;
+                buttonEl.innerHTML = origHtml;
+                buttonEl.style.opacity = '';
+                alert('Could not load both timeplayed snapshots for this player. Wait a moment and try again.');
+                return;
+            }
+
+            const pastKeySuffix = `${fidRetry}_${cacheSeg}_${pastTimestampDay}`;
+            const nowKeySuffix = `${fidRetry}_${dateKey}`;
+            const pastMerged = { ...(getBattleStatsActivityCache(
+                BATTLE_STATS_ACTIVITY_PAST_PREFIX,
+                pastKeySuffix,
+                BATTLE_STATS_ACTIVITY_PAST_TTL_MS
+            ) || {}) };
+            pastMerged[id] = { t: pastEff, v: pastVal };
+            setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_PAST_PREFIX, pastKeySuffix, pastMerged);
+
+            const nowMerged = { ...(getBattleStatsActivityCache(
+                BATTLE_STATS_ACTIVITY_NOW_PREFIX,
+                nowKeySuffix,
+                BATTLE_STATS_ACTIVITY_NOW_TTL_MS
+            ) || {}) };
+            nowMerged[id] = nowVal;
+            setBattleStatsActivityCache(BATTLE_STATS_ACTIVITY_NOW_PREFIX, nowKeySuffix, nowMerged);
+
+            const diffSec = nowVal - pastVal;
+            const hours = Math.max(0, diffSec) / 3600;
+            ctx.activityHours[id] = hours;
+
+            const resultsRoot = document.getElementById('battle-stats-results');
+            const row = resultsRoot?.querySelector(`tr[data-player-id="${id}"]`);
+            if (row) {
+                const td = row.querySelector('td[data-column="activity"]');
+                if (td) {
+                    td.textContent = formatHoursMinutes(hours);
+                    td.setAttribute('data-value', String(hours));
+                }
+            }
+
+            createActivityGraph(
+                ctx.sortedMemberIDs,
+                ctx.membersObject,
+                ctx.activityHours,
+                null,
+                resolvePeriodConfigFromActivityContext(ctx).labelTitle
+            );
+
+            const incomplete = ctx.sortedMemberIDs.filter(pid => ctx.activityHours[String(pid)] == null).length;
+            window.battleStatsLastIncompleteActivityCount = incomplete;
+            const notice = document.getElementById('activity-incomplete-notice');
+            if (incomplete === 0) {
+                notice?.remove();
+            } else if (notice) {
+                notice.innerHTML = `${incomplete} member(s) still show &quot;-&quot; after automatic retries — the API didn&apos;t return full timeplayed data for them. Use the <strong>↻</strong> button next to a dash to retry that member, or run <strong>Check Activity</strong> again.`;
+            }
+        } catch (e) {
+            console.error('retryBattleStatsActivityForPlayer', e);
+            buttonEl.disabled = false;
+            buttonEl.innerHTML = origHtml;
+            buttonEl.style.opacity = '';
+            alert('Retry failed: ' + (e.message || e));
+            return;
+        }
+    }
+
+    if (!window._battleStatsActivityRetryDelegationBound) {
+        window._battleStatsActivityRetryDelegationBound = true;
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.activity-retry-btn');
+            if (!btn) return;
+            const resultsRoot = document.getElementById('battle-stats-results');
+            if (!resultsRoot || !resultsRoot.contains(btn)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const pid = btn.getAttribute('data-player-id');
+            if (pid) retryBattleStatsActivityForPlayer(pid, btn);
+        });
+    }
 
     // --- DETAILED STATS COLLECTION ---
     // Global cache for detailed stats to persist across view switches
@@ -6906,6 +7646,30 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             return `${days} days ago`;
         }
+    }
+
+    /** Unix seconds for sorting Last online (Torn faction members last_action; online/idle without ts → now). */
+    function getMemberLastOnlineSortValue(member) {
+        if (!member) return 0;
+        const ts = member.lastActionTimestamp;
+        if (ts != null && !isNaN(Number(ts))) return Number(ts);
+        const st = (member.lastActionStatus || '').toLowerCase();
+        if (st === 'online' || st === 'idle') return Math.floor(Date.now() / 1000);
+        return 0;
+    }
+
+    /** Human-readable last online from v2 /faction/.../members last_action (same fields as War Dashboard). */
+    function formatMemberLastOnlineDisplay(member) {
+        if (!member) return 'N/A';
+        const rel = (member.lastActionRelative || '').trim();
+        if (rel) return rel;
+        const ts = member.lastActionTimestamp;
+        if (ts != null && !isNaN(Number(ts))) {
+            return formatRelativeTime(Number(ts) * 1000);
+        }
+        const st = (member.lastActionStatus || '').trim();
+        if (st) return st;
+        return 'N/A';
     }
 
     async function handleWarReportFetch() {
