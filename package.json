@@ -1,0 +1,11 @@
+{
+  "name": "jimidys-faction-tools",
+  "private": true,
+  "description": "Local dev: npm run dev (Vite + Functions proxy for localhost CORS)",
+  "scripts": {
+    "dev": "vite"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

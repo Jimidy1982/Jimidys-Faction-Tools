@@ -1,15 +1,72 @@
 /**
  * Activity tracker backend:
- * - Callable: addTrackedFaction(factionId, apiKey, userId) / removeTrackedFaction(factionId, userId)
- * - Scheduled: every 5 min, read trackedFactionKeys (one key per faction), call Torn API, write activitySamples. 7-day retention.
+ * - HTTP: addTrackedFaction / removeTrackedFaction / listMyActivityFactions (optional apiKey reconciles legacy trackedFactionKeys).
+ * - Scheduled: every 5 min, sampleActivity reads trackedFactionKeys, writes activitySamples.
  */
+const { setGlobalOptions } = require('firebase-functions/v2');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
+
+/**
+ * Default region for Gen2 (Firestore default "London" does NOT move functions — these deploy to us-central1).
+ * Do not set invoker here: it may not apply to callables. Use callableOpts() on each onCall instead.
+ */
+setGlobalOptions({
+  region: 'us-central1',
+});
+
+/** Origins for VIP onCall handlers (SDK still omits invoker for callables; activity uses onRequest instead). */
+const CALLABLE_CORS = [
+  /^https?:\/\/localhost(?::\d+)?$/,
+  /^https?:\/\/127\.0\.0\.1(?::\d+)?$/,
+  'https://jimidy-s-faction-tools.web.app',
+  'https://jimidy-s-faction-tools.firebaseapp.com',
+  /^https:\/\/jimidy1982\.github\.io$/,
+];
+
+/** Per-callable options (VIP only — invoker may not apply to onCall in manifest). */
+function callableOpts(more) {
+  return {
+    region: 'us-central1',
+    invoker: 'public',
+    cors: CALLABLE_CORS,
+    ...(more || {}),
+  };
+}
+
+/** Gen2 onRequest applies invoker to httpsTrigger; use for browser-facing activity registration. */
+const ACTIVITY_HTTP_OPTS = {
+  region: 'us-central1',
+  invoker: 'public',
+  cors: true,
+  maxInstances: 10,
+};
+
+function httpsErrorToCallableJson(err) {
+  const raw = err && err.code != null ? String(err.code).replace(/^functions\//, '') : 'internal';
+  const map = {
+    'invalid-argument': 'INVALID_ARGUMENT',
+    'permission-denied': 'PERMISSION_DENIED',
+    'not-found': 'NOT_FOUND',
+    'already-exists': 'ALREADY_EXISTS',
+    'failed-precondition': 'FAILED_PRECONDITION',
+    'unauthenticated': 'UNAUTHENTICATED',
+    'internal': 'INTERNAL',
+  };
+  return {
+    error: {
+      message: err.message || 'Error',
+      status: map[raw] || 'INTERNAL',
+    },
+  };
+}
 
 const ACTIVITY_SAMPLES_COLLECTION = 'activitySamples';
 const TRACKED_FACTIONS_COLLECTION = 'trackedFactions';
 const TRACKED_FACTION_KEYS_COLLECTION = 'trackedFactionKeys';
+/** Factions a Torn player registered for 24/7 sampling (cross-browser / localhost vs prod). */
+const ACTIVITY_REGISTRATIONS_BY_PLAYER = 'activityRegistrationsByPlayer';
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICK_MS = 5 * 60 * 1000;
 
@@ -26,12 +83,63 @@ async function fetchFactionMembers(apiKey, factionId) {
   return list;
 }
 
+/** Resolve Torn player id from API key (same selections as War Dashboard client). */
+async function fetchTornPlayerIdFromApiKey(apiKey) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new HttpsError('invalid-argument', 'apiKey is empty');
+  const url = `https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(key)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.error) throw new HttpsError('invalid-argument', 'Torn API: ' + String(data.error));
+  const pid = data.player_id;
+  if (pid == null) throw new HttpsError('internal', 'Torn API returned no player_id');
+  return String(pid);
+}
+
+/**
+ * Legacy rows only had { key, userId }. Match stored keys to this API key, set tornPlayerId, and refresh activityRegistrationsByPlayer.
+ * @returns {Promise<string[]>} faction doc ids where this key was registered
+ */
+async function reconcileActivityKeysForApiKey(apiKeyTrim, verifiedPlayerId) {
+  const snap = await db.collection(TRACKED_FACTION_KEYS_COLLECTION).get();
+  const matchedFactionIds = [];
+  for (const doc of snap.docs) {
+    const keysArr = doc.data().keys || [];
+    const hasKey = keysArr.some((e) => String(e.key || '').trim() === apiKeyTrim);
+    if (!hasKey) continue;
+    matchedFactionIds.push(doc.id);
+    const needsPatch = keysArr.some(
+      (e) => String(e.key || '').trim() === apiKeyTrim && String(e.tornPlayerId || '') !== verifiedPlayerId
+    );
+    if (needsPatch) {
+      const newKeys = keysArr.map((e) => {
+        if (String(e.key || '').trim() === apiKeyTrim) {
+          return { key: e.key, userId: e.userId, tornPlayerId: verifiedPlayerId };
+        }
+        const o = { key: e.key, userId: e.userId };
+        if (e.tornPlayerId) o.tornPlayerId = e.tornPlayerId;
+        return o;
+      });
+      await doc.ref.set({ keys: newKeys });
+    }
+  }
+  if (matchedFactionIds.length > 0) {
+    const prefRef = db.collection(ACTIVITY_REGISTRATIONS_BY_PLAYER).doc(verifiedPlayerId);
+    const pSnap = await prefRef.get();
+    const cur = pSnap.exists ? (pSnap.data().factionIds || []).map(String) : [];
+    const merged = [...new Set([...cur, ...matchedFactionIds])];
+    await prefRef.set({ factionIds: merged, updatedAt: Date.now() }, { merge: true });
+  }
+  return matchedFactionIds;
+}
+
+/** Members with last_action status exactly "online" (excludes "idle" — not counted as active online time). */
 function onlineIds(members) {
   return members
     .filter((m) => {
       const la = m.last_action ?? {};
       const action = (la.status ?? 'Offline').toString().toLowerCase();
-      return action === 'online' || action === 'idle';
+      return action === 'online';
     })
     .map((m) => String(m.id));
 }
@@ -39,51 +147,185 @@ function onlineIds(members) {
 if (!admin.apps.length) admin.initializeApp();
 const db = admin.firestore();
 
-/** Add a faction to track using the caller's API key. Keys stored per-faction (multiple users can add same faction with their own keys). */
-exports.addTrackedFaction = onCall(
-  { maxInstances: 10 },
-  async (request) => {
-    const { factionId, apiKey, userId } = request.data || {};
+/** POST JSON body: { "data": { factionId, apiKey, userId, tornPlayerId? } } — same shape as callable; response { result } | { error }. */
+exports.addTrackedFaction = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) => {
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+  try {
+    const data = req.body && req.body.data;
+    const { factionId, apiKey, userId, tornPlayerId } = data || {};
     const fid = String(factionId || '').trim();
     const key = String(apiKey || '').trim();
     const uid = String(userId || '').trim();
+    const tornPid = tornPlayerId != null && String(tornPlayerId).trim() !== '' ? String(tornPlayerId).trim() : '';
     if (!fid || !key || !uid) {
-      throw new HttpsError('invalid-argument', 'factionId, apiKey, and userId are required');
+      res.status(200).json(
+        httpsErrorToCallableJson(new HttpsError('invalid-argument', 'factionId, apiKey, and userId are required'))
+      );
+      return;
     }
     const ref = db.collection(TRACKED_FACTION_KEYS_COLLECTION).doc(fid);
     const snap = await ref.get();
     const keys = (snap.exists && snap.data().keys) || [];
     const next = keys.filter((e) => e.userId !== uid);
-    next.push({ key: key, userId: uid });
+    const entry = { key: key, userId: uid };
+    if (tornPid) entry.tornPlayerId = tornPid;
+    next.push(entry);
     await ref.set({ keys: next });
     await db.collection(TRACKED_FACTIONS_COLLECTION).doc(fid).set({ addedAt: Date.now() }, { merge: true });
-    return { ok: true };
+    if (tornPid) {
+      await db
+        .collection(ACTIVITY_REGISTRATIONS_BY_PLAYER)
+        .doc(tornPid)
+        .set(
+          {
+            factionIds: admin.firestore.FieldValue.arrayUnion(fid),
+            updatedAt: Date.now(),
+          },
+          { merge: true }
+        );
+    }
+    res.status(200).json({ result: { ok: true } });
+  } catch (e) {
+    if (e instanceof HttpsError) {
+      res.status(200).json(httpsErrorToCallableJson(e));
+      return;
+    }
+    console.error('addTrackedFaction', e);
+    res.status(200).json({
+      error: { message: e.message || String(e), status: 'INTERNAL' },
+    });
   }
-);
+});
 
-/** Remove this user's key for the faction. If no keys left, faction is no longer tracked. */
-exports.removeTrackedFaction = onCall(
-  { maxInstances: 10 },
-  async (request) => {
-    const { factionId, userId } = request.data || {};
+/** POST JSON body: { "data": { factionId, userId, tornPlayerId? } }. */
+exports.removeTrackedFaction = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) => {
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+  try {
+    const data = req.body && req.body.data;
+    const { factionId, userId, tornPlayerId } = data || {};
     const fid = String(factionId || '').trim();
     const uid = String(userId || '').trim();
+    const tornPid = tornPlayerId != null && String(tornPlayerId).trim() !== '' ? String(tornPlayerId).trim() : '';
     if (!fid || !uid) {
-      throw new HttpsError('invalid-argument', 'factionId and userId are required');
+      res.status(200).json(
+        httpsErrorToCallableJson(new HttpsError('invalid-argument', 'factionId and userId are required'))
+      );
+      return;
     }
     const ref = db.collection(TRACKED_FACTION_KEYS_COLLECTION).doc(fid);
     const snap = await ref.get();
-    if (!snap.exists) return { ok: true };
-    const keys = (snap.data().keys || []).filter((e) => e.userId !== uid);
+    if (!snap.exists) {
+      res.status(200).json({ result: { ok: true } });
+      return;
+    }
+    const keysBefore = snap.data().keys || [];
+    const keys = keysBefore.filter((e) => e.userId !== uid);
+    if (tornPid) {
+      const stillHasTorn = keys.some((e) => String(e.tornPlayerId || '') === tornPid);
+      if (!stillHasTorn) {
+        await db
+          .collection(ACTIVITY_REGISTRATIONS_BY_PLAYER)
+          .doc(tornPid)
+          .set({ factionIds: admin.firestore.FieldValue.arrayRemove(fid) }, { merge: true });
+      }
+    }
     if (keys.length === 0) {
       await ref.delete();
       await db.collection(TRACKED_FACTIONS_COLLECTION).doc(fid).delete();
     } else {
       await ref.set({ keys });
     }
-    return { ok: true };
+    res.status(200).json({ result: { ok: true } });
+  } catch (e) {
+    if (e instanceof HttpsError) {
+      res.status(200).json(httpsErrorToCallableJson(e));
+      return;
+    }
+    console.error('removeTrackedFaction', e);
+    res.status(200).json({
+      error: { message: e.message || String(e), status: 'INTERNAL' },
+    });
   }
-);
+});
+
+/**
+ * POST JSON body: { "data": { userId?, tornPlayerId?, apiKey? } } — at least one required.
+ * If **apiKey** is sent, verifies it with Torn, must match **tornPlayerId** when both sent, then **migrates** legacy
+ * `trackedFactionKeys` rows (same stored key, missing tornPlayerId) and fills **activityRegistrationsByPlayer**.
+ */
+exports.listMyActivityFactions = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) => {
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+  try {
+    const data = req.body && req.body.data;
+    const { userId, tornPlayerId, apiKey } = data || {};
+    const uid = String(userId || '').trim();
+    const tornPidParam = tornPlayerId != null && String(tornPlayerId).trim() !== '' ? String(tornPlayerId).trim() : '';
+    const keyTrim = apiKey != null && String(apiKey).trim() !== '' ? String(apiKey).trim() : '';
+
+    if (!uid && !tornPidParam && !keyTrim) {
+      res.status(200).json(
+        httpsErrorToCallableJson(
+          new HttpsError('invalid-argument', 'userId, tornPlayerId, and/or apiKey is required')
+        )
+      );
+      return;
+    }
+
+    let effectiveTornPid = tornPidParam;
+    if (keyTrim) {
+      const fromApi = await fetchTornPlayerIdFromApiKey(keyTrim);
+      if (tornPidParam && tornPidParam !== fromApi) {
+        res.status(200).json(
+          httpsErrorToCallableJson(
+            new HttpsError('invalid-argument', 'tornPlayerId does not match this API key')
+          )
+        );
+        return;
+      }
+      effectiveTornPid = fromApi;
+      await reconcileActivityKeysForApiKey(keyTrim, effectiveTornPid);
+    }
+
+    const out = new Set();
+    if (effectiveTornPid) {
+      const pref = await db.collection(ACTIVITY_REGISTRATIONS_BY_PLAYER).doc(effectiveTornPid).get();
+      if (pref.exists) {
+        const ids = pref.data().factionIds || [];
+        ids.forEach((id) => out.add(String(id)));
+      }
+    }
+    const allKeys = await db.collection(TRACKED_FACTION_KEYS_COLLECTION).get();
+    allKeys.forEach((doc) => {
+      const arr = doc.data().keys || [];
+      const match = arr.some((k) => {
+        if (uid && k.userId === uid) return true;
+        if (effectiveTornPid && String(k.tornPlayerId || '') === effectiveTornPid) return true;
+        return false;
+      });
+      if (match) out.add(doc.id);
+    });
+    const factionIds = Array.from(out).sort((a, b) => Number(a) - Number(b));
+    res.status(200).json({ result: { factionIds } });
+  } catch (e) {
+    if (e instanceof HttpsError) {
+      res.status(200).json(httpsErrorToCallableJson(e));
+      return;
+    }
+    console.error('listMyActivityFactions', e);
+    res.status(200).json({
+      error: { message: e.message || String(e), status: 'INTERNAL' },
+    });
+  }
+});
 
 // --- VIP service (migrated from Apps Script) ---
 const VIP_BALANCES_COLLECTION = 'vipBalances';
@@ -91,7 +333,7 @@ const VIP_TRANSACTIONS_COLLECTION = 'vipTransactions';
 
 /** Get VIP balance by playerId or playerName. Returns same shape as Apps Script (playerId, playerName, totalXanaxSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) or null. */
 exports.getVipBalance = onCall(
-  { maxInstances: 10 },
+  callableOpts({ maxInstances: 10 }),
   async (request) => {
     const { playerId, playerName } = request.data || {};
     if (playerId) {
@@ -128,7 +370,7 @@ exports.getVipBalance = onCall(
 
 /** Update or create VIP balance row. */
 exports.updateVipBalance = onCall(
-  { maxInstances: 10 },
+  callableOpts({ maxInstances: 10 }),
   async (request) => {
     const data = request.data || {};
     const playerId = data.playerId != null ? String(data.playerId) : '';
@@ -213,7 +455,7 @@ async function validateAdminApiKey(apiKey) {
 }
 
 exports.getVipBalancesForAdmin = onCall(
-  { maxInstances: 10 },
+  callableOpts({ maxInstances: 10 }),
   async (request) => {
     const { apiKey } = request.data || {};
     const ok = await validateAdminApiKey(apiKey);
@@ -240,7 +482,7 @@ exports.getVipBalancesForAdmin = onCall(
 
 /** Admin-only: add/update VIP row from player ID + balance (missed events, free trials). Resolves name via Torn API. */
 exports.adminAddVipPlayer = onCall(
-  { maxInstances: 5 },
+  callableOpts({ maxInstances: 5 }),
   async (request) => {
     const { apiKey, playerId, currentBalance, totalXanaxSent } = request.data || {};
     const ok = await validateAdminApiKey(apiKey);
@@ -308,7 +550,7 @@ exports.adminAddVipPlayer = onCall(
 
 /** Admin-only: return VIP transactions for a player (when they sent xanax / deductions). */
 exports.getVipTransactionsForAdmin = onCall(
-  { maxInstances: 10 },
+  callableOpts({ maxInstances: 10 }),
   async (request) => {
     const { apiKey, playerId } = request.data || {};
     const ok = await validateAdminApiKey(apiKey);
@@ -344,7 +586,7 @@ function vipLevelFromBalance(balance) {
 }
 
 exports.importVipBalances = onCall(
-  { maxInstances: 1 },
+  callableOpts({ maxInstances: 1 }),
   async (request) => {
     const { entries } = request.data || {};
     if (!Array.isArray(entries) || entries.length === 0) {
@@ -487,7 +729,7 @@ exports.applyVipDeductions = onSchedule(
 
 /** Admin-only: run VIP deductions now (same logic as scheduled). Returns { updated: number }. */
 exports.applyVipDeductionsNow = onCall(
-  { maxInstances: 5 },
+  callableOpts({ maxInstances: 5 }),
   async (request) => {
     const { apiKey } = request.data || {};
     const ok = await validateAdminApiKey(apiKey);
@@ -533,7 +775,7 @@ exports.applyVipDeductionsNow = onCall(
 
 /** One-time: set every VIP balance doc's lastDeductionDate to now so the next deduction is in 2 days. Admin-only. Use after restoring balances so they don't get zeroed again. */
 exports.resetVipDeductionClock = onCall(
-  { maxInstances: 1 },
+  callableOpts({ maxInstances: 1 }),
   async (request) => {
     const { apiKey } = request.data || {};
     const ok = await validateAdminApiKey(apiKey);

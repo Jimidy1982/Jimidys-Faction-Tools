@@ -15,6 +15,9 @@ service cloud.firestore {
     match /trackedFactionKeys/{factionId} {
       allow read, write: if false;
     }
+    match /activityRegistrationsByPlayer/{playerId} {
+      allow read, write: if false;
+    }
     // VIP: balances and transactions. Backend (Callables) only; client calls callables.
     match /vipBalances/{playerId} {
       allow read, write: if false;
