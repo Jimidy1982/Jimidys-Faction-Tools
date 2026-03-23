@@ -1436,7 +1436,7 @@ nav a:hover::after {
 .welcome-message {
     margin-bottom: 0;
     padding: 8px 12px;
-    padding-bottom: 32px;
+    padding-bottom: 40px; /* room for "How VIP works" (left) + refresh (right) */
     background-color: rgba(255, 215, 0, 0.1);
     border-left: 3px solid var(--accent-color);
     border-radius: 4px;
@@ -1468,6 +1468,98 @@ nav a:hover::after {
 .welcome-refresh-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+}
+
+.vip-info-btn {
+    position: absolute;
+    bottom: 6px;
+    left: 8px;
+    max-width: calc(100% - 44px);
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--secondary-color);
+    color: var(--accent-color);
+    font-size: 0.72rem;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    text-align: left;
+}
+
+.vip-info-btn:hover {
+    background: rgba(255, 215, 0, 0.12);
+    border-color: var(--accent-color);
+}
+
+/* Draw attention when user has no VIP tier yet (level 0) */
+@keyframes welcome-vip-pulse-glow {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.2);
+        border-left-color: var(--accent-color);
+    }
+    50% {
+        box-shadow: 0 0 14px 2px rgba(255, 215, 0, 0.22);
+        border-left-color: #ffe566;
+    }
+}
+
+.welcome-message.welcome-vip-pulse {
+    animation: welcome-vip-pulse-glow 2.2s ease-in-out infinite;
+}
+
+.app-modal-body.vip-info-modal-body {
+    font-size: 0.9rem;
+    line-height: 1.45;
+    color: var(--text-color, #e0e0e0);
+}
+
+.app-modal-body.vip-info-modal-body h3 {
+    margin: 1rem 0 0.4rem 0;
+    font-size: 0.95rem;
+    color: var(--accent-color, #ffd700);
+    font-weight: 700;
+}
+
+.app-modal-body.vip-info-modal-body h3:first-child {
+    margin-top: 0;
+}
+
+.app-modal-body.vip-info-modal-body h4 {
+    margin: 0.85rem 0 0.25rem 0;
+    font-size: 0.88rem;
+    color: #e8c84a;
+    font-weight: 700;
+}
+
+.app-modal-body.vip-info-modal-body h4:first-of-type {
+    margin-top: 0.35rem;
+}
+
+.app-modal-body.vip-info-modal-body ul {
+    margin: 0.35rem 0 0.5rem 1.1rem;
+    padding: 0;
+    color: #b8b8b8;
+}
+
+.app-modal-body.vip-info-modal-body p {
+    margin: 0.4rem 0;
+    color: #c8c8c8;
+}
+
+.app-modal-body.vip-info-modal-body a {
+    color: var(--accent-color);
+    text-decoration: underline;
+}
+
+.app-modal-body.vip-info-modal-body .vip-info-special-offer {
+    margin: 1rem 0 0 0;
+    padding: 10px 12px;
+    background: rgba(255, 215, 0, 0.08);
+    border-left: 3px solid var(--accent-color, #ffd700);
+    border-radius: 4px;
+    font-size: 0.92rem;
+    color: #e8e0c8;
 }
 
 /* Page footer styles */

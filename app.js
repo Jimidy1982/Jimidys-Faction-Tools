@@ -1096,7 +1096,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // Display VIP status in welcome message (appends to existing welcome message)
     function displayVipStatus(vipData, playerName) {
         const welcomeMessage = document.getElementById('welcomeMessage');
-        if (!welcomeMessage || !vipData) return;
+        if (!welcomeMessage) return;
+        if (!vipData) {
+            welcomeMessage.classList.remove('welcome-vip-pulse');
+            return;
+        }
+
+        function applyWelcomeVipPulse() {
+            const level0 = (vipData.vipLevel || 0) === 0;
+            welcomeMessage.classList.toggle('welcome-vip-pulse', level0);
+        }
         
         const vipLevel = vipData.vipLevel;
         const progress = getVipProgress(vipData.currentBalance, vipLevel);
@@ -1143,14 +1152,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
                             </div>
                         </div>
-                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
-                                <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
-                            </div>
-                        </div>
                         <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
             }
             
             welcomeMessage.innerHTML = welcomeText + vipHtml;
+            applyWelcomeVipPulse();
             return;
         }
         
@@ -1206,7 +1212,75 @@ document.addEventListener('DOMContentLoaded', () => {
         // Append VIP status and rate limit settings to welcome message (don't replace)
         const rateLimitHtml = getRateLimitSettingsHtml();
         welcomeMessage.innerHTML = welcomeText + vipHtml + rateLimitHtml;
+        applyWelcomeVipPulse();
     }
+
+    /** Open on-brand modal explaining VIP balance, tiers, decay, and perks (uses VIP_LEVELS thresholds). */
+    function openVipProgramInfoModal() {
+        const existing = document.getElementById('vip-program-info-overlay');
+        if (existing) existing.remove();
+
+        const v1 = VIP_LEVELS[1];
+        const v2 = VIP_LEVELS[2];
+        const v3 = VIP_LEVELS[3];
+        const overlay = document.createElement('div');
+        overlay.id = 'vip-program-info-overlay';
+        overlay.className = 'app-modal-overlay';
+        overlay.setAttribute('role', 'presentation');
+        overlay.innerHTML =
+            '<div class="app-modal" role="dialog" aria-modal="true" aria-labelledby="vip-program-info-title" style="max-width: 520px;">' +
+            '<div class="app-modal-header">' +
+            '<h2 id="vip-program-info-title">VIP program</h2>' +
+            '<button type="button" class="app-modal-close" id="vip-program-info-close" aria-label="Close">×</button>' +
+            '</div>' +
+            '<div class="app-modal-body vip-info-modal-body">' +
+            '<p>Support the tools by sending <strong>Xanax</strong> to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" rel="noopener">Jimidy</a> in Torn. Your <strong>current balance</strong> (tracked here when you use your API key) sets your VIP tier.</p>' +
+            '<h3>Levels (by current balance)</h3>' +
+            '<ul>' +
+            '<li><strong>VIP 1</strong> — ' + v1 + '+ Xanax balance</li>' +
+            '<li><strong>VIP 2</strong> — ' + v2 + '+ Xanax balance</li>' +
+            '<li><strong>VIP 3</strong> — ' + v3 + '+ Xanax balance</li>' +
+            '</ul>' +
+            '<h3>Balance decay</h3>' +
+            '<p>Every <strong>48 hours</strong>, <strong>1 Xanax</strong> is subtracted from your balance (while balance is above zero). If your balance falls below a tier threshold, your VIP level will drop until you send more Xanax.</p>' +
+            '<h3>What you unlock</h3>' +
+            '<h4>VIP 1</h4>' +
+            '<ul>' +
+            '<li><strong>War Report</strong> — custom payout end (set your own end date/time in TCT).</li>' +
+            '<li><strong>Faction Battle Stats</strong> — <strong>Check Activity</strong> (compare member activity over 1 month, 3 months, or a custom number of days).</li>' +
+            '</ul>' +
+            '<h4>VIP 2</h4>' +
+            '<ul>' +
+            '<li><strong>War Dashboard</strong> — full access from <strong>April 1st</strong> (currently in beta and free to try until then).</li>' +
+            '</ul>' +
+            '<h4>VIP 3</h4>' +
+            '<ul>' +
+            '<li><strong>Recruitment</strong> — full access to the Recruitment tool.</li>' +
+            '</ul>' +
+            '<p>Other tools may show VIP badges as features are added.</p>' +
+            '<p class="vip-info-special-offer"><strong>Special offer:</strong> All Xanax sent before the end of <strong>April</strong> will be <strong>doubled</strong> in your balance.</p>' +
+            '<div class="app-modal-actions" style="margin-top: 14px;">' +
+            '<button type="button" class="fetch-button" id="vip-program-info-dismiss">Close</button>' +
+            '</div></div></div>';
+
+        document.body.appendChild(overlay);
+
+        function closeVipInfoModal() {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+        }
+        function onKey(e) {
+            if (e.key === 'Escape') closeVipInfoModal();
+        }
+        document.addEventListener('keydown', onKey);
+
+        overlay.querySelector('#vip-program-info-close').addEventListener('click', closeVipInfoModal);
+        overlay.querySelector('#vip-program-info-dismiss').addEventListener('click', closeVipInfoModal);
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) closeVipInfoModal();
+        });
+    }
+    window.openVipProgramInfoModal = openVipProgramInfoModal;
     
     // Function to generate rate limit settings HTML
     function getRateLimitSettingsHtml() {
@@ -3324,15 +3398,18 @@ document.addEventListener('DOMContentLoaded', () => {
     async function updateWelcomeMessage() {
         const welcomeMessage = document.getElementById('welcomeMessage');
         const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
+        const vipInfoBtn = document.getElementById('vipInfoBtn');
         if (!welcomeMessage) return;
         
         function setWelcomeVisible(visible) {
             welcomeMessage.style.display = visible ? 'block' : 'none';
             if (welcomeRefreshBtn) welcomeRefreshBtn.style.display = visible ? 'block' : 'none';
+            if (vipInfoBtn) vipInfoBtn.style.display = visible ? 'block' : 'none';
         }
         
         const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
         if (!apiKey || apiKey.length !== 16) {
+            welcomeMessage.classList.remove('welcome-vip-pulse');
             setWelcomeVisible(false);
             // Clear cache for old API key
             if (welcomeMessageTimeout) {
@@ -3350,6 +3427,7 @@ document.addEventListener('DOMContentLoaded', () => {
         welcomeMessageTimeout = setTimeout(async () => {
             // Show loading state
             setWelcomeVisible(true);
+            welcomeMessage.classList.remove('welcome-vip-pulse');
             welcomeMessage.innerHTML = '<span style="color: #888;">Loading...</span>';
             
             try {
@@ -3401,6 +3479,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             // Still no VIP data after check, ensure rate limit settings are shown
                             const rateLimitHtml = getRateLimitSettingsHtml();
                             welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
+                            welcomeMessage.classList.add('welcome-vip-pulse');
                         }
                     }
                 } else {
@@ -3457,12 +3536,24 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 const welcomeMessage = document.getElementById('welcomeMessage');
                 const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
-                if (welcomeMessage) welcomeMessage.style.display = 'none';
+                const vipInfoBtnEl = document.getElementById('vipInfoBtn');
+                if (welcomeMessage) {
+                    welcomeMessage.style.display = 'none';
+                    welcomeMessage.classList.remove('welcome-vip-pulse');
+                }
                 if (welcomeRefreshBtn) welcomeRefreshBtn.style.display = 'none';
+                if (vipInfoBtnEl) vipInfoBtnEl.style.display = 'none';
             }
         });
     }
     
+    const vipInfoBtnNav = document.getElementById('vipInfoBtn');
+    if (vipInfoBtnNav) {
+        vipInfoBtnNav.addEventListener('click', function () {
+            if (typeof window.openVipProgramInfoModal === 'function') window.openVipProgramInfoModal();
+        });
+    }
+
     // Welcome refresh button: recheck VIP status and new Xanax sent (with cooldown)
     const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
     if (welcomeRefreshBtn) {
@@ -3499,6 +3590,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     applyVipGating(0);
                     const rateLimitHtml = getRateLimitSettingsHtml();
                     welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
+                    welcomeMessage.classList.add('welcome-vip-pulse');
                 }
                 if (!welcomeMessage.innerHTML.includes('API calls/minute')) {
                     welcomeMessage.innerHTML += getRateLimitSettingsHtml();
@@ -3506,6 +3598,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (e) {
                 console.error('Welcome refresh failed:', e);
                 welcomeMessage.innerHTML = '<span style="color: #c0392b;">Refresh failed. Try again.</span>';
+                welcomeMessage.classList.remove('welcome-vip-pulse');
             }
             this.textContent = '↻';
             this.title = 'Recheck VIP status and new Xanax sent';
