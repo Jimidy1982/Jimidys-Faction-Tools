@@ -4287,3 +4287,22 @@ th small {
         min-width: 120px;
     }
 }
+
+/* War Payout Calculator: white/light calendar & clock icons on dark date/time inputs (Chrome, Edge, Safari) */
+.war-report-tct-date::-webkit-calendar-picker-indicator,
+.war-report-tct-time::-webkit-calendar-picker-indicator {
+    filter: invert(1) brightness(1.25);
+    cursor: pointer;
+    opacity: 0.95;
+}
+
+/* Firefox date picker icon */
+.war-report-tct-date::-moz-calendar-picker-indicator {
+    filter: invert(1) brightness(1.25);
+    cursor: pointer;
+    opacity: 0.95;
+}
+
+.war-report-custom-end-vip-locked {
+    cursor: help;
+}

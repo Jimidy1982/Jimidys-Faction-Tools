@@ -7,10 +7,11 @@ A comprehensive web-based suite of tools for Torn faction management and analysi
 Gen2 Cloud Functions often **block CORS preflight** from `http://localhost` even when production works. This repo includes **Vite** with a proxy so callables hit `/.functions-proxy/...` on the same origin (no CORS).
 
 1. `npm install` (once)
-2. `npm run dev` — open **http://localhost:5173** (not Live Server on another port unless you add the same proxy there)
-3. `firebase-config.js` automatically uses the proxy when `hostname` is `localhost` or `127.0.0.1`
+2. `npm run dev` — open **http://localhost:5173** (Vite uses `strictPort`; avoid Live Server or random ports — **no proxy → Torn API calls fail CORS in the browser**)
+3. `firebase-config.js` automatically uses `/.functions-proxy` when `hostname` is `localhost` or `127.0.0.1`
+4. **Torn API** (`api.torn.com`) has no CORS headers; on localhost, `app.js` and the War Payout Calculator rewrite requests to **`/.torn-api-proxy`** (see `vite.config.js`). Use the Vite dev server so those requests are proxied.
 
-**Production** (GitHub Pages, etc.) still calls `https://us-central1-…cloudfunctions.net` directly.
+**Production** (GitHub Pages, etc.) calls Torn and Cloud Functions **directly** from the browser (same as before).
 
 ## 🎯 Current Tools
 

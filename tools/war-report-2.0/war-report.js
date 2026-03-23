@@ -86,6 +86,122 @@ if (!window.warReportData) {
 // Create local reference for convenience (use var to allow redeclaration on script reload)
 var warData = window.warReportData;
 
+/**
+ * Browser CORS blocks https://api.torn.com from localhost. Vite proxies /.torn-api-proxy → api.torn.com.
+ * Main app defines window.getTornApiFetchUrl; this fallback matches when war-report runs standalone on Vite.
+ */
+function warReportTornFetchUrl(url) {
+    if (typeof window.getTornApiFetchUrl === 'function') return window.getTornApiFetchUrl(url);
+    try {
+        const h = String(location.hostname || '').toLowerCase();
+        if (h !== 'localhost' && h !== '127.0.0.1') return url;
+        const u = new URL(url);
+        if (u.hostname !== 'api.torn.com') return url;
+        return '/.torn-api-proxy' + u.pathname + u.search;
+    } catch (e) {
+        return url;
+    }
+}
+
+/**
+ * Torn City Time (TCT) is aligned to UTC and does not use daylight saving.
+ * Date/time inputs are interpreted as UTC wall time (same clock as in-game TCT).
+ */
+var WAR_PAYOUT_CUSTOM_END_TOOLTIP =
+    'Torn City Time = UTC (no daylight saving). Sets the exact stop time for fetching attacks and payouts. Overrides both the ranked war end time and the chain extension (e.g. early surrender, or allow more hits and chains).';
+
+/** Minimum VIP tier to use Custom payout end (synced with Firebase vipBalances). */
+var WAR_REPORT_CUSTOM_END_VIP_REQUIRED = 1;
+
+/**
+ * Sets window.warReportCustomEndVipUnlocked — uses main app VIP state when known, else getVipBalance callable.
+ */
+async function resolveWarReportCustomEndVipAccess(apiKey) {
+    window.warReportCustomEndVipUnlocked = false;
+    const key = (apiKey || '').trim();
+    if (!key) return false;
+
+    if (window.vipLevelKnown === true && typeof window.currentVipLevel === 'number') {
+        window.warReportCustomEndVipUnlocked = window.currentVipLevel >= WAR_REPORT_CUSTOM_END_VIP_REQUIRED;
+        return window.warReportCustomEndVipUnlocked;
+    }
+
+    try {
+        if (typeof firebase === 'undefined' || !firebase.functions) {
+            return false;
+        }
+        const userRes = await fetch(warReportTornFetchUrl(`https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(key)}`));
+        const userData = await userRes.json();
+        if (userData.error || userData.player_id == null) return false;
+        const fn = firebase.functions().httpsCallable('getVipBalance');
+        const res = await fn({ playerId: String(userData.player_id) });
+        const d = res && res.data;
+        const lvl = d && typeof d.vipLevel === 'number' ? d.vipLevel : 0;
+        window.warReportCustomEndVipUnlocked = lvl >= WAR_REPORT_CUSTOM_END_VIP_REQUIRED;
+        return window.warReportCustomEndVipUnlocked;
+    } catch (e) {
+        console.warn('[War Report] VIP check for custom end:', e);
+        window.warReportCustomEndVipUnlocked = false;
+        return false;
+    }
+}
+
+/**
+ * Format unix seconds as a readable string in Torn City Time (UTC).
+ */
+function formatUnixAsTct(unixSeconds) {
+    if (unixSeconds == null || !Number.isFinite(Number(unixSeconds))) return '—';
+    const d = new Date(Number(unixSeconds) * 1000);
+    return (
+        d.toLocaleString('en-GB', {
+            timeZone: 'UTC',
+            weekday: 'short',
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }) + ' TCT'
+    );
+}
+
+/**
+ * Values for <input type="date"> and <input type="time"> from unix (UTC / TCT wall clock).
+ */
+function unixToTctDateTimeInputValues(unixSeconds) {
+    const d = new Date(Number(unixSeconds) * 1000);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    const h = String(d.getUTCHours()).padStart(2, '0');
+    const min = String(d.getUTCMinutes()).padStart(2, '0');
+    return {
+        dateStr: `${y}-${m}-${day}`,
+        timeStr: `${h}:${min}`
+    };
+}
+
+/**
+ * Parse date (YYYY-MM-DD) + time (HH:mm) as UTC (TCT) → unix seconds.
+ */
+function tctDateTimeInputsToUnix(dateStr, timeStr) {
+    if (!dateStr || timeStr == null || String(timeStr).trim() === '') return null;
+    const dm = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!dm) return null;
+    const y = parseInt(dm[1], 10);
+    const mo = parseInt(dm[2], 10);
+    const d = parseInt(dm[3], 10);
+    const tm = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})/);
+    if (!tm) return null;
+    const hh = parseInt(tm[1], 10);
+    const mm = parseInt(tm[2], 10);
+    if (!y || !mo || !d || hh === undefined || mm === undefined || Number.isNaN(hh) || Number.isNaN(mm)) return null;
+    const ms = Date.UTC(y, mo - 1, d, hh, mm, 0);
+    if (Number.isNaN(ms)) return null;
+    return Math.floor(ms / 1000);
+}
+
 // Global state for linked options group
 if (typeof window.chainGroupLinked === 'undefined') {
     window.chainGroupLinked = true; // All three options are linked together by default
@@ -488,7 +604,7 @@ function initWarReport2() {
         if (apiKey && factionIdInput) {
             try {
                 console.log('[WAR REPORT 2.0] Fetching user profile...');
-                const response = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+                const response = await fetch(warReportTornFetchUrl(`https://api.torn.com/user/?selections=profile&key=${apiKey}`));
                 const data = await response.json();
                 
                 if (data.error) {
@@ -542,6 +658,8 @@ function initWarReport2() {
         const startDate = formatWarDate(war.start);
         const endDate = formatWarDate(war.end);
         
+        // Left border accent: green = ongoing, gold = ended & upcoming (matches tool theme)
+        const borderAccentColor = status === 'Ongoing' ? '#4CAF50' : '#ffd700';
         const statusColor = status === 'Ongoing' ? '#4CAF50' : status === 'Ended' ? '#999' : '#ffd700';
         
         // Check if this war has a matching chain
@@ -551,11 +669,11 @@ function initWarReport2() {
         card.style.cssText = `
             padding: 15px;
             background-color: #2a2a2a;
-            border-left: 4px solid ${statusColor};
+            border-left: 4px solid ${borderAccentColor};
             border-radius: 4px;
             display: grid;
-            grid-template-columns: 1fr 250px auto;
-            align-items: center;
+            grid-template-columns: 1fr minmax(200px, 280px) auto;
+            align-items: start;
             gap: 15px;
             transition: background-color 0.2s;
         `;
@@ -568,7 +686,46 @@ function initWarReport2() {
         const buttonClass = isWarEnded ? 'btn btn-success' : 'btn btn-secondary';
         const buttonText = isWarEnded ? 'Fetch War Data' : `${status} War`;
         const buttonStyle = isWarEnded ? 'white-space: nowrap;' : 'white-space: nowrap; cursor: not-allowed; opacity: 0.6;';
-        
+        const warEndUnix = war.end || 0;
+        const tctDefaults = warEndUnix ? unixToTctDateTimeInputValues(warEndUnix) : { dateStr: '', timeStr: '' };
+
+        const chainRow =
+            matchingChain && isWarEnded
+                ? `<label style="display: flex; align-items: center; color: #ffd700; font-size: 15px; cursor: pointer; white-space: nowrap;" title="Extend payout window to include hits during this chain after the ranked war ended.">
+                        <input type="checkbox" class="chain-checkbox" data-war-id="${war.id}" style="accent-color: #ffd700; margin-right: 8px; transform: scale(1.15);">
+                        Include ${matchingChain.chain} Chain
+                   </label>`
+                : '';
+
+        const customEndVipLockedTitle =
+            'Custom payout end requires VIP Level 1 or higher. Send Xanax to support the tools — see the welcome banner for VIP tiers.'.replace(
+                /"/g,
+                '&quot;'
+            );
+        const customPayoutBlock = isWarEnded
+            ? window.warReportCustomEndVipUnlocked
+                ? `<label class="custom-payout-end-label" style="display: flex; align-items: center; gap: 6px; color: #e0e0e0; font-size: 14px; cursor: pointer; user-select: none;" title="${WAR_PAYOUT_CUSTOM_END_TOOLTIP.replace(/"/g, '&quot;')}">
+                    <input type="checkbox" class="custom-payout-end-enable" data-war-id="${war.id}" data-war-end="${warEndUnix}" style="accent-color: #ffd700; flex-shrink: 0; transform: scale(1.1);">
+                    <span style="color: #ffd700; font-weight: 600;">Custom end</span>
+               </label>
+               <div class="custom-payout-end-inputs" data-war-id="${war.id}" style="display: none; flex-direction: column; gap: 6px; width: 100%; max-width: 100%; margin-top: 2px;">
+                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px;">
+                        <input type="date" class="custom-payout-end-date war-report-tct-date" data-war-id="${war.id}" value="${tctDefaults.dateStr}" title="Date in TCT (UTC)" aria-label="Custom end date TCT UTC" style="padding: 5px 6px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 13px;">
+                        <input type="time" class="custom-payout-end-time war-report-tct-time" data-war-id="${war.id}" value="${tctDefaults.timeStr}" step="60" title="Time in TCT (UTC)" aria-label="Custom end time TCT UTC" style="padding: 5px 6px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 13px;">
+                        <span style="color: #888; font-size: 13px; white-space: nowrap;">(TCT)</span>
+                    </div>
+               </div>`
+                : `<div class="war-report-custom-end-vip-locked" title="${customEndVipLockedTitle}" style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: #888; cursor: help; user-select: none;">
+                    <span aria-hidden="true" style="font-size: 17px; line-height: 1;">🔒</span>
+                    <span><strong style="color: #666;">Custom end</strong> <span style="color: #ffd700; font-weight: 700;">VIP 1+</span></span>
+               </div>`
+            : '';
+
+        const middleCol =
+            chainRow || customPayoutBlock
+                ? `<div style="display: flex; flex-direction: column; gap: 10px; align-items: flex-start; justify-content: center; min-height: 100%;">${chainRow}${chainRow && customPayoutBlock ? '<div style="width:100%;border-top:1px solid #404040;padding-top:8px;"></div>' : ''}${customPayoutBlock}</div>`
+                : '<div></div>';
+
         card.innerHTML = `
             <div>
                 <div style="color: #ffd700; font-size: 17px; font-weight: bold; margin-bottom: 8px;">
@@ -578,15 +735,8 @@ function initWarReport2() {
                     <strong>Start:</strong> ${startDate} | <strong>End:</strong> ${endDate} | <span style="color: ${statusColor}; font-weight: bold;">${status}</span>
                 </div>
             </div>
-            ${matchingChain && isWarEnded ? `
-                <div style="display: flex; align-items: center; justify-content: flex-start; text-align: left;">
-                    <label style="display: flex; align-items: center; color: #ffd700; font-size: 16px; cursor: pointer; white-space: nowrap;">
-                        <input type="checkbox" class="chain-checkbox" data-war-id="${war.id}" style="accent-color: #ffd700; margin-right: 8px; transform: scale(1.2);">
-                        Include ${matchingChain.chain} Chain
-                    </label>
-                </div>
-            ` : '<div></div>'}
-            <button class="${buttonClass} fetch-war-btn" data-war-id="${war.id}" type="button" style="${buttonStyle}" ${buttonDisabled ? 'disabled' : ''}>
+            ${middleCol}
+            <button class="${buttonClass} fetch-war-btn" data-war-id="${war.id}" type="button" style="${buttonStyle} align-self: center;" ${buttonDisabled ? 'disabled' : ''}>
                 ${buttonText}
             </button>
         `;
@@ -619,7 +769,7 @@ function initWarReport2() {
     const fetchChainData = async (factionId, apiKey) => {
         try {
             const url = `https://api.torn.com/faction/?selections=chains&key=${apiKey}`;
-            const response = await fetch(url);
+            const response = await fetch(warReportTornFetchUrl(url));
             const data = await response.json();
             
             if (data.error) {
@@ -678,11 +828,11 @@ function initWarReport2() {
             warList.innerHTML = '<div style="padding: 15px; color: #b0b0b0;">Loading wars and chains...</div>';
             warListContainer.style.display = 'block';
             
-            console.log('[WAR REPORT 2.0] Fetching wars and chains in parallel...');
-            // Fetch both wars and chains in parallel
+            console.log('[WAR REPORT 2.0] Fetching wars, chains, and VIP (custom end gate)...');
             const [warsResponse, chainsData] = await Promise.all([
-                fetch(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`),
-                fetchChainData(factionId, apiKey)
+                fetch(warReportTornFetchUrl(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`)),
+                fetchChainData(factionId, apiKey),
+                resolveWarReportCustomEndVipAccess(apiKey)
             ]);
             
             const warsData = await warsResponse.json();
@@ -772,6 +922,27 @@ function initWarReport2() {
 
     // Event delegation for Fetch War Data buttons on war cards
     if (warList) {
+        warList.addEventListener('change', (event) => {
+            const cb = event.target.closest('.custom-payout-end-enable');
+            if (!cb) return;
+            const warId = cb.getAttribute('data-war-id');
+            const wrap = document.querySelector(`.custom-payout-end-inputs[data-war-id="${warId}"]`);
+            if (!wrap) return;
+            if (cb.checked) {
+                wrap.style.display = 'flex';
+                const dateInp = document.querySelector(`.custom-payout-end-date[data-war-id="${warId}"]`);
+                const timeInp = document.querySelector(`.custom-payout-end-time[data-war-id="${warId}"]`);
+                const endUnix = parseInt(cb.getAttribute('data-war-end'), 10);
+                if (dateInp && timeInp && (!dateInp.value || !timeInp.value) && Number.isFinite(endUnix) && endUnix > 0) {
+                    const parts = unixToTctDateTimeInputValues(endUnix);
+                    dateInp.value = parts.dateStr;
+                    timeInp.value = parts.timeStr;
+                }
+            } else {
+                wrap.style.display = 'none';
+            }
+        });
+
         warList.addEventListener('click', (event) => {
             const fetchBtn = event.target.closest('.fetch-war-btn');
             if (fetchBtn) {
@@ -781,14 +952,31 @@ function initWarReport2() {
                 const chainCheckbox = document.querySelector(`.chain-checkbox[data-war-id="${warId}"]`);
                 const includeChain = chainCheckbox ? chainCheckbox.checked : false;
 
-                handleWarReportFetch(warId, includeChain);
+                const customCb = document.querySelector(`.custom-payout-end-enable[data-war-id="${warId}"]`);
+                let customEndUnix = null;
+                if (customCb && customCb.checked) {
+                    if (!window.warReportCustomEndVipUnlocked) {
+                        alert('Custom payout end requires VIP Level 1 or higher.');
+                        return;
+                    }
+                    const dateInp = document.querySelector(`.custom-payout-end-date[data-war-id="${warId}"]`);
+                    const timeInp = document.querySelector(`.custom-payout-end-time[data-war-id="${warId}"]`);
+                    customEndUnix = tctDateTimeInputsToUnix(dateInp && dateInp.value, timeInp && timeInp.value);
+                    if (customEndUnix == null) {
+                        alert('Please enter a valid custom payout end date and time (TCT = UTC).');
+                        return;
+                    }
+                }
+
+                handleWarReportFetch(warId, includeChain, { customEndUnix });
             }
         });
     }
 }
 
 // Main function to fetch and process war data
-async function handleWarReportFetch(warId = null, includeChain = false) {
+// fetchOptions.customEndUnix — if set, overrides war end and chain extension for attack cutoff (TCT via inputs).
+async function handleWarReportFetch(warId = null, includeChain = false, fetchOptions = {}) {
     const startTime = performance.now();
     
     const spinner = document.getElementById('loadingSpinner');
@@ -846,7 +1034,7 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
         }
         
         const warInfoUrl = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
-        const warInfoResponse = await fetch(warInfoUrl);
+        const warInfoResponse = await fetch(warReportTornFetchUrl(warInfoUrl));
         const warInfoData = await warInfoResponse.json();
 
         if (warInfoData.error) {
@@ -865,13 +1053,27 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
         }
 
         let warStartTime = targetWar.start;
-        let warEndTime = targetWar.end || Math.floor(Date.now() / 1000);
-        
-        // Check if chain extension is requested
+        const officialEnd = targetWar.end || Math.floor(Date.now() / 1000);
+        let warEndTime = officialEnd;
+        let payoutEndSource = 'official';
+
         if (includeChain && window.warChainMatches && window.warChainMatches.has(warId)) {
             const chainData = window.warChainMatches.get(warId);
             warEndTime = chainData.end;
+            payoutEndSource = 'chain';
+        }
 
+        const customEndUnix = fetchOptions && fetchOptions.customEndUnix != null ? Number(fetchOptions.customEndUnix) : null;
+        if (customEndUnix != null && Number.isFinite(customEndUnix)) {
+            if (!window.warReportCustomEndVipUnlocked) {
+                throw new Error('Custom payout end requires VIP Level 1 or higher.');
+            }
+            warEndTime = customEndUnix;
+            payoutEndSource = 'custom';
+        }
+
+        if (warEndTime <= warStartTime) {
+            throw new Error('Payout end time must be after the war start time. Check your custom TCT (UTC) date/time.');
         }
         
         // Calculate war duration and show appropriate message
@@ -1156,9 +1358,16 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
             player.avgDefLevel = player.successfulAttacks > 0 ? player.totalDefeatedLevel / player.successfulAttacks : 0;
         });
 
+        const warInfoForUi = {
+            ...targetWar,
+            end: warEndTime,
+            officialEnd,
+            payoutEndSource
+        };
+
         // Store data globally for this module
         warData.playerStats = playerStats;
-        warData.warInfo = targetWar;
+        warData.warInfo = warInfoForUi;
         warData.allAttacks = allAttacks;
 
         const totalTime = performance.now() - startTime;
@@ -1169,7 +1378,7 @@ async function handleWarReportFetch(warId = null, includeChain = false) {
         }
 
         // Update UI
-        updateWarReportUI(playerStats, targetWar, allAttacks, totalTime);
+        updateWarReportUI(playerStats, warInfoForUi, allAttacks, totalTime);
 
     } catch (error) {
         console.error('Failed to fetch war report:', error);
@@ -1247,11 +1456,19 @@ function updateWarReportUI(playerStats, warInfo, allAttacks, totalTime) {
         }
         // Convert processing time to seconds
         const totalTimeSeconds = (totalTime / 1000).toFixed(2);
+        let payoutEndHtml = '';
+        if (warInfo.payoutEndSource === 'custom' && warInfo.officialEnd != null) {
+            payoutEndHtml = `<p style="color:#ffd700;margin-top:10px;line-height:1.5;"><strong>Payout cutoff (custom TCT / UTC):</strong> ${formatUnixAsTct(warInfo.end)}<br><span style="color:#bbb;font-size:0.95em;">Ranked war officially ended: ${formatUnixAsTct(warInfo.officialEnd)}. Only attacks on or before the custom time are included.</span></p>`;
+        } else if (warInfo.payoutEndSource === 'chain') {
+            payoutEndHtml = `<p style="color:#9cdcfe;margin-top:10px;"><strong>Chain extension:</strong> payouts include hits through ${formatUnixAsTct(warInfo.end)}.</p>`;
+        }
         warSummaryDiv.innerHTML = `
             <div style="margin-bottom:8px;"><strong>War Report Summary ${warName}</strong></div>
+            <p><strong>Period used for duration (payout end):</strong> ${formatUnixAsTct(warInfo.start)} → ${formatUnixAsTct(warInfo.end)}</p>
             <p><strong>War Duration:</strong> ${durationStr}</p>
             <p><strong>Total Attacks:</strong> ${allAttacks.length.toLocaleString()}</p>
             <p><strong>Processing Time:</strong> ${totalTimeSeconds} seconds</p>
+            ${payoutEndHtml}
         `;
     }
     // Render the war report table

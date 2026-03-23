@@ -1,3 +1,23 @@
+/**
+ * On localhost, the Torn API does not send Access-Control-Allow-Origin, so direct fetch() fails.
+ * Vite proxies /.torn-api-proxy → https://api.torn.com (see vite.config.js).
+ */
+(function registerTornApiDevProxyUrl() {
+    window.getTornApiFetchUrl = function (url) {
+        if (!url || typeof url !== 'string') return url;
+        try {
+            if (typeof location === 'undefined') return url;
+            const h = String(location.hostname || '').toLowerCase();
+            if (h !== 'localhost' && h !== '127.0.0.1') return url;
+            const u = new URL(url, location.origin);
+            if (u.hostname !== 'api.torn.com') return url;
+            return '/.torn-api-proxy' + u.pathname + u.search;
+        } catch (e) {
+            return url;
+        }
+    };
+})();
+
 document.addEventListener('DOMContentLoaded', () => {
     const appContent = document.getElementById('app-content');
 
@@ -182,9 +202,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         
-        // Make the API call
+        // Make the API call (localhost: use Vite /.torn-api-proxy to avoid Torn CORS)
+        const tornFetchUrl = typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
         try {
-            const response = await fetch(url);
+            const response = await fetch(tornFetchUrl);
             const data = await response.json();
             
             if (data.error) {
@@ -208,7 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     // Retry once
-                    const retryResponse = await fetch(url);
+                    const retryResponse = await fetch(tornFetchUrl);
                     const retryData = await retryResponse.json();
                     
                     if (retryData.error) {
@@ -362,9 +383,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 await sleep(window.CALL_INTERVAL_MS);
             }
             
-            // Make the API call
+            // Make the API call (localhost: Vite /.torn-api-proxy → Torn)
+            const batchTornUrl = typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
             try {
-                const response = await fetch(url);
+                const response = await fetch(batchTornUrl);
                 const data = await response.json();
                 
                 if (data.error) {
@@ -388,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
 
                         // Retry once
-                        const retryResponse = await fetch(url);
+                        const retryResponse = await fetch(batchTornUrl);
                         const retryData = await retryResponse.json();
                         
                         if (retryData.error) {
