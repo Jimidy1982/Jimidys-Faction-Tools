@@ -3,7 +3,7 @@
         <h1 style="margin: 0;">War Dashboard</h1>
         <button type="button" id="war-dashboard-settings-cog" class="war-dashboard-settings-cog" aria-label="Settings" title="Settings">⚙</button>
     </div>
-    <p class="war-dashboard-beta-notice" style="margin: -0.5rem 0 1rem 0; font-size: 13px; color: #b0b0b0; text-align: center;">This tool is currently in <strong>Beta</strong> and free to try. It will revert to <strong>VIP 2</strong> status from April 1st.</p>
+    <p class="war-dashboard-beta-notice" style="margin: -0.5rem 0 1rem 0; font-size: 13px; color: #b0b0b0; text-align: center;">This tool is currently in <strong>Beta</strong> and free to try. It will revert to <strong>VIP 2</strong> status from April 15th.</p>
 
     <div id="war-dashboard-tool-container">
         <!-- FFScouter notice (dismissible) -->
@@ -81,9 +81,15 @@
 
         <div id="war-dashboard-error" style="display: none; color: #f44336; margin-bottom: 16px;"></div>
 
-        <!-- Our Chain | Enemy Chain (shown when we have our faction and/or enemy) -->
-        <div id="war-dashboard-chains-row" class="war-dashboard-chains-row" style="display: none; margin-top: 12px; margin-bottom: 16px;">
-            <div id="war-dashboard-our-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
+        <!-- Our Chain + Chain watch (same column); Enemy Chain is second column when at war -->
+        <div id="war-dashboard-chains-row" class="war-dashboard-chains-row" style="display: none; margin-top: 12px; margin-bottom: 0;">
+            <div id="war-dashboard-chain-column-our" class="war-dashboard-chain-column war-dashboard-chain-column--our">
+                <div id="war-dashboard-our-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
+                <div id="war-dashboard-chain-watch-bar" class="war-dashboard-chain-watch-bar" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+                    <button type="button" id="war-dashboard-chain-watch-open" class="btn">Chain watch</button>
+                    <span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint" style="color: #888; font-size: 12px;"></span>
+                </div>
+            </div>
             <div id="war-dashboard-enemy-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
         </div>
 
@@ -211,6 +217,27 @@
     </div>
 
     <!-- Activity tracker: players active during hour (click a bar) -->
+    <!-- Chain watch: hourly signup grid (VIP configures) -->
+    <div id="war-dashboard-chain-watch-modal" class="war-dashboard-settings-overlay war-dashboard-chain-watch-overlay" aria-hidden="true" style="display: none;">
+        <div class="war-dashboard-settings-modal war-dashboard-chain-watch-modal" role="dialog" aria-labelledby="war-dashboard-chain-watch-title" style="max-width: 760px;">
+            <div class="war-dashboard-settings-modal-header">
+                <h2 id="war-dashboard-chain-watch-title">Chain watch</h2>
+                <button type="button" id="war-dashboard-chain-watch-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+            </div>
+            <div id="war-dashboard-chain-watch-modal-body" class="war-dashboard-settings-modal-body war-dashboard-chain-watch-modal-body"></div>
+        </div>
+    </div>
+
+    <div id="war-dashboard-chain-watch-rewards-modal" class="war-dashboard-settings-overlay" aria-hidden="true" style="display: none;">
+        <div class="war-dashboard-settings-modal war-dashboard-chain-watch-rewards-inner" role="dialog" aria-labelledby="war-dashboard-chain-watch-rewards-title" style="max-width: 520px;">
+            <div class="war-dashboard-settings-modal-header">
+                <h2 id="war-dashboard-chain-watch-rewards-title">Rewards owed</h2>
+                <button type="button" id="war-dashboard-chain-watch-rewards-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+            </div>
+            <div id="war-dashboard-chain-watch-rewards-body" class="war-dashboard-settings-modal-body"></div>
+        </div>
+    </div>
+
     <div id="war-dashboard-activity-hour-modal" class="war-dashboard-settings-overlay" aria-hidden="true" style="display: none;">
         <div class="war-dashboard-settings-modal war-dashboard-activity-hour-modal-panel" role="dialog" aria-labelledby="war-dashboard-activity-hour-modal-title" style="max-width: 580px;">
             <div class="war-dashboard-settings-modal-header">

@@ -1251,7 +1251,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '</ul>' +
             '<h4>VIP 2</h4>' +
             '<ul>' +
-            '<li><strong>War Dashboard</strong> — full access from <strong>April 1st</strong> (currently in beta and free to try until then).</li>' +
+            '<li><strong>War Dashboard</strong> — full access from <strong>April 15th</strong> (currently in beta and free to try until then).</li>' +
             '</ul>' +
             '<h4>VIP 3</h4>' +
             '<ul>' +
@@ -3830,7 +3830,16 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (target.id === 'fetchWarReports') {
                 handleWarReportFetch();
             } else if (target.id === 'exportCSV') {
-                exportToCSV();
+                const h = (window.location.hash || '').replace(/^#/, '').split('/')[0];
+                if (h === 'consumption-tracker' && typeof window.exportPlayersToCSV === 'function') {
+                    window.exportPlayersToCSV();
+                } else if (h === 'consumption-tracker' && typeof window.exportConsumptionToCSV === 'function') {
+                    window.exportConsumptionToCSV();
+                } else if (h === 'war-report-2.0' || h === 'war-report') {
+                    /* War Report wires its own export; skip legacy exportToCSV */
+                } else {
+                    exportToCSV();
+                }
             } else if (target.classList.contains('column-toggle')) {
                 toggleColumnVisibility();
             }

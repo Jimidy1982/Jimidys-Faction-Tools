@@ -2562,9 +2562,10 @@ function renderPayoutTable() {
 
                 }
                 
-                // When player reaches minimum threshold, ignore all other modifiers (assists, retals, overseas, etc.)
+                // Above threshold: war hit pay uses thresholds only. Retals / overseas / other / low-FF stay off.
+                // Assists stay paid when "Pay assists" is on so assist multiplier still changes totals (was all zeroed before).
                 player.retalPayout = 0;
-                player.assistPayout = 0;
+                if (!payAssists) player.assistPayout = 0;
                 player.overseasPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
@@ -2933,7 +2934,7 @@ function exportPayoutToCSV() {
                 }
                 
                 player.retalPayout = 0;
-                player.assistPayout = 0;
+                if (!payAssists) player.assistPayout = 0;
                 player.overseasPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
@@ -3366,6 +3367,20 @@ function renderRespectPayoutTable() {
             return totalPlayerRespect >= minThreshold;
         });
 
+        // Ratio mode needs total adjusted respect BEFORE we visit anyone — below-threshold capping uses
+        // the same denominator as qualifying payouts. (Lazy init on first qualifying player broke when
+        // below-threshold rows ran first: _totalAdjustedRespect was still null → fell back to 1 → bad caps / errors when assist multipliers changed.)
+        if (payoutMode === 'ratio') {
+            window._totalAdjustedRespect = qualifyingPlayers.reduce((sum, p) => {
+                const pIdStr = String(p.id);
+                const pData = playerRespectData[pIdStr] || { warRespect: 0, outsideRespect: 0 };
+                const pWarRespect = pData.warRespect;
+                const pOutsideRespect = pData.outsideRespect;
+                const pTotalRespect = includeOutsideRespect ? (pWarRespect + pOutsideRespect) : pWarRespect;
+                return sum + Math.min(pTotalRespect, maxThreshold);
+            }, 0);
+        }
+
         // Apply threshold logic to each player
         playersWithRespectPayouts.forEach(player => {
             const playerIdStr = String(player.id);
@@ -3382,7 +3397,7 @@ function renderRespectPayoutTable() {
                 const minThresholdPlayerPayout = qualifyingPlayers.length > 0 ? 
                     (payoutMode === 'equal' ? 
                         Math.round(availablePayout / qualifyingPlayers.length) : 
-                        Math.round((minThreshold / (window._totalAdjustedRespect || 1)) * availablePayout)
+                        Math.round((minThreshold / (window._totalAdjustedRespect > 0 ? window._totalAdjustedRespect : 1)) * availablePayout)
                     ) : 0;
                 
                 // Calculate total other modifiers payout
@@ -3402,12 +3417,12 @@ function renderRespectPayoutTable() {
 
                 }
             } else {
-                // Above minimum threshold - apply threshold logic and ignore other modifiers
+                // Above minimum threshold - respect share from pool; retals / overseas / other / low-FF off.
+                // Keep assist when "Pay assists" is on so assist multiplier affects totals.
                 const adjustedRespect = Math.min(totalPlayerRespect, maxThreshold);
                 
-                // When player reaches minimum threshold, ignore all other modifiers (assists, retals, overseas, etc.)
                 player.retalPayout = 0;
-                player.assistPayout = 0;
+                if (!payAssists) player.assistPayout = 0;
                 player.overseasPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
@@ -3417,20 +3432,7 @@ function renderRespectPayoutTable() {
                     player.warHitPayout = qualifyingPlayers.length > 0 ? Math.round(availablePayout / qualifyingPlayers.length) : 0;
 
                 } else {
-                    // Ratio payout: proportional to adjusted respect within the threshold range
-                    // Calculate total adjusted respect for all qualifying players ONCE (outside the loop)
-                    if (!window._totalAdjustedRespect) {
-                        window._totalAdjustedRespect = qualifyingPlayers.reduce((sum, p) => {
-                            const pIdStr = String(p.id);
-                            const pData = playerRespectData[pIdStr] || { warRespect: 0, outsideRespect: 0 };
-                            const pWarRespect = pData.warRespect;
-                            const pOutsideRespect = pData.outsideRespect;
-                            const pTotalRespect = includeOutsideRespect ? (pWarRespect + pOutsideRespect) : pWarRespect;
-                            return sum + Math.min(pTotalRespect, maxThreshold);
-                        }, 0);
-
-                    }
-                    
+                    // Ratio payout: proportional to adjusted respect (denominator precomputed above)
                     const respectRatio = window._totalAdjustedRespect > 0 ? adjustedRespect / window._totalAdjustedRespect : 0;
                     player.warHitPayout = Math.round(respectRatio * availablePayout);
 
@@ -3438,7 +3440,7 @@ function renderRespectPayoutTable() {
             }
             
             // Recalculate total payout
-            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0);
+            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
         });
     } else {
 

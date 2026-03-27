@@ -633,6 +633,7 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
     // Store data globally for CSV export
     consumptionTrackerData = {
         members: members,
+        fetchedMembers: members,
         totalTime: totalTime,
         cacheStats: cacheStats,
         wasCached: wasCached,
@@ -641,6 +642,7 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
         toTimestamp: toTimestamp,
         itemTypes: itemTypes
     };
+    window.consumptionTrackerData = consumptionTrackerData;
     
     const resultsSection = document.querySelector('.results-section');
     const tableContainer = document.getElementById('membersTable');
@@ -965,6 +967,14 @@ function addCollapsibleFunctionality() {
     });
 }
 
+/**
+ * Plain integer string for CSV money/count columns — no thousands separators.
+ * Values like $5,275 break Excel (comma → extra columns or decimal in EU locales).
+ */
+function csvPlainInt(n) {
+    return String(Math.round(Number(n) || 0));
+}
+
 // Export functions for CSV
 function exportConsumptionToCSV() {
     const columns = [
@@ -1000,7 +1010,7 @@ function exportConsumptionToCSV() {
         { id: 'points', label: 'Points', itemName: 'Points', isPoints: true }
     ];
 
-    const members = consumptionTrackerData.fetchedMembers;
+    const members = consumptionTrackerData.members || consumptionTrackerData.fetchedMembers;
     if (!members || members.length === 0) {
         alert('No data to export');
         return;
@@ -1014,7 +1024,7 @@ function exportConsumptionToCSV() {
     const totalValues = {};
     columns.forEach(col => {
         totals[col.id] = members.reduce((sum, member) => sum + (member[col.id] || 0), 0);
-        const itemValue = col.isPoints ? 0 : (itemValues[col.itemName] || 0);
+        const itemValue = col.isPoints ? (itemValues['Points'] || 0) : (itemValues[col.itemName] || 0);
         totalValues[col.id] = totals[col.id] * itemValue;
     });
     
@@ -1025,13 +1035,13 @@ function exportConsumptionToCSV() {
     const costHeaders = ['', ...columns.map(col => {
         if (col.isPoints) {
             const pointsPrice = itemValues['Points'] || 0;
-            return pointsPrice > 0 ? `$${pointsPrice.toLocaleString()}` : 'N/A';
+            return pointsPrice > 0 ? csvPlainInt(pointsPrice) : 'N/A';
         }
-        return `$${itemValues[col.itemName] || 0}`;
+        return csvPlainInt(itemValues[col.itemName] || 0);
     })];
     const totalsRow = ['TOTALS', ...columns.map(col => totals[col.id])];
-    const costRow = ['TOTAL COST', ...columns.map(col => `$${totalValues[col.id].toLocaleString()}`)];
-    const grandTotalRow = ['GRAND TOTAL', ...Array(columns.length - 1).fill(''), `$${grandTotal.toLocaleString()}`];
+    const costRow = ['TOTAL COST', ...columns.map(col => csvPlainInt(totalValues[col.id]))];
+    const grandTotalRow = ['GRAND TOTAL', ...Array(columns.length - 1).fill(''), csvPlainInt(grandTotal)];
     
     const csvContent = [
         headers.join(','),
@@ -1066,9 +1076,19 @@ function exportGroupedToCSV() {
     
     const { members, itemValues, itemTypes, fromTimestamp, toTimestamp } = consumptionTrackerData;
     
-    // Define columns
+    // Same column set as UI / other exports (was missing drugs + used wrong energy-can ids)
     const columns = [
         { id: 'xanax', label: 'Xanax', itemName: 'Xanax' },
+        { id: 'vicodin', label: 'Vicodin', itemName: 'Vicodin' },
+        { id: 'ketamine', label: 'Ketamine', itemName: 'Ketamine' },
+        { id: 'speed', label: 'Speed', itemName: 'Speed' },
+        { id: 'shrooms', label: 'Shrooms', itemName: 'Shrooms' },
+        { id: 'cannabis', label: 'Cannabis', itemName: 'Cannabis' },
+        { id: 'pcp', label: 'PCP', itemName: 'PCP' },
+        { id: 'opium', label: 'Opium', itemName: 'Opium' },
+        { id: 'ecstasy', label: 'Ecstasy', itemName: 'Ecstasy' },
+        { id: 'lsd', label: 'LSD', itemName: 'LSD' },
+        { id: 'loveJuice', label: 'Love Juice', itemName: 'Love Juice' },
         { id: 'bloodbags', label: 'Blood Bags', itemName: 'Blood Bag' },
         { id: 'firstAidKit', label: 'First Aid Kit', itemName: 'First Aid Kit' },
         { id: 'smallFirstAidKit', label: 'Small First Aid Kit', itemName: 'Small First Aid Kit' },
@@ -1077,14 +1097,13 @@ function exportGroupedToCSV() {
         { id: 'beer', label: 'Bottle of Beer', itemName: 'Bottle of Beer' },
         { id: 'lollipop', label: 'Lollipop', itemName: 'Lollipop' },
         { id: 'sweetHearts', label: 'Box of Sweet Hearts', itemName: 'Box of Sweet Hearts' },
-        // Energy Cans
         { id: 'gooseJuice', label: 'Can of Goose Juice', itemName: 'Can of Goose Juice' },
         { id: 'dampValley', label: 'Can of Damp Valley', itemName: 'Can of Damp Valley' },
         { id: 'crocozade', label: 'Can of Crocozade', itemName: 'Can of Crocozade' },
-        { id: 'santaShot', label: 'Can of Santa Shot', itemName: 'Can of Santa Shot' },
+        { id: 'santaShooters', label: 'Can of Santa Shooters', itemName: 'Can of Santa Shooters' },
         { id: 'munster', label: 'Can of Munster', itemName: 'Can of Munster' },
         { id: 'redCow', label: 'Can of Red Cow', itemName: 'Can of Red Cow' },
-        { id: 'rockstar', label: 'Can of Rockstar', itemName: 'Can of Rockstar' },
+        { id: 'rockstarRudolph', label: 'Can of Rockstar Rudolph', itemName: 'Can of Rockstar Rudolph' },
         { id: 'taurineElite', label: 'Can of Taurine Elite', itemName: 'Can of Taurine Elite' },
         { id: 'xmass', label: 'Can of X-MASS', itemName: 'Can of X-MASS' },
         { id: 'points', label: 'Points', itemName: 'Points', isPoints: true }
@@ -1122,7 +1141,7 @@ function exportGroupedToCSV() {
         const pointsPrice = itemValues['Points'] || 0;
         const headerRow = (groupType === 'Points' && pointsPrice === 0)
             ? `Item,Total Usage\n`
-            : `Item,Total Usage,Unit Price,Total Value\n`;
+            : `Item,Total Usage,Unit Price ($),Total Value ($)\n`;
         csvContent += headerRow;
         
         let groupTotal = 0;
@@ -1139,7 +1158,7 @@ function exportGroupedToCSV() {
                 const value = totalValues[col.id];
                 if (price > 0) {
                     groupTotal += value;
-                    csvContent += `"${col.label}",${total},$${price.toLocaleString()},$${value.toLocaleString()}\n`;
+                    csvContent += `"${col.label}",${total},${csvPlainInt(price)},${csvPlainInt(value)}\n`;
                 } else {
                     csvContent += `"${col.label}",${total}\n`;
                 }
@@ -1147,14 +1166,14 @@ function exportGroupedToCSV() {
             const price = itemValues[col.itemName] || 0;
             const value = totalValues[col.id];
             groupTotal += value;
-            csvContent += `"${col.label}",${total},$${price.toLocaleString()},$${value.toLocaleString()}\n`;
+            csvContent += `"${col.label}",${total},${csvPlainInt(price)},${csvPlainInt(value)}\n`;
             }
         });
         
         if (groupType === 'Points' && pointsPrice === 0) {
             csvContent += `\n`;
         } else {
-        csvContent += `Group Total,,,$${groupTotal.toLocaleString()}\n\n`;
+        csvContent += `Group Total,,,${csvPlainInt(groupTotal)}\n\n`;
         }
     });
     
@@ -1168,6 +1187,7 @@ function exportGroupedToCSV() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
 }
 
 // Export players data to CSV
@@ -1236,10 +1256,10 @@ function exportPlayersToCSV() {
         if (col.isPoints && pointsPrice === 0) {
             csvContent += `${col.label} (Qty),`;
         } else {
-        csvContent += `${col.label} (Qty),${col.label} (Cost),`;
+            csvContent += `${col.label} (Qty),${col.label} Cost ($),`;
         }
     });
-    csvContent += `Total Value\n`;
+    csvContent += `Total Value ($)\n`;
     
     // Player rows
     members.forEach(member => {
@@ -1253,7 +1273,7 @@ function exportPlayersToCSV() {
                 if (price > 0) {
                     const cost = quantity * price;
                     playerTotal += cost;
-                    csvContent += `${quantity},$${cost.toLocaleString()},`;
+                    csvContent += `${quantity},${csvPlainInt(cost)},`;
                 } else {
                     csvContent += `${quantity},`;
                 }
@@ -1261,11 +1281,11 @@ function exportPlayersToCSV() {
             const price = itemValues[col.itemName] || 0;
             const cost = quantity * price;
             playerTotal += cost;
-            csvContent += `${quantity},$${cost.toLocaleString()},`;
+            csvContent += `${quantity},${csvPlainInt(cost)},`;
             }
         });
         
-        csvContent += `$${playerTotal.toLocaleString()}\n`;
+        csvContent += `${csvPlainInt(playerTotal)}\n`;
     });
     
     // Totals row
@@ -1273,7 +1293,7 @@ function exportPlayersToCSV() {
     const totalValues = {};
     columns.forEach(col => {
         totals[col.id] = members.reduce((sum, member) => sum + (member[col.id] || 0), 0);
-        const itemValue = col.isPoints ? 0 : (itemValues[col.itemName] || 0);
+        const itemValue = col.isPoints ? (itemValues['Points'] || 0) : (itemValues[col.itemName] || 0);
         totalValues[col.id] = totals[col.id] * itemValue;
     });
     
@@ -1284,15 +1304,15 @@ function exportPlayersToCSV() {
         if (col.isPoints) {
             const price = itemValues['Points'] || 0;
             if (price > 0) {
-        csvContent += `${totals[col.id]},$${totalValues[col.id].toLocaleString()},`;
+        csvContent += `${totals[col.id]},${csvPlainInt(totalValues[col.id])},`;
             } else {
                 csvContent += `${totals[col.id]},`;
             }
         } else {
-            csvContent += `${totals[col.id]},$${totalValues[col.id].toLocaleString()},`;
+            csvContent += `${totals[col.id]},${csvPlainInt(totalValues[col.id])},`;
         }
     });
-    csvContent += `$${grandTotal.toLocaleString()}\n`;
+    csvContent += `${csvPlainInt(grandTotal)}\n`;
     
     // Create and download the CSV file
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -1304,4 +1324,9 @@ function exportPlayersToCSV() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-} 
+    URL.revokeObjectURL(url);
+}
+
+window.exportConsumptionToCSV = exportConsumptionToCSV;
+window.exportGroupedToCSV = exportGroupedToCSV;
+window.exportPlayersToCSV = exportPlayersToCSV;

@@ -250,6 +250,7 @@ header h1 {
     align-items: stretch;
     margin-top: 12px;
     margin-bottom: 16px;
+    overflow: visible;
 }
 
 .war-dashboard-chains-row.war-dashboard-chains-row--dual {
@@ -268,14 +269,31 @@ header h1 {
     justify-content: center;
 }
 
-.war-dashboard-chains-row--solo .war-dashboard-chain-box {
+/* Our column: chain box + chain watch buttons (no separate full-width strip) */
+.war-dashboard-chain-column--our {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+}
+
+.war-dashboard-chains-row--solo .war-dashboard-chain-column--our {
     flex: 0 1 420px;
     width: 100%;
     max-width: min(100%, 440px);
 }
 
+.war-dashboard-chains-row--dual .war-dashboard-chain-column--our {
+    min-width: 0;
+}
+
 .war-dashboard-chains-row--dual .war-dashboard-chain-box {
     min-width: 0;
+}
+
+.war-dashboard-chains-row--solo .war-dashboard-chain-column--our > .war-dashboard-chain-box {
+    width: 100%;
 }
 
 /* Chain boxes: big, visible; flowing animation when active */
@@ -322,6 +340,26 @@ header h1 {
     color: var(--text-muted, #888);
 }
 
+.war-dashboard-chain-watch-line {
+    margin-top: 10px;
+    font-size: 0.85rem;
+    line-height: 1.35;
+    color: var(--text-muted, #aaa);
+}
+
+.war-dashboard-chain-watch-name {
+    color: var(--accent-color, #ffd700);
+    font-weight: 700;
+}
+
+.war-dashboard-chain-box-off .war-dashboard-chain-watch-line {
+    margin-top: 6px;
+}
+
+.war-dashboard-chain-watch-line--empty .war-dashboard-chain-watch-empty {
+    opacity: 0.75;
+}
+
 .war-dashboard-chain-max {
     color: var(--accent-color);
     font-weight: 600;
@@ -360,7 +398,8 @@ header h1 {
 .war-dashboard-chain-box-active .war-dashboard-chain-title,
 .war-dashboard-chain-box-active .war-dashboard-chain-current,
 .war-dashboard-chain-box-active .war-dashboard-chain-timer,
-.war-dashboard-chain-box-active .war-dashboard-chain-meta {
+.war-dashboard-chain-box-active .war-dashboard-chain-meta,
+.war-dashboard-chain-box-active .war-dashboard-chain-watch-line {
     position: relative;
     z-index: 1;
 }
@@ -535,6 +574,494 @@ header h1 {
     border: none;
     border-top: 1px solid var(--border-color, #444);
     margin: 16px 0;
+}
+
+/* Chain watch (War Dashboard): plain row under Our Chain — no extra framed box */
+.war-dashboard-chain-watch-bar {
+    display: flex;
+    flex-shrink: 0;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    justify-content: center;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+/* Chain watch modal: scroll content inside dialog (not past viewport) */
+.war-dashboard-chain-watch-overlay {
+    align-items: flex-start;
+    padding-top: 24px;
+    padding-bottom: 24px;
+    overflow-y: auto;
+}
+.war-dashboard-chain-watch-modal.war-dashboard-settings-modal {
+    max-height: min(92vh, 900px);
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    margin: auto;
+}
+.war-dashboard-chain-watch-modal .war-dashboard-settings-modal-header {
+    flex-shrink: 0;
+}
+.war-dashboard-chain-watch-modal-body.war-dashboard-settings-modal-body {
+    overflow-x: hidden;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* VIP editor: collapsible — single card; header + body share one border */
+.war-dashboard-cw-vip-wrap {
+    margin-bottom: 14px;
+    border: 1px solid var(--border-color, #444);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+.war-dashboard-cw-vip-toggle {
+    width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--accent-color, #FFD700);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+}
+.war-dashboard-cw-vip-toggle[aria-expanded="true"] {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.war-dashboard-cw-vip-toggle:hover {
+    background: rgba(255, 215, 0, 0.07);
+}
+.war-dashboard-cw-vip-toggle:focus-visible {
+    outline: 2px solid var(--accent-color, #FFD700);
+    outline-offset: -2px;
+}
+.war-dashboard-cw-vip-body {
+    margin-top: 0;
+    padding: 14px 16px 16px;
+}
+.war-dashboard-cw-vip-body.war-dashboard-cw-vip-body--collapsed {
+    display: none !important;
+}
+.war-dashboard-cw-vip-body .war-dashboard-cw-setup {
+    margin-bottom: 0;
+}
+.war-dashboard-cw-vip-rewards-row {
+    margin-bottom: 14px;
+}
+.war-dashboard-cw-viewer-rewards-row {
+    margin: 0 0 12px 0;
+}
+.war-dashboard-cw-completed-toolbar {
+    margin-bottom: 10px;
+}
+.war-dashboard-cw-vip-chevron {
+    display: inline-block;
+    font-size: 10px;
+    line-height: 1;
+    transition: transform 0.2s ease;
+    opacity: 0.85;
+}
+.war-dashboard-cw-vip-toggle[aria-expanded="false"] .war-dashboard-cw-vip-chevron {
+    transform: rotate(-90deg);
+}
+
+/* Read-only summary for all viewers */
+.war-dashboard-cw-summary {
+    margin: 0 0 16px 0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.22);
+}
+.war-dashboard-cw-summary-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--accent-color, #FFD700);
+    margin: 0 0 12px 0;
+}
+.war-dashboard-cw-summary-dl {
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: minmax(140px, max-content) 1fr;
+    gap: 8px 18px;
+    font-size: 13px;
+    line-height: 1.45;
+    align-items: baseline;
+}
+.war-dashboard-cw-summary-dl dt {
+    margin: 0;
+    color: #9a9a9a;
+    font-weight: 600;
+}
+.war-dashboard-cw-summary-dl dd {
+    margin: 0;
+    color: #e4e4e4;
+}
+.war-dashboard-cw-sum-missing {
+    color: #888;
+    font-style: italic;
+}
+@media (max-width: 480px) {
+    .war-dashboard-cw-summary-dl {
+        grid-template-columns: 1fr;
+    }
+    .war-dashboard-cw-summary-dl dt {
+        margin-top: 6px;
+    }
+    .war-dashboard-cw-summary-dl dt:first-child {
+        margin-top: 0;
+    }
+}
+
+.war-dashboard-cw-setup {
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.war-dashboard-cw-setup-head {
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--accent-color, #FFD700);
+    margin: 0 0 14px 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-color, #444);
+}
+.war-dashboard-cw-setup-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px 16px;
+    align-items: end;
+    margin-bottom: 14px;
+}
+.war-dashboard-cw-field label {
+    display: block;
+    margin-bottom: 5px;
+    color: #9a9a9a;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.war-dashboard-cw-field input,
+.war-dashboard-cw-field select {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color, #444);
+    background: var(--bg-secondary, #1a1a1a);
+    color: #eee;
+    font-size: 13px;
+}
+.war-dashboard-cw-backup-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 12px 0 4px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    margin-top: 4px;
+}
+.war-dashboard-cw-backup-row > span {
+    color: #c8c8c8;
+    font-size: 13px;
+}
+.war-dashboard-cw-backup-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.war-dashboard-cw-backup-actions .btn {
+    font-size: 12px;
+    padding: 6px 12px;
+}
+.war-dashboard-cw-backup-hint {
+    width: 100%;
+    margin: 0;
+    font-size: 11px;
+    color: #888;
+    line-height: 1.4;
+}
+.war-dashboard-cw-save-row {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+}
+.war-dashboard-cw-save-row .btn {
+    align-self: flex-start;
+    min-width: 160px;
+}
+
+.war-dashboard-chain-watch-slot-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+}
+.war-dashboard-chain-watch-names {
+    font-size: 12px;
+    line-height: 1.45;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.war-dashboard-cw-watcher-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+}
+.war-dashboard-cw-watcher-name {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.war-dashboard-cw-slot-cell .war-dashboard-cw-att {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: #b0b0b0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.war-dashboard-cw-att-min {
+    font-variant-numeric: tabular-nums;
+    color: #9e9e9e;
+}
+.war-dashboard-cw-att-icon {
+    font-weight: 700;
+}
+.war-dashboard-cw-att--ok {
+    color: #81c784;
+}
+.war-dashboard-cw-att--fail {
+    color: #e57373;
+}
+.war-dashboard-cw-att--pending {
+    color: #ffb74d;
+}
+.war-dashboard-cw-att--nodata {
+    color: #90a4ae;
+}
+.war-dashboard-cw-att-muted {
+    color: #757575;
+}
+.war-dashboard-chain-watch-att {
+    font-size: 0.82em;
+    font-variant-numeric: tabular-nums;
+    color: #9e9e9e;
+    white-space: nowrap;
+}
+.war-dashboard-cw-leave-icon {
+    flex-shrink: 0;
+    margin: 0;
+    padding: 0 4px;
+    min-width: 22px;
+    height: 22px;
+    line-height: 1;
+    font-size: 16px;
+    font-weight: 700;
+    color: #b0b0b0;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.war-dashboard-cw-leave-icon:hover {
+    color: #f44336;
+    background: rgba(244, 67, 54, 0.15);
+}
+.war-dashboard-cw-leave-icon:focus-visible {
+    outline: 2px solid var(--accent-color, #FFD700);
+    outline-offset: 1px;
+}
+.war-dashboard-chain-watch-modal .table-scroll-wrapper {
+    max-height: none;
+    overflow-x: auto;
+}
+.war-dashboard-chain-watch-table {
+    width: 100%;
+    font-size: 12px;
+    border-collapse: collapse;
+}
+.war-dashboard-chain-watch-table th,
+.war-dashboard-chain-watch-table td {
+    border: 1px solid var(--border-color, #444);
+    padding: 6px 8px;
+    vertical-align: top;
+}
+.war-dashboard-chain-watch-table th {
+    color: var(--accent-color, #FFD700);
+    text-align: left;
+    position: sticky;
+    top: 0;
+    background: var(--secondary-color, #1e1e1e);
+    z-index: 1;
+}
+.war-dashboard-chain-watch-table--cols {
+    min-width: 100%;
+}
+.war-dashboard-cw-th-slot-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.war-dashboard-cw-th-slot-label {
+    font-weight: 600;
+}
+/* + / − column controls: same box + font so they match visually */
+.war-dashboard-cw-remove-col,
+.war-dashboard-cw-add-col {
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1;
+    border-radius: 6px;
+    border: 1px solid var(--border-color, #444);
+    background: rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    font-family: inherit;
+}
+.war-dashboard-cw-remove-col {
+    color: #e57373;
+}
+.war-dashboard-cw-remove-col:hover {
+    background: rgba(244, 67, 54, 0.15);
+}
+.war-dashboard-cw-th-cw {
+    min-width: 72px;
+    text-align: center;
+}
+.war-dashboard-cw-table-block {
+    width: 100%;
+}
+.war-dashboard-cw-table-top-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.war-dashboard-cw-add-col-toolbar {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.war-dashboard-cw-add-col {
+    color: var(--accent-color, #ffd700);
+}
+.war-dashboard-cw-add-col:hover {
+    background: rgba(255, 215, 0, 0.12);
+}
+.war-dashboard-cw-add-day-row td {
+    padding: 12px 10px;
+    vertical-align: middle;
+    background: rgba(255, 215, 0, 0.04);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.war-dashboard-cw-add-day-hint {
+    margin-left: 10px;
+    font-size: 12px;
+    color: #9e9e9e;
+    line-height: 1.4;
+}
+.war-dashboard-cw-slot-cell {
+    min-width: 80px;
+}
+.war-dashboard-cw-slot-cell--empty {
+    vertical-align: middle;
+    text-align: center;
+}
+.war-dashboard-cw-slot-cell .war-dashboard-cw-join {
+    width: 100%;
+    max-width: 120px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+.war-dashboard-chain-watch-slot--broke {
+    background: rgba(244, 67, 54, 0.15);
+    box-shadow: inset 3px 0 0 #f44336;
+}
+.war-dashboard-chain-watch-slot--current {
+    background: rgba(76, 175, 80, 0.08);
+}
+.war-dashboard-cw-field--full {
+    grid-column: 1 / -1;
+}
+.war-dashboard-cw-hour-cell {
+    vertical-align: top;
+}
+.war-dashboard-cw-day-heading {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent-color, #FFD700);
+    letter-spacing: 0.02em;
+    margin: 0 0 6px 0;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.war-dashboard-cw-day-time {
+    font-size: 12px;
+    color: #d0d0d0;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.war-dashboard-chain-watch-watchers-cell {
+    min-width: 180px;
+}
+.war-dashboard-chain-watch-actions .btn {
+    font-size: 12px;
+    padding: 5px 12px;
+}
+.war-dashboard-chain-watch-col-badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: #333;
+    color: #ccc;
+    margin-right: 4px;
 }
 
 /* Faction activity tracker */

@@ -1,0 +1,28 @@
+---
+description: Deploy Firebase functions after any change that requires it
+alwaysApply: true
+---
+
+# Firebase Functions Deploy
+
+When you add or change **Firebase Cloud Functions** (e.g. in `functions/index.js` or any file under `functions/`), you **must** run a deploy so the live app can use the new or updated callables.
+
+## What to do
+
+After making changes that affect deployed behavior (new callables, changed logic, new exports):
+
+1. Run:
+   ```bash
+   firebase deploy --only functions
+   ```
+2. Use the project root as the working directory (where `firebase.json` lives).
+
+## When this applies
+
+- Any edit under **`functions/`** (including `index.js`, `package.json` deps used at runtime).
+- **Callables** (`onCall`, HTTPS): `addTrackedFaction`, VIP helpers, etc.
+- **Scheduled jobs** (`onSchedule`): e.g. **`sampleActivity`**, `applyVipDeductions` — these only take effect after deploy.
+
+If **`firestore.rules`** (or indexes) change, run `firebase deploy --only firestore` (or combined deploy) as appropriate.
+
+Do **not** skip deploy and assume the user will do it. **Run `firebase deploy --only functions` from the project root** before considering the task done, unless the user explicitly asks not to deploy or the command fails (e.g. not logged in — tell them to run `firebase login`).

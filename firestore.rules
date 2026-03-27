@@ -25,5 +25,9 @@ service cloud.firestore {
     match /vipTransactions/{transactionId} {
       allow read, write: if false;
     }
+    // Chain watch schedule (one doc per faction). Callables only — no client reads/writes.
+    match /factionChainWatch/{factionId} {
+      allow read, write: if false;
+    }
   }
 }

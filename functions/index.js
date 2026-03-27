@@ -793,3 +793,11 @@ exports.resetVipDeductionClock = onCall(
     return { reset };
   }
 );
+
+/** Faction chain watch list (VIP editors + member signups) — see functions/chainWatch.js */
+const chainWatch = require('./chainWatch');
+exports.chainWatchGet = chainWatch.chainWatchGet;
+exports.chainWatchSaveConfig = chainWatch.chainWatchSaveConfig;
+exports.chainWatchSignup = chainWatch.chainWatchSignup;
+exports.chainWatchRemoveSelf = chainWatch.chainWatchRemoveSelf;
+exports.chainWatchSyncChain = chainWatch.chainWatchSyncChain;

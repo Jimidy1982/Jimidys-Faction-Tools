@@ -1,0 +1,14 @@
+---
+description: Agent runs npm install / dev server when the project needs it
+alwaysApply: true
+---
+
+# npm — agent runs it
+
+When work on this repo requires **Node/npm** (root `package.json`, Vite, Firebase dev proxy, new deps):
+
+1. **`npm install`** — Run from the **project root** after `package.json` / lockfile changes or when `node_modules` may be missing. Do **not** tell the user to run it unless the command fails (e.g. no Node on PATH).
+2. **`npm run dev`** — For local testing that needs the **Vite proxy** (`/.functions-proxy` for Firebase callables on localhost), start Vite **in the background** (`block_until_ms: 0` or equivalent) from the project root. Do not assume the user will start it manually.
+3. **Functions folder** — `npm install --prefix functions` when `functions/package.json` changes.
+
+Only skip if the user explicitly says not to run long-lived processes.

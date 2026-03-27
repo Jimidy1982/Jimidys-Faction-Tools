@@ -32,6 +32,8 @@
     const ACTIVITY_DATA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
     /** Firestore collection: one doc per 5-min tick; doc has { t, factions: { [factionId]: { onlineIds } } } — IDs are online only (not idle). 7-day retention. */
     const ACTIVITY_SAMPLES_COLLECTION = 'activitySamples';
+    /** Must match functions/chainWatch.js MAX_HOUR_SLOTS (50 days of hourly slots). */
+    const CHAIN_WATCH_MAX_HOUR_SLOTS = 50 * 24;
     /** Re-fetch cloud samples at most this often so 24/7 backend data actually appears without a full reload. */
     const ACTIVITY_FIRESTORE_REFRESH_MS = 2.5 * 60 * 1000;
     /** In-memory cache of merged Firestore + localStorage activity data per faction (so getActivityData stays sync). */
@@ -86,6 +88,479 @@
     /** Per-faction sort state for activity tracker table: { [factionId]: { by: string, dir: 'asc'|'desc' } }. Default by: 'stats', dir: 'desc'. */
     let activityTrackerTableSort = {};
 
+    /** Chain watch list (Firebase callables); cached ~5 min + sessionStorage. */
+    const CHAIN_WATCH_POLL_MS = 5 * 60 * 1000;
+    const CHAIN_WATCH_CACHE_PREFIX = 'war_dashboard_chain_watch_v1_';
+    let chainWatchPayload = null;
+    let chainWatchLastFetchMs = 0;
+    /** Set when chainWatchGet fails or preconditions missing (shown in modal instead of infinite Loading). */
+    let chainWatchLastError = '';
+
+    function chainWatchErrorText(err) {
+        if (!err) return 'Unknown error';
+        const code = err.code != null ? String(err.code) : '';
+        const msg = err.message != null ? String(err.message) : '';
+        if (code && msg) return code + ': ' + msg;
+        return msg || code || String(err);
+    }
+
+    /** User-facing message when chainWatchGet fails (e.g. permission). */
+    function friendlyChainWatchLoadError(raw) {
+        const s = (raw || '').toLowerCase();
+        if (s.includes('must be in this faction') || s.includes('permission-denied')) {
+            return 'We could not verify your faction from Torn with this API key. Click Apply on War Dashboard (or reload) so your faction loads, and ensure the sidebar key is for the account in your faction.';
+        }
+        return raw || 'Could not load chain watch.';
+    }
+
+    /** How VIP works for this app (matches app.js VIP tiers: level 2 at 50 Xanax balance). */
+    function chainWatchVipHowToHtml() {
+        return "VIP level is based on your Xanax balance in this app's VIP record. <strong>VIP 2</strong> (50 Xanax) is required to create or edit the schedule. Send Xanax to <strong>Jimidy</strong> in Torn; your balance and tier appear in the sidebar.";
+    }
+
+    /** Count chain-watch signups in a given watcher column (0-based) across all hour slots. */
+    function chainWatchCountSignupsInColumn(slots, colIdx) {
+        let n = 0;
+        Object.keys(slots || {}).forEach(function (key) {
+            (slots[key] || []).forEach(function (w) {
+                if (Number(w.col) === colIdx) n++;
+            });
+        });
+        return n;
+    }
+
+    /** Human label for watcher slot column index: primary vs backups (matches modal + Our Chain roster). */
+    function chainWatchColumnLabel(colIdx) {
+        const c = Number(colIdx);
+        if (c === 0) return 'Watcher';
+        if (c === 1) return 'Backup 1';
+        if (c === 2) return 'Backup 2';
+        if (Number.isFinite(c) && c >= 0) return 'Column ' + (c + 1);
+        return '?';
+    }
+
+    /** Display label for minutes; bucket width matches ACTIVITY_INTERVAL_MS (5 min). */
+    const CHAIN_WATCH_ACTIVITY_SAMPLE_MIN = 5;
+
+    /**
+     * Merged Faction activity tracker samples (online only). Slot window [slotStartSec, slotEndSec) unix.
+     * Raw samples are deduped by floor(t / ACTIVITY_INTERVAL_MS): multiple ticks in the same 5-min bucket count once
+     * (fixes inflated minutes when local + cloud merges duplicate nearby samples).
+     * Past + had samples + never online => fail (exclude reward). Past + zero samples => no_data (do not exclude).
+     */
+    function evaluateWatcherSlotAttendance(factionId, playerId, slotStartSec, slotEndSec) {
+        const nowMs = Date.now();
+        const t0ms = slotStartSec * 1000;
+        const t1ms = slotEndSec * 1000;
+        const pid = String(playerId);
+
+        if (nowMs < t0ms) {
+            return { phase: 'future', sampleCount: 0, onlineHits: 0, presentOnce: false, onlineMinutesApprox: 0, verdict: 'na' };
+        }
+
+        const windowEndExclusive = Math.min(nowMs, t1ms);
+        const phase = nowMs >= t1ms ? 'past' : 'current';
+
+        const data = getActivityData(String(factionId));
+        const samples = data.samples || [];
+        const sampleBuckets = new Set();
+        const onlineBuckets = new Set();
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i];
+            const st = s.t;
+            if (st < t0ms || st >= windowEndExclusive) continue;
+            const b = Math.floor(st / ACTIVITY_INTERVAL_MS);
+            sampleBuckets.add(b);
+            const ids = s.onlineIds || [];
+            for (let j = 0; j < ids.length; j++) {
+                if (String(ids[j]) === pid) {
+                    onlineBuckets.add(b);
+                    break;
+                }
+            }
+        }
+
+        const sampleCount = sampleBuckets.size;
+        const onlineHits = onlineBuckets.size;
+        const presentOnce = onlineHits > 0;
+        const onlineMinutesApprox = onlineHits * CHAIN_WATCH_ACTIVITY_SAMPLE_MIN;
+
+        let verdict;
+        if (phase === 'past') {
+            if (sampleCount === 0) verdict = 'no_data';
+            else if (!presentOnce) verdict = 'fail';
+            else verdict = 'ok';
+        } else {
+            verdict = presentOnce ? 'ok' : 'pending';
+        }
+
+        return { phase: phase, sampleCount: sampleCount, onlineHits: onlineHits, presentOnce: presentOnce, onlineMinutesApprox: onlineMinutesApprox, verdict: verdict };
+    }
+
+    /** Minutes + status icon for Our Chain roster line (compact). */
+    function chainWatchAttendanceInlineHtml(factionId, w, slotStartSec, slotEndSec) {
+        if (!factionId || !w) return '';
+        const att = evaluateWatcherSlotAttendance(factionId, w.playerId, slotStartSec, slotEndSec);
+        if (att.phase === 'future') return '';
+        let icon;
+        if (att.phase === 'past' && att.verdict === 'no_data') icon = '?';
+        else if (att.presentOnce) icon = '✓';
+        else if (att.phase === 'past') icon = '✗';
+        else icon = '…';
+        const tip =
+            att.phase === 'past' && att.verdict === 'no_data'
+                ? 'No activity samples this hour — add this faction under Faction activity tracker.'
+                : 'Estimated ' +
+                  att.onlineMinutesApprox +
+                  ' min online (~' +
+                  CHAIN_WATCH_ACTIVITY_SAMPLE_MIN +
+                  ' min per sample when listed online).';
+        return (
+            ' <span class="war-dashboard-chain-watch-att" title="' +
+            escapeHtml(tip) +
+            '">' +
+            att.onlineMinutesApprox +
+            'm ' +
+            icon +
+            '</span>'
+        );
+    }
+
+    /** One cell under a watcher name in the schedule table. */
+    function chainWatchHtmlWatcherAttendance(factionId, w, slotStartSec, slotEndSec) {
+        if (!factionId || !w) return '';
+        const att = evaluateWatcherSlotAttendance(factionId, w.playerId, slotStartSec, slotEndSec);
+        if (att.phase === 'future') {
+            return '<div class="war-dashboard-cw-att"><span class="war-dashboard-cw-att-muted" title="Watch not started">—</span></div>';
+        }
+        let icon;
+        let iconClass = 'war-dashboard-cw-att-icon';
+        if (att.phase === 'past' && att.verdict === 'no_data') {
+            icon = '?';
+            iconClass += ' war-dashboard-cw-att--nodata';
+        } else if (att.presentOnce) {
+            icon = '✓';
+            iconClass += ' war-dashboard-cw-att--ok';
+        } else if (att.phase === 'past') {
+            icon = '✗';
+            iconClass += ' war-dashboard-cw-att--fail';
+        } else {
+            icon = '…';
+            iconClass += ' war-dashboard-cw-att--pending';
+        }
+        const tip =
+            att.phase === 'past' && att.verdict === 'no_data'
+                ? 'No activity samples this hour — add this faction under Faction activity tracker for 24/7 data.'
+                : 'Online ≈ ' +
+                  att.onlineMinutesApprox +
+                  ' min (' +
+                  att.sampleCount +
+                  ' unique ' +
+                  CHAIN_WATCH_ACTIVITY_SAMPLE_MIN +
+                  '-min windows with data; listed online in ' +
+                  att.onlineHits +
+                  ' of them).';
+        return (
+            '<div class="war-dashboard-cw-att" title="' +
+            escapeHtml(tip) +
+            '"><span class="war-dashboard-cw-att-min">' +
+            att.onlineMinutesApprox +
+            'm</span> <span class="' +
+            iconClass +
+            '" aria-hidden="true">' +
+            icon +
+            '</span></div>'
+        );
+    }
+
+    /** VIP: verified no-shows and unverified (no samples) past hours. */
+    function collectChainWatchAttendanceIssues(factionId, payload) {
+        const noShows = [];
+        const unverified = [];
+        if (!factionId || !payload || !payload.settings) return { noShows: noShows, unverified: unverified };
+        const start = payload.settings.chainStartUnix != null ? Number(payload.settings.chainStartUnix) : null;
+        if (start == null || !Number.isFinite(start)) return { noShows: noShows, unverified: unverified };
+        const slots = payload.slots || {};
+        const nowMs = Date.now();
+        Object.keys(slots).forEach(function (key) {
+            const si = parseInt(key, 10);
+            if (!Number.isFinite(si)) return;
+            const slotStart = start + si * 3600;
+            const slotEnd = slotStart + 3600;
+            if (nowMs < slotEnd) return;
+            (slots[key] || []).forEach(function (w) {
+                const att = evaluateWatcherSlotAttendance(factionId, w.playerId, slotStart, slotEnd);
+                if (att.phase !== 'past') return;
+                const name = w.name || String(w.playerId);
+                const row = {
+                    playerId: String(w.playerId),
+                    name: name,
+                    slotIndex: si,
+                    slotLabel: formatTctTimeRangeShort(slotStart, slotEnd)
+                };
+                if (att.verdict === 'fail') noShows.push(row);
+                else if (att.verdict === 'no_data') unverified.push(row);
+            });
+        });
+        return { noShows: noShows, unverified: unverified };
+    }
+
+    /** VIP: increment visible TCT days (+24h of slots after first partial day). */
+    function wireChainWatchAddDayButton() {
+        const btn = document.getElementById('war-dashboard-cw-add-day');
+        if (!btn) return;
+        btn.addEventListener('click', async function () {
+            const apiKey = getApiKey();
+            const fn = getWarDashboardFunctions();
+            if (!apiKey || !fn || !lastOurFactionId || !chainWatchPayload) return;
+            const p = chainWatchPayload;
+            const s = p.settings || {};
+            const startUnix = s.chainStartUnix != null ? Number(s.chainStartUnix) : null;
+            if (startUnix == null) return;
+            const cur = chainWatchPickVisibleTctDaysFromForm(s);
+            const maxD = chainWatchMaxVisibleTctDays(startUnix);
+            const next = cur + 1;
+            if (next > maxD) return;
+            btn.disabled = true;
+            try {
+                let unix = null;
+                const dateEl = document.getElementById('war-dashboard-cw-start-date');
+                const hourEl = document.getElementById('war-dashboard-cw-start-hour');
+                if (dateEl && hourEl && dateEl.value) {
+                    unix = unixFromUtcDateHour(dateEl.value, hourEl.value);
+                }
+                if (unix == null && s.chainStartUnix != null) {
+                    unix = Number(s.chainStartUnix);
+                }
+                function pickNum(id, fallback) {
+                    const el = document.getElementById(id);
+                    if (el && el.value !== '') return Number(el.value);
+                    return Number(fallback);
+                }
+                function pickStr(id, fallback) {
+                    const el = document.getElementById(id);
+                    return el ? el.value : fallback;
+                }
+                await fn.httpsCallable('chainWatchSaveConfig')({
+                    apiKey: apiKey,
+                    factionId: String(lastOurFactionId),
+                    settings: {
+                        chainStartUnix: unix,
+                        chainTarget: pickNum('war-dashboard-cw-target', s.chainTarget),
+                        backupColumns: Math.min(3, Math.max(1, Number(s.backupColumns) || 1)),
+                        rewardType: pickStr('war-dashboard-cw-reward-type', s.rewardType) === 'xanax' ? 'xanax' : 'cash',
+                        rewardFirst: pickNum('war-dashboard-cw-r1', s.rewardFirst),
+                        rewardSubsequent: pickNum('war-dashboard-cw-r2', s.rewardSubsequent),
+                        maxSignupsPer24h: pickNum('war-dashboard-cw-max24', s.maxSignupsPer24h),
+                        clearAllSignups: false,
+                        visibleTctDays: next
+                    }
+                });
+                await fetchChainWatchData(true);
+                await renderChainWatchScheduleModal();
+            } catch (e) {
+                alert((e && e.message) ? e.message : 'Could not add day');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    }
+
+    /** VIP: Backup 1 / Backup 2 header − removes that watcher column (calls save). */
+    function wireChainWatchRemoveColumnButtons() {
+        const root = document.getElementById('war-dashboard-chain-watch-modal-body');
+        if (!root) return;
+        root.querySelectorAll('.war-dashboard-cw-remove-col').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+                const apiKey = getApiKey();
+                const fn = getWarDashboardFunctions();
+                if (!apiKey || !fn || !lastOurFactionId || !chainWatchPayload) return;
+                const colIdx = parseInt(btn.getAttribute('data-remove-col'), 10);
+                if (!Number.isFinite(colIdx) || colIdx < 1) return;
+                const p = chainWatchPayload;
+                const s = p.settings || {};
+                const bc = Math.min(3, Math.max(1, Number(s.backupColumns) || 1));
+                if (colIdx >= bc) return;
+                const n = chainWatchCountSignupsInColumn(p.slots || {}, colIdx);
+                if (n > 0) {
+                    const ok = window.confirm(
+                        'This column has ' +
+                            n +
+                            ' signup' +
+                            (n === 1 ? '' : 's') +
+                            ' across the schedule. Removing it will remove those people from those slots. Continue?'
+                    );
+                    if (!ok) return;
+                }
+                btn.disabled = true;
+                const beforeSlots = p.slots ? JSON.parse(JSON.stringify(p.slots)) : {};
+                const beforeBackupColumns = bc;
+                try {
+                    // Optimistic UI: remove this watcher column immediately and shift higher columns left.
+                    const nextSlots = {};
+                    Object.keys(p.slots || {}).forEach(function (slotKey) {
+                        const list = Array.isArray(p.slots[slotKey]) ? p.slots[slotKey] : [];
+                        const next = [];
+                        list.forEach(function (w) {
+                            const c = Number(w.col);
+                            if (!Number.isFinite(c)) return;
+                            if (c === colIdx) return;
+                            if (c > colIdx) next.push(Object.assign({}, w, { col: c - 1 }));
+                            else next.push(w);
+                        });
+                        nextSlots[slotKey] = next;
+                    });
+                    p.slots = nextSlots;
+                    s.backupColumns = Math.max(1, bc - 1);
+                    await renderChainWatchScheduleModal();
+
+                    let unix = null;
+                    const dateEl = document.getElementById('war-dashboard-cw-start-date');
+                    const hourEl = document.getElementById('war-dashboard-cw-start-hour');
+                    if (dateEl && hourEl && dateEl.value) {
+                        unix = unixFromUtcDateHour(dateEl.value, hourEl.value);
+                    }
+                    if (unix == null && s.chainStartUnix != null) {
+                        unix = Number(s.chainStartUnix);
+                    }
+                    function pickNum(id, fallback) {
+                        const el = document.getElementById(id);
+                        if (el && el.value !== '') return Number(el.value);
+                        return Number(fallback);
+                    }
+                    function pickStr(id, fallback) {
+                        const el = document.getElementById(id);
+                        return el ? el.value : fallback;
+                    }
+                    await fn.httpsCallable('chainWatchSaveConfig')({
+                        apiKey: apiKey,
+                        factionId: String(lastOurFactionId),
+                        settings: {
+                            chainStartUnix: unix,
+                            chainTarget: pickNum('war-dashboard-cw-target', s.chainTarget),
+                            backupColumns: bc,
+                            rewardType: pickStr('war-dashboard-cw-reward-type', s.rewardType) === 'xanax' ? 'xanax' : 'cash',
+                            rewardFirst: pickNum('war-dashboard-cw-r1', s.rewardFirst),
+                            rewardSubsequent: pickNum('war-dashboard-cw-r2', s.rewardSubsequent),
+                            maxSignupsPer24h: pickNum('war-dashboard-cw-max24', s.maxSignupsPer24h),
+                            clearAllSignups: false,
+                            removeWatcherColumn0: colIdx,
+                            visibleTctDays: chainWatchPickVisibleTctDaysFromForm(s)
+                        }
+                    });
+                } catch (e) {
+                    p.slots = beforeSlots;
+                    s.backupColumns = beforeBackupColumns;
+                    await fetchChainWatchData(true).catch(function () {});
+                    await renderChainWatchScheduleModal();
+                    alert((e && e.message) ? e.message : 'Could not remove column');
+                    btn.disabled = false;
+                    return;
+                }
+                try {
+                    await fetchChainWatchData(true);
+                } catch (e) {
+                    console.warn('chainWatchGet after remove column', e);
+                }
+                await renderChainWatchScheduleModal();
+                btn.disabled = false;
+            });
+        });
+    }
+
+    /** VIP: + above the schedule table adds a backup watcher column (calls save). */
+    function wireChainWatchAddColumnButton() {
+        const btn = document.getElementById('war-dashboard-cw-header-add-col');
+        if (!btn) return;
+        btn.addEventListener('click', async function () {
+            const apiKey = getApiKey();
+            const fn = getWarDashboardFunctions();
+            if (!apiKey || !fn || !lastOurFactionId || !chainWatchPayload) return;
+            const p = chainWatchPayload;
+            const s = p.settings || {};
+            const bc = Math.min(3, Math.max(1, Number(s.backupColumns) || 1));
+            if (bc >= 3) return;
+            btn.disabled = true;
+            const prevBackupColumns = bc;
+            try {
+                // Optimistic UI: add column instantly, then sync to backend.
+                s.backupColumns = Math.min(3, prevBackupColumns + 1);
+                await renderChainWatchScheduleModal();
+
+                let unix = null;
+                const dateEl = document.getElementById('war-dashboard-cw-start-date');
+                const hourEl = document.getElementById('war-dashboard-cw-start-hour');
+                if (dateEl && hourEl && dateEl.value) {
+                    unix = unixFromUtcDateHour(dateEl.value, hourEl.value);
+                }
+                if (unix == null && s.chainStartUnix != null) {
+                    unix = Number(s.chainStartUnix);
+                }
+                function pickNum(id, fallback) {
+                    const el = document.getElementById(id);
+                    if (el && el.value !== '') return Number(el.value);
+                    return Number(fallback);
+                }
+                function pickStr(id, fallback) {
+                    const el = document.getElementById(id);
+                    return el ? el.value : fallback;
+                }
+                await fn.httpsCallable('chainWatchSaveConfig')({
+                    apiKey: apiKey,
+                    factionId: String(lastOurFactionId),
+                    settings: {
+                        chainStartUnix: unix,
+                        chainTarget: pickNum('war-dashboard-cw-target', s.chainTarget),
+                        backupColumns: prevBackupColumns + 1,
+                        rewardType: pickStr('war-dashboard-cw-reward-type', s.rewardType) === 'xanax' ? 'xanax' : 'cash',
+                        rewardFirst: pickNum('war-dashboard-cw-r1', s.rewardFirst),
+                        rewardSubsequent: pickNum('war-dashboard-cw-r2', s.rewardSubsequent),
+                        maxSignupsPer24h: pickNum('war-dashboard-cw-max24', s.maxSignupsPer24h),
+                        clearAllSignups: false,
+                        visibleTctDays: chainWatchPickVisibleTctDaysFromForm(s)
+                    }
+                });
+                await fetchChainWatchData(true);
+                await renderChainWatchScheduleModal();
+            } catch (e) {
+                s.backupColumns = prevBackupColumns;
+                await fetchChainWatchData(true).catch(function () {});
+                await renderChainWatchScheduleModal();
+                alert((e && e.message) ? e.message : 'Could not add column');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    }
+
+    /** Collapsible VIP editor (localStorage remembers collapsed state when a schedule exists). */
+    function wireChainWatchVipCollapse(docExists) {
+        const btn = document.getElementById('war-dashboard-cw-vip-toggle');
+        const body = document.getElementById('war-dashboard-cw-vip-body');
+        if (!btn || !body) return;
+        let collapsed = false;
+        try {
+            if (docExists) {
+                collapsed = localStorage.getItem('war_dashboard_cw_vip_collapsed') === '1';
+            }
+        } catch (e) { /* ignore */ }
+        if (collapsed) {
+            body.classList.add('war-dashboard-cw-vip-body--collapsed');
+            btn.setAttribute('aria-expanded', 'false');
+        } else {
+            body.classList.remove('war-dashboard-cw-vip-body--collapsed');
+            btn.setAttribute('aria-expanded', 'true');
+        }
+        btn.addEventListener('click', function () {
+            body.classList.toggle('war-dashboard-cw-vip-body--collapsed');
+            const isCollapsed = body.classList.contains('war-dashboard-cw-vip-body--collapsed');
+            btn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+            try {
+                localStorage.setItem('war_dashboard_cw_vip_collapsed', isCollapsed ? '1' : '0');
+            } catch (e) { /* ignore */ }
+        });
+    }
+
     function getApiKey() {
         return (localStorage.getItem('tornApiKey') || '').trim();
     }
@@ -106,16 +581,55 @@
         };
     }
 
-    /** Get active ranked war for our faction; returns { war, enemyFactionId, enemyName } or null */
+    /**
+     * Ranked war enemy for our faction (same idea as War Payout: ongoing, else next upcoming).
+     * Returns { war, enemyFactionId, enemyName, kind: 'ongoing' | 'upcoming' } or null.
+     */
     async function getCurrentWarEnemy(apiKey, ourFactionId) {
         const data = await fetchJson(`https://api.torn.com/v2/faction/${ourFactionId}/rankedwars?key=${apiKey}`);
         const raw = data.rankedwars || [];
         const list = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? Object.values(raw) : []);
         const now = Math.floor(Date.now() / 1000);
-        const active = list.find(w => w.start <= now && (!w.end || w.end >= now));
-        if (!active || !active.factions || active.factions.length < 2) return null;
-        const enemy = active.factions.find(f => String(f.id) !== String(ourFactionId));
-        return enemy ? { war: active, enemyFactionId: String(enemy.id), enemyName: enemy.name || `Faction ${enemy.id}` } : null;
+
+        const ongoing = list.find(function (w) {
+            return w.start <= now && (!w.end || w.end >= now);
+        });
+        if (ongoing && ongoing.factions && ongoing.factions.length >= 2) {
+            const enemy = ongoing.factions.find(function (f) {
+                return String(f.id) !== String(ourFactionId);
+            });
+            if (enemy) {
+                return {
+                    war: ongoing,
+                    enemyFactionId: String(enemy.id),
+                    enemyName: enemy.name || 'Faction ' + enemy.id,
+                    kind: 'ongoing'
+                };
+            }
+        }
+
+        const upcomingCandidates = list.filter(function (w) {
+            return w.start > now && w.factions && w.factions.length >= 2;
+        });
+        upcomingCandidates.sort(function (a, b) {
+            return a.start - b.start;
+        });
+        const upcoming = upcomingCandidates[0];
+        if (upcoming) {
+            const enemy = upcoming.factions.find(function (f) {
+                return String(f.id) !== String(ourFactionId);
+            });
+            if (enemy) {
+                return {
+                    war: upcoming,
+                    enemyFactionId: String(enemy.id),
+                    enemyName: enemy.name || 'Faction ' + enemy.id,
+                    kind: 'upcoming'
+                };
+            }
+        }
+
+        return null;
     }
 
     /** Fetch faction chain: GET faction/{id}?selections=chain */
@@ -691,6 +1205,45 @@
         return `${m}m ${remainder}s`;
     }
 
+    /** HTML for who is on chain watch this hour (from schedule), for Our Chain box. Empty if no schedule / outside slot range. */
+    function getOurChainWatchRosterHtml() {
+        const p = chainWatchPayload;
+        if (!p || p.exists === false) return '';
+        const settings = p.settings || {};
+        const start = settings.chainStartUnix != null ? Number(settings.chainStartUnix) : null;
+        if (start == null || !Number.isFinite(start)) return '';
+        const nowSec = Math.floor(Date.now() / 1000);
+        const maxSlots = p.maxHourSlots != null ? Number(p.maxHourSlots) : CHAIN_WATCH_MAX_HOUR_SLOTS;
+        const slotIndex = Math.floor((nowSec - start) / 3600);
+        if (slotIndex < 0 || slotIndex >= maxSlots) return '';
+        const list = (p.slots && p.slots[String(slotIndex)]) || [];
+        if (list.length === 0) {
+            return (
+                '<div class="war-dashboard-chain-watch-line war-dashboard-chain-watch-line--empty" title="Chain watch roster for this hour (schedule)">Watch: <span class="war-dashboard-chain-watch-empty">—</span></div>'
+            );
+        }
+        const sorted = list.slice().sort(function (a, b) {
+            return Number(a.col) - Number(b.col);
+        });
+        const slotStartSec = start + slotIndex * 3600;
+        const slotEndSec = slotStartSec + 3600;
+        const parts = sorted.map(function (w) {
+            const att =
+                lastOurFactionId ? chainWatchAttendanceInlineHtml(lastOurFactionId, w, slotStartSec, slotEndSec) : '';
+            return (
+                '<strong class="war-dashboard-chain-watch-name">' +
+                escapeHtml(w.name || String(w.playerId)) +
+                '</strong>' +
+                att
+            );
+        });
+        return (
+            '<div class="war-dashboard-chain-watch-line" title="Who is on chain watch this hour (from your faction schedule)">Watch: ' +
+            parts.join(', ') +
+            '</div>'
+        );
+    }
+
     /** Render one chain box (Our or Enemy). chain = API data, display = { timeout, cooldown } for tick-down. chainKey = 'our' | 'enemy' for the track toggle. */
     function renderChainBox(boxEl, title, chain, display, chainKey) {
         if (!boxEl) return;
@@ -711,6 +1264,7 @@
         const timerText = timerLabel ? `${timerLabel}: ${formatMinutesSeconds(displaySeconds)}` : '—';
         const isUrgent = (timeout > 0 && timeout < 60) || (timeout === 0 && cooldown > 0 && cooldown < 60);
         const trackOn = chainKey === 'our' ? getTrackOurChain() : getTrackEnemyChain();
+        const watchRosterHtml = chainKey === 'our' ? getOurChainWatchRosterHtml() : '';
         boxEl.className = 'war-dashboard-chain-box' +
             (!trackOn ? ' war-dashboard-chain-box-off' : '') +
             (trackOn && isActive ? ' war-dashboard-chain-box-active' : '') +
@@ -724,6 +1278,7 @@
                     <span class="war-dashboard-chain-track-slider"></span>
                 </label>
                 <div class="war-dashboard-chain-title">${escapeHtml(title)}</div>
+                ${watchRosterHtml}
                 <div class="war-dashboard-chain-off-message">Tracking off</div>
             `;
         } else {
@@ -739,6 +1294,7 @@
                     <span class="war-dashboard-chain-modifier">Modifier: ${escapeHtml(String(modifier))}</span>
                     <span class="war-dashboard-chain-max">Next: ${escapeHtml(String(max))}</span>
                 </div>
+                ${watchRosterHtml}
             `;
         }
         const input = boxEl.querySelector('.war-dashboard-chain-track-input');
@@ -786,7 +1342,8 @@
             row.classList.add('war-dashboard-chains-row--solo');
             row.classList.remove('war-dashboard-chains-row--dual');
         }
-        if (row.style.display !== 'none') {
+        // Always apply layout when we have a faction — do not gate on row.style.display (startChainTick can run before runDashboard finishes).
+        if (lastOurFactionId) {
             applyChainsRowVisibleLayout(row);
         }
     }
@@ -804,15 +1361,19 @@
         applyChainsRowVisibleLayout(row);
     }
 
+    /** Placeholder so Our Chain shows at 0 / tracking off when API failed or not loaded — Chain watch stays visible underneath. */
+    const OUR_CHAIN_PLACEHOLDER = { current: 0, max: 0, timeout: 0, cooldown: 0, modifier: 0 };
     /** Placeholder so enemy column shows side-by-side before chain API returns. */
     const ENEMY_CHAIN_PLACEHOLDER = { current: 0, max: 0, timeout: 0, cooldown: 0, modifier: 0 };
 
     function renderChainBoxes() {
+        const ourChainForUi = lastOurChain || (lastOurFactionId ? OUR_CHAIN_PLACEHOLDER : null);
+        const ourDisplayForUi = lastOurChain ? ourChainDisplay : { timeout: 0, cooldown: 0 };
         renderChainBox(
             document.getElementById('war-dashboard-our-chain-box'),
             'Our Chain',
-            lastOurChain,
-            ourChainDisplay,
+            ourChainForUi,
+            ourDisplayForUi,
             'our'
         );
         const enemyChainForUi = lastEnemyChain || (lastEnemyFactionId ? ENEMY_CHAIN_PLACEHOLDER : null);
@@ -825,6 +1386,945 @@
             'enemy'
         );
         updateChainsRowLayout();
+        updateChainWatchBarVisibility();
+    }
+
+    function getWarDashboardFunctions() {
+        try {
+            if (typeof firebase !== 'undefined' && firebase.functions) return firebase.functions();
+        } catch (e) { /* ignore */ }
+        return null;
+    }
+
+    function readChainWatchSessionCache(factionId) {
+        try {
+            const raw = sessionStorage.getItem(CHAIN_WATCH_CACHE_PREFIX + String(factionId));
+            if (!raw) return null;
+            const o = JSON.parse(raw);
+            if (!o || !o.t || !o.data) return null;
+            return o;
+        } catch (e) { return null; }
+    }
+
+    function writeChainWatchSessionCache(factionId, data) {
+        try {
+            sessionStorage.setItem(CHAIN_WATCH_CACHE_PREFIX + String(factionId), JSON.stringify({ t: Date.now(), data: data }));
+        } catch (e) { /* ignore */ }
+    }
+
+    /**
+     * Ensures Chain watch bar exists directly under Our Chain (inside #war-dashboard-chain-column-our).
+     */
+    function ensureChainWatchBarMounted() {
+        const ourCol = document.getElementById('war-dashboard-chain-column-our');
+        const ourBox = document.getElementById('war-dashboard-our-chain-box');
+        if (!ourCol || !ourBox) return;
+
+        let bar = document.getElementById('war-dashboard-chain-watch-bar');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'war-dashboard-chain-watch-bar';
+            bar.className = 'war-dashboard-chain-watch-bar';
+            bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:10px;';
+            bar.innerHTML =
+                '<button type="button" id="war-dashboard-chain-watch-open" class="btn">Chain watch</button>' +
+                '<span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint" style="color:#888;font-size:12px;"></span>';
+            ourCol.insertBefore(bar, ourBox.nextSibling);
+        } else if (bar.parentNode !== ourCol || bar.previousElementSibling !== ourBox) {
+            ourCol.insertBefore(bar, ourBox.nextSibling);
+        }
+    }
+
+    function updateChainWatchBarVisibility() {
+        ensureChainWatchBarMounted();
+        const bar = document.getElementById('war-dashboard-chain-watch-bar');
+        const hint = document.getElementById('war-dashboard-chain-watch-hint');
+        if (!bar) return;
+        // Always show the bar on War Dashboard — visibility does not depend on enemy faction (only our faction is needed for API calls).
+        bar.style.display = 'flex';
+        if (hint) {
+            if (!lastOurFactionId) {
+                if (!getApiKey()) {
+                    hint.textContent = ' Set API key in the sidebar, then load the dashboard.';
+                } else {
+                    hint.textContent = ' Waiting for your faction (dashboard loading or not in a faction). No enemy faction required for Chain watch.';
+                }
+            } else {
+                const age = chainWatchLastFetchMs ? Math.max(0, Math.floor((Date.now() - chainWatchLastFetchMs) / 1000)) : null;
+                hint.textContent = age != null ? ('Schedule data: refreshed ' + (age < 60 ? age + 's' : Math.floor(age / 60) + 'm') + ' ago') : '';
+            }
+        }
+    }
+
+    /** @returns {Promise<object|null>} chainWatchPayload on success, or null (see chainWatchLastError). */
+    async function fetchChainWatchData(force) {
+        chainWatchLastError = '';
+        const fid = lastOurFactionId;
+        const apiKey = getApiKey();
+        if (!fid) {
+            chainWatchLastError = 'No faction loaded yet. Click Apply or Use current ranked war, then open Chain watch again.';
+            return null;
+        }
+        if (!apiKey) {
+            chainWatchLastError = 'Set your Torn API key in the sidebar first.';
+            return null;
+        }
+        const fn = getWarDashboardFunctions();
+        if (!fn) {
+            chainWatchLastError = 'Firebase did not load (Functions). Refresh the page or check that scripts are not blocked.';
+            return null;
+        }
+        const now = Date.now();
+        if (!force && chainWatchPayload && (now - chainWatchLastFetchMs) < CHAIN_WATCH_POLL_MS) {
+            return chainWatchPayload;
+        }
+        // Only hydrate from sessionStorage when we have no in-memory payload (cold start).
+        // If chainWatchPayload already exists, restoring from cache can overwrite optimistic edits
+        // or diverge from chainWatchLastFetchMs (different "age" heuristics), causing signups to flash.
+        if (!force && !chainWatchPayload) {
+            const cached = readChainWatchSessionCache(fid);
+            if (cached && (now - cached.t) < CHAIN_WATCH_POLL_MS) {
+                chainWatchPayload = cached.data;
+                chainWatchLastFetchMs = cached.t;
+                updateChainWatchBarVisibility();
+                try {
+                    await ensureActivityDataLoaded(fid);
+                } catch (e) { /* ignore */ }
+                renderChainBoxes();
+                return chainWatchPayload;
+            }
+        }
+        const CHAIN_WATCH_FETCH_MS = 45000;
+        try {
+            const payload = { apiKey: apiKey, factionId: String(fid) };
+            const call = fn.httpsCallable('chainWatchGet')(payload);
+            var chainWatchTimeoutId;
+            const timeoutPromise = new Promise(function (_, reject) {
+                chainWatchTimeoutId = setTimeout(function () {
+                    reject(new Error('Request timed out after ' + Math.floor(CHAIN_WATCH_FETCH_MS / 1000) + 's. Check your connection and try again.'));
+                }, CHAIN_WATCH_FETCH_MS);
+            });
+            let res;
+            try {
+                res = await Promise.race([call, timeoutPromise]);
+            } finally {
+                if (chainWatchTimeoutId) clearTimeout(chainWatchTimeoutId);
+            }
+            const data = res && res.data;
+            if (data && typeof data === 'object') {
+                chainWatchPayload = data;
+                chainWatchLastFetchMs = Date.now();
+                writeChainWatchSessionCache(fid, data);
+                updateChainWatchBarVisibility();
+                try {
+                    await ensureActivityDataLoaded(fid);
+                } catch (e) { /* ignore */ }
+                renderChainBoxes();
+                return chainWatchPayload;
+            }
+            console.warn('chainWatchGet: empty or invalid data', res);
+            chainWatchLastError = 'Got an empty response from the server (chainWatchGet). Try again or check the browser console.';
+            return null;
+        } catch (e) {
+            console.warn('chainWatchGet', e);
+            chainWatchLastError = chainWatchErrorText(e);
+            return null;
+        }
+    }
+
+    function syncChainWatchFromDashboard() {
+        const fid = lastOurFactionId;
+        const apiKey = getApiKey();
+        if (!fid || !apiKey || !lastOurChain) return;
+        const fn = getWarDashboardFunctions();
+        if (!fn) return;
+        fn.httpsCallable('chainWatchSyncChain')({
+            apiKey,
+            factionId: String(fid),
+            current: lastOurChain.current != null ? Number(lastOurChain.current) : 0,
+            cooldown: lastOurChain.cooldown != null ? Number(lastOurChain.cooldown) : 0
+        }).catch(function () {});
+    }
+
+    function pad2(n) {
+        return String(n).padStart(2, '0');
+    }
+
+    const CHAIN_WATCH_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const CHAIN_WATCH_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+    function ordinalEnglish(n) {
+        const d = n % 10;
+        const e = n % 100;
+        if (e >= 11 && e <= 13) return n + 'th';
+        if (d === 1) return n + 'st';
+        if (d === 2) return n + 'nd';
+        if (d === 3) return n + 'rd';
+        return n + 'th';
+    }
+
+    /** e.g. "Friday 5th March" in UTC (TCT). */
+    function formatTctDayHeading(unixSec) {
+        const d = new Date(unixSec * 1000);
+        const name = CHAIN_WATCH_WEEKDAYS[d.getUTCDay()];
+        const day = d.getUTCDate();
+        const month = CHAIN_WATCH_MONTHS[d.getUTCMonth()];
+        return name + ' ' + ordinalEnglish(day) + ' ' + month;
+    }
+
+    /** "15:00 – 16:00 TCT" only (no date). */
+    function formatTctTimeRangeShort(startSec, endSec) {
+        const a = new Date(startSec * 1000);
+        const b = new Date(endSec * 1000);
+        return pad2(a.getUTCHours()) + ':' + pad2(a.getUTCMinutes()) + ' – ' + pad2(b.getUTCHours()) + ':' + pad2(b.getUTCMinutes()) + ' TCT';
+    }
+
+    function utcDayKeyFromUnix(unixSec) {
+        const d = new Date(unixSec * 1000);
+        return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+    }
+
+    /** Read-only summary of chain watch settings for all viewers. */
+    function chainWatchSettingsSummaryHtml(settings, start) {
+        const rt = settings.rewardType === 'xanax' ? 'Xanax' : 'Cash';
+        const target = settings.chainTarget != null ? String(settings.chainTarget) : '—';
+        const r1 = settings.rewardFirst != null ? String(settings.rewardFirst) : '0';
+        const r2 = settings.rewardSubsequent != null ? String(settings.rewardSubsequent) : '0';
+        const max24 = settings.maxSignupsPer24h != null ? String(settings.maxSignupsPer24h) : '10';
+        let startHtml;
+        if (start == null) {
+            startHtml = '<span class="war-dashboard-cw-sum-missing">Not set yet</span>';
+        } else {
+            const d = new Date(start * 1000);
+            startHtml = escapeHtml(formatTctDayHeading(start) + ', ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ' UTC (TCT)');
+        }
+        return '<dl class="war-dashboard-cw-summary-dl">' +
+            '<dt>Chain start</dt><dd>' + startHtml + '</dd>' +
+            '<dt>Target hits</dt><dd>' + escapeHtml(target) + '</dd>' +
+            '<dt>Reward type</dt><dd>' + escapeHtml(rt) + '</dd>' +
+            '<dt>First signup / each after</dt><dd>' + escapeHtml(r1) + ' / ' + escapeHtml(r2) + '</dd>' +
+            '<dt>Max signups per 24h</dt><dd>' + escapeHtml(max24) + '</dd>' +
+            '</dl>';
+    }
+
+    /** Format unix seconds as UTC (TCT) for display. */
+    function formatTctRange(startSec, endSec) {
+        const a = new Date(startSec * 1000);
+        const b = new Date(endSec * 1000);
+        const fmt = function (d) {
+            return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes());
+        };
+        return fmt(a) + ' – ' + fmt(b) + ' TCT';
+    }
+
+    function utcDateHourFromUnix(unix) {
+        if (!unix) return { date: '', hour: 12 };
+        const d = new Date(unix * 1000);
+        return {
+            date: d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()),
+            hour: d.getUTCHours()
+        };
+    }
+
+    function unixFromUtcDateHour(dateStr, hour) {
+        if (!dateStr) return null;
+        const p = dateStr.split('-').map(Number);
+        if (p.length !== 3 || p.some(function (x) { return !Number.isFinite(x); })) return null;
+        const h = Math.max(0, Math.min(23, Math.floor(Number(hour) || 0)));
+        return Math.floor(Date.UTC(p[0], p[1] - 1, p[2], h, 0, 0) / 1000);
+    }
+
+    /** Next TCT calendar midnight (00:00 UTC) after `startSec`. */
+    function chainWatchTctNextMidnightUnix(startSec) {
+        if (startSec == null || !Number.isFinite(startSec)) return null;
+        const d = new Date(startSec * 1000);
+        return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0) / 1000);
+    }
+
+    /** Hourly slots from chain start until end of that TCT day. */
+    function chainWatchFirstDaySlotCount(startSec) {
+        const nextMid = chainWatchTctNextMidnightUnix(startSec);
+        if (nextMid == null) return 0;
+        const n = Math.max(0, Math.floor((nextMid - startSec) / 3600));
+        return n === 0 ? 1 : n;
+    }
+
+    function chainWatchMaxSlotIndexWithSignups(slots) {
+        let max = -1;
+        Object.keys(slots || {}).forEach(function (key) {
+            if ((slots[key] || []).length) {
+                const si = parseInt(key, 10);
+                if (!Number.isNaN(si) && si > max) max = si;
+            }
+        });
+        return max;
+    }
+
+    function chainWatchMaxVisibleTctDays(startSec) {
+        const first = chainWatchFirstDaySlotCount(startSec);
+        return 1 + Math.ceil((CHAIN_WATCH_MAX_HOUR_SLOTS - first) / 24);
+    }
+
+    /** Slots shown for visibleTctDays: 1 = start→midnight, each +1 adds 24h. */
+    function chainWatchSlotsForVisibleDays(startSec, visibleTctDays, maxCap) {
+        const cap = Math.min(maxCap || CHAIN_WATCH_MAX_HOUR_SLOTS, CHAIN_WATCH_MAX_HOUR_SLOTS);
+        if (startSec == null || !Number.isFinite(startSec)) return 0;
+        const first = chainWatchFirstDaySlotCount(startSec);
+        const days = Math.max(1, Math.floor(Number(visibleTctDays) || 1));
+        return Math.min(cap, first + 24 * (days - 1));
+    }
+
+    function chainWatchPickVisibleTctDaysFromForm(s) {
+        const el = document.getElementById('war-dashboard-cw-visible-days');
+        if (el && el.value !== '' && el.value !== undefined) {
+            const n = Math.floor(Number(el.value));
+            if (Number.isFinite(n)) return n;
+        }
+        const fb = s && s.visibleTctDays != null ? Math.floor(Number(s.visibleTctDays)) : 1;
+        return Number.isFinite(fb) ? fb : 1;
+    }
+
+    function computeRewardsOwed(payload, factionId) {
+        const settings = payload.settings || {};
+        const slots = payload.slots || {};
+        const first = Number(settings.rewardFirst) || 0;
+        const sub = Number(settings.rewardSubsequent) || 0;
+        const rewardType = settings.rewardType === 'xanax' ? 'xanax' : 'cash';
+        const rows = [];
+        const all = [];
+        const excludedNoShows = [];
+        const chainStart = settings.chainStartUnix != null ? Number(settings.chainStartUnix) : null;
+        Object.keys(slots).forEach(function (key) {
+            const si = parseInt(key, 10);
+            (slots[key] || []).forEach(function (w) {
+                if (factionId && chainStart != null && Number.isFinite(chainStart)) {
+                    const slotStart = chainStart + si * 3600;
+                    const slotEnd = slotStart + 3600;
+                    const ev = evaluateWatcherSlotAttendance(factionId, w.playerId, slotStart, slotEnd);
+                    if (ev.phase === 'past' && ev.verdict === 'fail') {
+                        excludedNoShows.push({
+                            playerId: String(w.playerId),
+                            name: w.name || ('Player ' + w.playerId),
+                            slotIndex: si,
+                            slotLabel: formatTctTimeRangeShort(slotStart, slotEnd)
+                        });
+                        return;
+                    }
+                }
+                all.push({
+                    playerId: String(w.playerId),
+                    name: w.name || ('Player ' + w.playerId),
+                    at: w.at || 0,
+                    slotIndex: si
+                });
+            });
+        });
+        all.sort(function (a, b) { return a.at - b.at; });
+        const firstSeen = {};
+        const byPlayer = {};
+        all.forEach(function (entry) {
+            const pid = entry.playerId;
+            const isFirst = !firstSeen[pid];
+            firstSeen[pid] = true;
+            const amt = isFirst ? first : sub;
+            if (!byPlayer[pid]) {
+                byPlayer[pid] = { name: entry.name, total: 0, breakdown: [] };
+            }
+            byPlayer[pid].total += amt;
+            byPlayer[pid].breakdown.push({ slotIndex: entry.slotIndex, amount: amt, isFirst: isFirst });
+        });
+        Object.keys(byPlayer).forEach(function (pid) {
+            rows.push({ playerId: pid, name: byPlayer[pid].name, total: byPlayer[pid].total, breakdown: byPlayer[pid].breakdown });
+        });
+        rows.sort(function (a, b) { return b.total - a.total; });
+        return { rows: rows, rewardType: rewardType, excludedNoShows: excludedNoShows };
+    }
+
+    async function renderChainWatchRewardsModal() {
+        const body = document.getElementById('war-dashboard-chain-watch-rewards-body');
+        if (!body || !chainWatchPayload) return;
+        if (lastOurFactionId) {
+            // Do not block modal paint on activity fetch; refresh will merge in background.
+            ensureActivityDataLoaded(lastOurFactionId).catch(function () {});
+        }
+        const p = chainWatchPayload;
+        const comp = computeRewardsOwed(chainWatchPayload, lastOurFactionId);
+        const unit = comp.rewardType === 'xanax' ? ' Xanax' : ' (cash units)';
+        let html = '';
+        if (p.exists !== true) {
+            html += '<p style="color:#e0c080;font-size:13px;margin:0 0 12px 0;line-height:1.5;">No chain watch schedule has been saved for your faction yet, so there are no rewards to tally. Ask a <strong>VIP 2+</strong> member to set up Chain watch first.</p>';
+        }
+        html +=
+            '<p style="color:#b0b0b0;font-size:13px;margin:0 0 10px 0;line-height:1.45;">Totals use first vs subsequent rewards from settings. Order follows signup time. ' +
+            '<strong>Attendance:</strong> past watches with activity data but <strong>no</strong> online sample for that player in the hour are <strong>excluded</strong> (same rule as below). Hours with no samples at all are not excluded.</p>';
+        html += '<div class="table-scroll-wrapper" style="max-height:50vh;"><table class="war-dashboard-table war-dashboard-chain-watch-table"><thead><tr><th>Player</th><th>Owed</th></tr></thead><tbody>';
+        comp.rows.forEach(function (r) {
+            html += '<tr><td>' + escapeHtml(r.name) + '</td><td>' + escapeHtml(String(r.total)) + unit + '</td></tr>';
+        });
+        if (!comp.rows.length) {
+            html += '<tr><td colspan="2" style="color:#888;">No signups yet.</td></tr>';
+        }
+        html += '</tbody></table></div>';
+        const ex = comp.excludedNoShows || [];
+        if (ex.length) {
+            html += '<p style="color:#ffcdd2;font-size:13px;margin:12px 0 6px 0;font-weight:bold;">Excluded from totals (verified no-show — had samples that hour but player never online)</p>';
+            html += '<ul style="margin:0 0 12px 1.2em;color:#e0e0e0;font-size:13px;line-height:1.5;">';
+            ex.forEach(function (row) {
+                html +=
+                    '<li>' +
+                    escapeHtml(row.name) +
+                    ' — ' +
+                    escapeHtml(row.slotLabel) +
+                    ' (slot #' +
+                    escapeHtml(String(row.slotIndex)) +
+                    ')</li>';
+            });
+            html += '</ul>';
+        }
+        body.innerHTML = html;
+    }
+
+    async function renderChainWatchScheduleModal() {
+        const body = document.getElementById('war-dashboard-chain-watch-modal-body');
+        if (!body || !chainWatchPayload) return;
+        if (lastOurFactionId) {
+            // Keep interactions snappy; hydrate attendance data in background.
+            ensureActivityDataLoaded(lastOurFactionId).catch(function () {});
+        }
+        const p = chainWatchPayload;
+        const settings = p.settings || {};
+        const slots = p.slots || {};
+        const viewer = p.viewer || {};
+        const canEdit = viewer.canEdit === true;
+        const vipLevel = typeof viewer.vipLevel === 'number' ? viewer.vipLevel : 0;
+        const docExists = p.exists === true;
+        const chainState = p.chainState || {};
+        const start = settings.chainStartUnix != null ? Number(settings.chainStartUnix) : null;
+        const maxSlots = p.maxHourSlots != null ? Number(p.maxHourSlots) : CHAIN_WATCH_MAX_HOUR_SLOTS;
+        const targets = Array.isArray(p.chainTargets) ? p.chainTargets : [];
+        const brokeAtUnix = chainState.brokeAtUnix != null ? Number(chainState.brokeAtUnix) : null;
+        const brokeAtHit = chainState.brokeAtHit != null ? Number(chainState.brokeAtHit) : null;
+        let brokeSlotIndex = null;
+        if (start != null && brokeAtUnix) {
+            brokeSlotIndex = Math.floor((brokeAtUnix - start) / 3600);
+        }
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        let currentSlotIndex = null;
+        if (start != null) {
+            currentSlotIndex = Math.floor((nowSec - start) / 3600);
+        }
+
+        let html = '';
+        if (brokeAtHit != null && brokeAtHit > 0) {
+            html += '<p class="war-dashboard-chain-watch-break-banner" style="margin:0 0 12px 0;padding:8px 10px;border-radius:6px;background:rgba(244,67,54,0.2);color:#ffcdd2;font-size:13px;">Chain broke at hit <strong>' + escapeHtml(String(brokeAtHit)) + '</strong>' +
+                (brokeAtUnix ? ' (around ' + escapeHtml(formatTctRange(brokeAtUnix, brokeAtUnix + 60)) + ')' : '') + '</p>';
+        }
+
+        if (!docExists) {
+            html += '<div style="margin:0 0 14px 0;padding:12px 14px;border-radius:8px;border:1px solid var(--border-color,#444);background:rgba(255,215,0,0.06);font-size:13px;line-height:1.5;color:#e0e0e0;">';
+            if (canEdit) {
+                html += '<p style="margin:0;"><strong>No chain watch schedule saved yet</strong> for your faction. Fill in <strong>Chain start</strong>, target, and rewards below, then click <strong>Save schedule</strong>.</p>';
+            } else {
+                html += '<p style="margin:0 0 10px 0;"><strong>No chain watch has been set up</strong> for your faction yet. Only data configured here is shown to your faction — there is nothing to join until a <strong>VIP 2+</strong> member saves a schedule.</p>';
+                html += '<p style="margin:0 0 10px 0;">Ask a <strong>VIP 2+</strong> player in your faction to open <strong>War Dashboard → Chain watch</strong> and create the schedule.</p>';
+                html += '<p style="margin:0;color:#b0b0b0;font-size:12px;">Your VIP level: <strong>' + escapeHtml(String(vipLevel)) + '</strong> (VIP 2+ required to edit.) ' + chainWatchVipHowToHtml() + '</p>';
+            }
+            html += '</div>';
+        } else if (!canEdit && vipLevel < 2) {
+            html += '<p style="color:#b0b0b0;font-size:12px;margin:0 0 12px 0;line-height:1.45;">Schedule changes require <strong>VIP 2+</strong>. Your level: <strong>' + escapeHtml(String(vipLevel)) + '</strong>. ' + chainWatchVipHowToHtml() + '</p>';
+        }
+
+        if (canEdit) {
+            const dh = utcDateHourFromUnix(start);
+            const bc = Math.min(3, Math.max(1, Number(settings.backupColumns) || 1));
+            html += '<div class="war-dashboard-cw-vip-wrap">';
+            html += '<button type="button" class="war-dashboard-cw-vip-toggle" id="war-dashboard-cw-vip-toggle" aria-expanded="true" aria-controls="war-dashboard-cw-vip-body">';
+            html += '<span class="war-dashboard-cw-vip-toggle-text">Edit schedule (VIP 2+)</span>';
+            html += '<span class="war-dashboard-cw-vip-chevron" aria-hidden="true">▼</span>';
+            html += '</button>';
+            html += '<div class="war-dashboard-cw-vip-body" id="war-dashboard-cw-vip-body">';
+            html +=
+                '<div class="war-dashboard-cw-vip-rewards-row"><button type="button" class="btn war-dashboard-chain-watch-rewards-trigger" id="war-dashboard-chain-watch-rewards">Rewards owed</button></div>';
+            html += '<div class="war-dashboard-cw-setup">';
+            html += '<div class="war-dashboard-cw-setup-grid">';
+            html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-start-date">Chain start (UTC / TCT)</label>';
+            html += '<input type="date" id="war-dashboard-cw-start-date" value="' + escapeHtml(dh.date) + '"></div>';
+            html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-start-hour">Hour (UTC)</label>';
+            html += '<input type="number" id="war-dashboard-cw-start-hour" min="0" max="23" value="' + dh.hour + '"></div>';
+            html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-target">Target hits</label><select id="war-dashboard-cw-target">';
+            targets.forEach(function (t) {
+                html += '<option value="' + t + '"' + (Number(settings.chainTarget) === t ? ' selected' : '') + '>' + escapeHtml(String(t)) + '</option>';
+            });
+            html += '</select></div>';
+            html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-reward-type">Reward</label><select id="war-dashboard-cw-reward-type">';
+            html += '<option value="cash"' + (settings.rewardType !== 'xanax' ? ' selected' : '') + '>Cash</option>';
+            html += '<option value="xanax"' + (settings.rewardType === 'xanax' ? ' selected' : '') + '>Xanax</option>';
+            html += '</select></div>';
+            html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-r1">First signup</label>';
+            html += '<input type="number" id="war-dashboard-cw-r1" min="0" step="1" value="' + escapeHtml(String(settings.rewardFirst != null ? settings.rewardFirst : 0)) + '"></div>';
+            html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-r2">Each after</label>';
+            html += '<input type="number" id="war-dashboard-cw-r2" min="0" step="1" value="' + escapeHtml(String(settings.rewardSubsequent != null ? settings.rewardSubsequent : 0)) + '"></div>';
+            html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-max24">Max signups / 24h</label>';
+            html += '<input type="number" id="war-dashboard-cw-max24" min="1" max="999" value="' + escapeHtml(String(settings.maxSignupsPer24h != null ? settings.maxSignupsPer24h : 10)) + '"></div>';
+            html += '</div>';
+            html += '<input type="hidden" id="war-dashboard-cw-backup" value="' + bc + '">';
+            html +=
+                '<input type="hidden" id="war-dashboard-cw-visible-days" value="' +
+                Math.max(1, Math.floor(Number(settings.visibleTctDays) || 1)) +
+                '">';
+            html += '<p class="war-dashboard-cw-backup-hint" style="margin:0 0 12px 0;">Use <strong>+</strong> above the schedule table to add backup watcher columns (max 3). Use <strong>−</strong> on <strong>Backup 1</strong> or <strong>Backup 2</strong> headers to remove a column. The schedule lists from chain start until <strong>midnight TCT</strong> first; use <strong>Add next day</strong> below the table for more.</p>';
+            html += '<div class="war-dashboard-cw-save-row">';
+            html += '<label class="war-dashboard-cw-clear-label" style="display:flex;align-items:flex-start;gap:8px;margin:0;color:#b0b0b0;font-size:12px;line-height:1.4;width:100%;"><input type="checkbox" id="war-dashboard-cw-clear" style="margin-top:2px;flex-shrink:0;"><span>Clear all signups when saving (also when changing start, target, or parallel slots)</span></label>';
+            html += '<button type="button" class="btn" id="war-dashboard-cw-save">Save schedule</button>';
+            html += '<p id="war-dashboard-cw-save-msg" style="font-size:12px;color:#888;margin:0;width:100%;"></p>';
+            html += '</div></div></div></div>';
+        }
+
+        html += '<div class="war-dashboard-cw-summary">';
+        html += '<div class="war-dashboard-cw-summary-title">Current settings</div>';
+        html += chainWatchSettingsSummaryHtml(settings, start);
+        html += '</div>';
+
+        if (!canEdit) {
+            html +=
+                '<div class="war-dashboard-cw-viewer-rewards-row"><button type="button" class="btn war-dashboard-chain-watch-rewards-trigger" id="war-dashboard-chain-watch-rewards">Rewards owed</button></div>';
+            html += '<p class="war-dashboard-cw-viewer-hint" style="color:#b0b0b0;font-size:13px;margin:0 0 12px 0;line-height:1.45;">Use <strong>Sign up</strong> in an empty watcher cell for that hour, or leave your slot (×) while the hour is still active. Only VIP 2+ can create or change the schedule.</p>';
+        }
+
+        const backupCols = Math.min(3, Math.max(1, Number(settings.backupColumns) || 1));
+        const showAddCol = canEdit && backupCols < 3;
+        const slotTableColCount = 1 + backupCols;
+
+        const visibleTctDays = Math.max(
+            1,
+            Math.floor(
+                settings.visibleTctDays != null && settings.visibleTctDays !== ''
+                    ? Number(settings.visibleTctDays)
+                    : 1
+            ) || 1
+        );
+        const maxTctDays = start != null ? chainWatchMaxVisibleTctDays(start) : 1;
+        const plannedSlots = chainWatchSlotsForVisibleDays(start, visibleTctDays, maxSlots);
+        const maxSignupIdx = chainWatchMaxSlotIndexWithSignups(slots);
+        const rowCount = start == null ? 0 : Math.min(maxSlots, Math.max(plannedSlots, maxSignupIdx + 1));
+        const showAddDay = canEdit && start != null && visibleTctDays < maxTctDays;
+
+        let showCompletedRows = false;
+        try {
+            showCompletedRows = localStorage.getItem('war_dashboard_cw_show_completed') === '1';
+        } catch (e) { /* ignore */ }
+
+        let hasCompletedInView = false;
+        const slotIndicesToRender = [];
+        for (let i = 0; start != null && i < rowCount; i++) {
+            const slotEndSec = start + (i + 1) * 3600;
+            const hourCompleted = nowSec >= slotEndSec;
+            if (hourCompleted) hasCompletedInView = true;
+            if (!showCompletedRows && hourCompleted) continue;
+            slotIndicesToRender.push(i);
+        }
+
+        html += '<div class="war-dashboard-cw-table-block">';
+        if ((start != null && hasCompletedInView) || showAddCol) {
+            html += '<div class="war-dashboard-cw-table-top-bar">';
+            if (start != null && hasCompletedInView) {
+                html += '<div class="war-dashboard-cw-completed-toolbar">';
+                if (!showCompletedRows) {
+                    html +=
+                        '<button type="button" class="btn" id="war-dashboard-cw-toggle-completed" data-set-completed="1">Show completed rows</button>';
+                } else {
+                    html +=
+                        '<button type="button" class="btn" id="war-dashboard-cw-toggle-completed" data-set-completed="0">Hide completed rows</button>';
+                }
+                html += '</div>';
+            }
+            if (showAddCol) {
+                html += '<div class="war-dashboard-cw-add-col-toolbar">';
+                html +=
+                    '<button type="button" class="war-dashboard-cw-add-col" id="war-dashboard-cw-header-add-col" aria-label="Add backup watcher column" title="Add another watcher column for the same hour (max 3 total).">+</button>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+        html += '<div class="table-scroll-wrapper">';
+        html += '<table class="war-dashboard-chain-watch-table war-dashboard-chain-watch-table--cols"><thead><tr>';
+        html += '<th class="war-dashboard-cw-th-time">Time (TCT)</th>';
+        for (let c = 0; c < backupCols; c++) {
+            html += '<th class="war-dashboard-cw-th-slot" scope="col"><div class="war-dashboard-cw-th-slot-inner">';
+            html += '<span class="war-dashboard-cw-th-slot-label">' + escapeHtml(chainWatchColumnLabel(c)) + '</span>';
+            if (canEdit && c >= 1) {
+                const rmLabel = chainWatchColumnLabel(c);
+                html +=
+                    '<button type="button" class="war-dashboard-cw-remove-col" data-remove-col="' +
+                    c +
+                    '" title="Remove ' +
+                    escapeHtml(rmLabel) +
+                    ' column" aria-label="Remove ' +
+                    escapeHtml(rmLabel) +
+                    ' column">\u2212</button>';
+            }
+            html += '</div></th>';
+        }
+        html += '</tr></thead><tbody>';
+
+        const myId = viewer.playerId != null ? String(viewer.playerId) : '';
+        let prevUtcDayKey = null;
+        for (let k = 0; k < slotIndicesToRender.length; k++) {
+            const i = slotIndicesToRender[k];
+            const slotStart = start + i * 3600;
+            const slotEnd = slotStart + 3600;
+            const hourCompleted = nowSec >= slotEnd;
+            const dayKey = utcDayKeyFromUnix(slotStart);
+            const isNewCalendarDay = prevUtcDayKey === null || dayKey !== prevUtcDayKey;
+            prevUtcDayKey = dayKey;
+            const rowClass = (brokeSlotIndex === i ? ' war-dashboard-chain-watch-slot--broke' : '') +
+                (currentSlotIndex === i ? ' war-dashboard-chain-watch-slot--current' : '');
+            const list = slots[String(i)] || [];
+            const mine = list.find(function (w) { return String(w.playerId) === myId; });
+            const hasFreeWatcherSlot = list.length < backupCols;
+            let firstFreeCol = -1;
+            for (let fc = 0; fc < backupCols; fc++) {
+                if (!list.some(function (x) { return Number(x.col) === fc; })) {
+                    firstFreeCol = fc;
+                    break;
+                }
+            }
+
+            let hourCellHtml = '';
+            if (isNewCalendarDay) {
+                hourCellHtml += '<div class="war-dashboard-cw-day-heading">' + escapeHtml(formatTctDayHeading(slotStart)) + '</div>';
+            }
+            hourCellHtml += '<div class="war-dashboard-cw-day-time">' + escapeHtml(formatTctTimeRangeShort(slotStart, slotEnd)) + '</div>';
+            const trClass = rowClass.trim();
+            html += '<tr' + (trClass ? ' class="' + trClass + '"' : '') + '><td class="war-dashboard-cw-hour-cell">' + hourCellHtml + '</td>';
+
+            for (let c = 0; c < backupCols; c++) {
+                const w = list.find(function (x) { return Number(x.col) === c; });
+                if (w) {
+                    const isMe = myId && String(w.playerId) === myId;
+                    html += '<td class="war-dashboard-cw-slot-cell">';
+                    html += '<div class="war-dashboard-cw-watcher-line">';
+                    html += '<span class="war-dashboard-cw-watcher-name">' + escapeHtml(w.name || w.playerId) + '</span>';
+                    if (isMe && !hourCompleted) {
+                        html +=
+                            '<button type="button" class="war-dashboard-cw-leave war-dashboard-cw-leave-icon" data-slot="' +
+                            i +
+                            '" title="Leave this slot" aria-label="Leave this slot">×</button>';
+                    }
+                    html += '</div>';
+                    if (lastOurFactionId) {
+                        html += chainWatchHtmlWatcherAttendance(lastOurFactionId, w, slotStart, slotEnd);
+                    }
+                    html += '</td>';
+                } else {
+                    html += '<td class="war-dashboard-cw-slot-cell war-dashboard-cw-slot-cell--empty">';
+                    if (
+                        c === firstFreeCol &&
+                        start != null &&
+                        !mine &&
+                        hasFreeWatcherSlot &&
+                        !hourCompleted
+                    ) {
+                        html +=
+                            '<button type="button" class="btn war-dashboard-cw-join" data-slot="' +
+                            i +
+                            '">Sign up</button>';
+                    }
+                    html += '</td>';
+                }
+            }
+            html += '</tr>';
+        }
+        if (
+            start != null &&
+            slotIndicesToRender.length === 0 &&
+            rowCount > 0 &&
+            hasCompletedInView &&
+            !showCompletedRows
+        ) {
+            html +=
+                '<tr><td colspan="' +
+                slotTableColCount +
+                '" style="color:#888;">All hours in this view are in the past. Use <strong>Show completed rows</strong> above to see them.</td></tr>';
+        }
+        if (start != null && showAddDay) {
+            html += '<tr class="war-dashboard-cw-add-day-row">';
+            html += '<td colspan="' + slotTableColCount + '">';
+            html +=
+                '<button type="button" class="btn war-dashboard-cw-add-day" id="war-dashboard-cw-add-day">Add next day</button>';
+            html +=
+                '<span class="war-dashboard-cw-add-day-hint"> Unlocks the next 24 hours of hourly slots (after the first period from chain start until midnight TCT).</span>';
+            html += '</td></tr>';
+        }
+        if (start == null) {
+            html += '<tr><td colspan="' + slotTableColCount + '" style="color:#888;">No chain start time yet.' + (canEdit ? ' Set it above, then save.' : ' Ask a VIP 2+ member in your faction to set the schedule (or get VIP 2 yourself — see note above).') + '</td></tr>';
+        }
+        html += '</tbody></table></div></div>';
+
+        html +=
+            '<p class="war-dashboard-cw-attendance-footnote" style="color:#9e9e9e;font-size:12px;margin:12px 0 0 0;line-height:1.45;">Watch attendance uses <strong>Faction activity tracker</strong> samples (~5 min, online only). Add your faction there for 24/7 history. <strong>Xm</strong> = estimated online minutes in that hour; <strong>✓</strong> seen online at least once; <strong>✗</strong> samples ran but player was not online; <strong>?</strong> no samples that hour; <strong>…</strong> hour still in progress.</p>';
+
+        if (canEdit && lastOurFactionId) {
+            const issues = collectChainWatchAttendanceIssues(lastOurFactionId, p);
+            if (issues.noShows.length || issues.unverified.length) {
+                html +=
+                    '<div class="war-dashboard-cw-vip-issues" style="margin-top:14px;padding:12px 14px;border-radius:8px;border:1px solid rgba(255,183,77,0.4);background:rgba(0,0,0,0.25);">';
+                html += '<div style="color:#ffb74d;font-weight:bold;font-size:13px;margin-bottom:8px;">VIP — Watch attendance review</div>';
+                if (issues.noShows.length) {
+                    html +=
+                        '<p style="color:#ffcdd2;font-size:12px;margin:0 0 6px 0;">No online presence during scheduled hour (rewards excluded for these):</p>';
+                    html += '<ul style="margin:0 0 10px 1.2em;color:#e8e8e8;font-size:12px;line-height:1.5;">';
+                    issues.noShows.forEach(function (row) {
+                        html +=
+                            '<li>' +
+                            escapeHtml(row.name) +
+                            ' — ' +
+                            escapeHtml(row.slotLabel) +
+                            ' (slot #' +
+                            escapeHtml(String(row.slotIndex)) +
+                            ')</li>';
+                    });
+                    html += '</ul>';
+                }
+                if (issues.unverified.length) {
+                    html +=
+                        '<p style="color:#b0bec5;font-size:12px;margin:0 0 6px 0;">No activity samples in hour — add faction to Activity tracker to verify (rewards are not auto-excluded):</p>';
+                    html += '<ul style="margin:0 0 0 1.2em;color:#b0bec5;font-size:12px;line-height:1.5;">';
+                    issues.unverified.forEach(function (row) {
+                        html += '<li>' + escapeHtml(row.name) + ' — ' + escapeHtml(row.slotLabel) + '</li>';
+                    });
+                    html += '</ul>';
+                }
+                html += '</div>';
+            }
+        }
+
+        body.innerHTML = html;
+
+        const toggleCompletedBtn = document.getElementById('war-dashboard-cw-toggle-completed');
+        if (toggleCompletedBtn) {
+            toggleCompletedBtn.addEventListener('click', function () {
+                try {
+                    localStorage.setItem(
+                        'war_dashboard_cw_show_completed',
+                        toggleCompletedBtn.getAttribute('data-set-completed') === '1' ? '1' : '0'
+                    );
+                } catch (e) { /* ignore */ }
+                void renderChainWatchScheduleModal().catch(function (err) {
+                    console.error('renderChainWatchScheduleModal', err);
+                });
+            });
+        }
+
+        if (canEdit) {
+            wireChainWatchAddColumnButton();
+            wireChainWatchRemoveColumnButtons();
+            wireChainWatchAddDayButton();
+            wireChainWatchVipCollapse(docExists);
+        }
+
+        const saveBtn = document.getElementById('war-dashboard-cw-save');
+        if (saveBtn && canEdit) {
+            saveBtn.addEventListener('click', async function () {
+                const msg = document.getElementById('war-dashboard-cw-save-msg');
+                const apiKey = getApiKey();
+                const fn = getWarDashboardFunctions();
+                if (!apiKey || !fn || !lastOurFactionId) return;
+                const dateEl = document.getElementById('war-dashboard-cw-start-date');
+                const hourEl = document.getElementById('war-dashboard-cw-start-hour');
+                const unix = unixFromUtcDateHour(dateEl && dateEl.value, hourEl && hourEl.value);
+                const payload = {
+                    apiKey: apiKey,
+                    factionId: String(lastOurFactionId),
+                    settings: {
+                        chainStartUnix: unix,
+                        chainTarget: Number(document.getElementById('war-dashboard-cw-target').value),
+                        backupColumns: Number(document.getElementById('war-dashboard-cw-backup').value),
+                        rewardType: document.getElementById('war-dashboard-cw-reward-type').value,
+                        rewardFirst: Number(document.getElementById('war-dashboard-cw-r1').value),
+                        rewardSubsequent: Number(document.getElementById('war-dashboard-cw-r2').value),
+                        maxSignupsPer24h: Number(document.getElementById('war-dashboard-cw-max24').value),
+                        clearAllSignups: document.getElementById('war-dashboard-cw-clear').checked === true,
+                        visibleTctDays: chainWatchPickVisibleTctDaysFromForm(chainWatchPayload && chainWatchPayload.settings)
+                    }
+                };
+                saveBtn.disabled = true;
+                if (msg) msg.textContent = 'Saving…';
+                try {
+                    await fn.httpsCallable('chainWatchSaveConfig')(payload);
+                    await fetchChainWatchData(true);
+                    await renderChainWatchScheduleModal();
+                    if (msg) msg.textContent = 'Saved.';
+                } catch (e) {
+                    if (msg) msg.textContent = (e && e.message) ? String(e.message) : 'Save failed';
+                } finally {
+                    saveBtn.disabled = false;
+                }
+            });
+        }
+
+        body.querySelectorAll('.war-dashboard-cw-join').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+                const si = parseInt(btn.getAttribute('data-slot'), 10);
+                const apiKey = getApiKey();
+                const fn = getWarDashboardFunctions();
+                if (!apiKey || !fn || !lastOurFactionId || !chainWatchPayload) return;
+                btn.disabled = true;
+                const key = String(si);
+                const p = chainWatchPayload;
+                const s = p.settings || {};
+                const backupCols = Math.min(3, Math.max(1, Number(s.backupColumns) || 1));
+                const before = Array.isArray(p.slots && p.slots[key]) ? p.slots[key].slice() : [];
+                try {
+                    // Optimistic UI: place viewer in first free column immediately.
+                    const list = before.slice();
+                    const myId = p.viewer && p.viewer.playerId != null ? String(p.viewer.playerId) : '';
+                    const alreadyIn = myId && list.some(function (w) { return String(w.playerId) === myId; });
+                    if (!alreadyIn) {
+                        let freeCol = -1;
+                        for (let c = 0; c < backupCols; c++) {
+                            if (!list.some(function (w) { return Number(w.col) === c; })) {
+                                freeCol = c;
+                                break;
+                            }
+                        }
+                        if (freeCol >= 0) {
+                            list.push({
+                                playerId: myId || 'me',
+                                name: (p.viewer && p.viewer.name) || 'You',
+                                col: freeCol,
+                                at: Date.now(),
+                            });
+                            p.slots[key] = list;
+                            await renderChainWatchScheduleModal();
+                        }
+                    }
+
+                    await fn.httpsCallable('chainWatchSignup')({ apiKey: apiKey, factionId: String(lastOurFactionId), slotIndex: si });
+                } catch (e) {
+                    p.slots[key] = before;
+                    await fetchChainWatchData(true).catch(function () {});
+                    await renderChainWatchScheduleModal();
+                    alert((e && e.message) ? e.message : 'Could not sign up');
+                    btn.disabled = false;
+                    return;
+                }
+                try {
+                    await fetchChainWatchData(true);
+                } catch (e) {
+                    console.warn('chainWatchGet after signup', e);
+                }
+                await renderChainWatchScheduleModal();
+                btn.disabled = false;
+            });
+        });
+        body.querySelectorAll('.war-dashboard-cw-leave').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+                const si = parseInt(btn.getAttribute('data-slot'), 10);
+                const apiKey = getApiKey();
+                const fn = getWarDashboardFunctions();
+                if (!apiKey || !fn || !lastOurFactionId || !chainWatchPayload) return;
+                btn.disabled = true;
+                const key = String(si);
+                const p = chainWatchPayload;
+                const myId = p.viewer && p.viewer.playerId != null ? String(p.viewer.playerId) : '';
+                const before = Array.isArray(p.slots && p.slots[key]) ? p.slots[key].slice() : [];
+                try {
+                    // Optimistic UI: remove self from this hour immediately.
+                    if (myId) {
+                        p.slots[key] = before.filter(function (w) {
+                            return String(w.playerId) !== myId;
+                        });
+                        await renderChainWatchScheduleModal();
+                    }
+
+                    await fn.httpsCallable('chainWatchRemoveSelf')({ apiKey: apiKey, factionId: String(lastOurFactionId), slotIndex: si });
+                } catch (e) {
+                    p.slots[key] = before;
+                    await fetchChainWatchData(true).catch(function () {});
+                    await renderChainWatchScheduleModal();
+                    alert((e && e.message) ? e.message : 'Could not leave slot');
+                    btn.disabled = false;
+                    return;
+                }
+                try {
+                    await fetchChainWatchData(true);
+                } catch (e) {
+                    console.warn('chainWatchGet after leave', e);
+                }
+                await renderChainWatchScheduleModal();
+                btn.disabled = false;
+            });
+        });
+    }
+
+    function openChainWatchModal() {
+        const overlay = document.getElementById('war-dashboard-chain-watch-modal');
+        const body = document.getElementById('war-dashboard-chain-watch-modal-body');
+        if (!overlay || !body) return;
+        overlay.style.display = 'flex';
+        overlay.setAttribute('aria-hidden', 'false');
+        body.innerHTML = '<p style="color:#888;">Loading…</p>';
+        fetchChainWatchData(true)
+            .then(function () {
+                if (!chainWatchPayload) {
+                    body.innerHTML =
+                        '<p style="color:#f44336;font-size:14px;line-height:1.45;">' +
+                        escapeHtml(friendlyChainWatchLoadError(chainWatchLastError)) +
+                        '</p>';
+                    return null;
+                }
+                return renderChainWatchScheduleModal();
+            })
+            .catch(function (err) {
+                console.error('renderChainWatchScheduleModal', err);
+                body.innerHTML =
+                    '<p style="color:#f44336;font-size:14px;">' +
+                    escapeHtml(err && err.message ? err.message : 'Could not render the schedule.') +
+                    '</p>';
+            });
+    }
+
+    function closeChainWatchModal() {
+        const overlay = document.getElementById('war-dashboard-chain-watch-modal');
+        if (!overlay) return;
+        overlay.style.display = 'none';
+        overlay.setAttribute('aria-hidden', 'true');
+    }
+
+    function openChainWatchRewardsModal() {
+        const overlay = document.getElementById('war-dashboard-chain-watch-rewards-modal');
+        const body = document.getElementById('war-dashboard-chain-watch-rewards-body');
+        if (!overlay || !body) return;
+        overlay.style.display = 'flex';
+        overlay.setAttribute('aria-hidden', 'false');
+        body.innerHTML = '<p style="color:#888;">Loading…</p>';
+        fetchChainWatchData(true)
+            .then(function () {
+                if (!chainWatchPayload) {
+                    body.innerHTML =
+                        '<p style="color:#f44336;font-size:14px;line-height:1.45;">' +
+                        escapeHtml(friendlyChainWatchLoadError(chainWatchLastError)) +
+                        '</p>';
+                    return null;
+                }
+                return renderChainWatchRewardsModal();
+            })
+            .catch(function (err) {
+                console.error('renderChainWatchRewardsModal', err);
+                body.innerHTML =
+                    '<p style="color:#f44336;font-size:14px;">' +
+                    escapeHtml(err && err.message ? err.message : 'Could not render rewards.') +
+                    '</p>';
+            });
+    }
+
+    function closeChainWatchRewardsModal() {
+        const overlay = document.getElementById('war-dashboard-chain-watch-rewards-modal');
+        if (!overlay) return;
+        overlay.style.display = 'none';
+        overlay.setAttribute('aria-hidden', 'true');
     }
 
     function renderEnemy(members, ffMap, bsMap, thresholds) {
@@ -1096,6 +2596,9 @@
             currentUserPlayerId = user.playerId;
 
             if (!enemyFactionId) {
+                lastEnemyFactionId = null;
+                showWarDashboardChainsRow();
+                renderChainBoxes();
                 // No enemy applied: still show Our team and Our chain (collapsed)
                 const [ourMembers, ourChainData] = await Promise.all([
                     fetchFactionMembers(apiKey, null),
@@ -1125,7 +2628,6 @@
                 lastOurChain = ourChainData;
                 if (ourChainData) lastOurChainFetchTime = Date.now();
                 ourChainDisplay = ourChainData ? { timeout: ourChainData.timeout, cooldown: ourChainData.cooldown } : { timeout: 0, cooldown: 0 };
-                lastEnemyFactionId = null;
                 lastEnemyMembers = [];
                 lastEnemyFF = {};
                 lastEnemyBS = {};
@@ -1145,6 +2647,8 @@
                 syncAllTrackedFactionsToFirestoreThenRefreshStatus();
                 setOurTeamCollapsed(true);
                 showError('Enter an enemy faction ID or click "Use current ranked war" to compare.');
+                fetchChainWatchData(false).catch(function () {});
+                syncChainWatchFromDashboard();
                 showLoading(false);
                 return;
             }
@@ -1160,6 +2664,10 @@
             if (labelEl) labelEl.textContent = labelText;
             const summaryEl = document.getElementById('war-dashboard-enemy-picker-summary');
             if (summaryEl) summaryEl.textContent = labelText ? ' — ' + labelText : '';
+
+            lastEnemyFactionId = enemyFactionId;
+            showWarDashboardChainsRow();
+            renderChainBoxes();
 
             // Fetch our members, enemy members, and both chains in parallel
             const [ourMembers, enemyMembers, ourChainData, enemyChainData] = await Promise.all([
@@ -1215,7 +2723,6 @@
             lastOurMembers = ourMembers;
             lastOurFF = ourFF;
             lastOurBS = ourBS;
-            lastEnemyFactionId = enemyFactionId;
             lastOurFactionId = ourFactionId;
             currentUserPlayerId = user.playerId;
             const me = ourMembers.find(m => String(m.id) === String(user.playerId));
@@ -1240,6 +2747,8 @@
             updateActivityTrackerUI();
             syncAllTrackedFactionsToFirestoreThenRefreshStatus();
             setOurTeamCollapsed(true);
+            fetchChainWatchData(false).catch(function () {});
+            syncChainWatchFromDashboard();
         } catch (err) {
             showError(err.message || 'Failed to load data.');
             console.error('War Dashboard:', err);
@@ -1379,6 +2888,7 @@
             }
             renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
             renderChainBoxes();
+            syncChainWatchFromDashboard();
 
             if (isOurTeamExpanded() && lastOurFactionId != null) {
                 const ourMembers = await fetchFactionMembers(apiKey, null).catch(() => lastOurMembers);
@@ -1428,6 +2938,7 @@
                 enemyChainDisplay = { timeout: enemyChainData.timeout, cooldown: enemyChainData.cooldown };
             }
             renderChainBoxes();
+            syncChainWatchFromDashboard();
         } catch (e) {
             console.warn('War Dashboard chain refresh:', e);
         }
@@ -2428,6 +3939,39 @@
         document.getElementById('war-dashboard-settings-overlay')?.addEventListener('click', (e) => {
             if (e.target.id === 'war-dashboard-settings-overlay') closeWarDashboardSettingsModal();
         });
+        document.getElementById('war-dashboard-tool-container')?.addEventListener('click', function (e) {
+            const t = e.target;
+            if (!t || !t.closest) return;
+            if (t.closest('#war-dashboard-chain-watch-open')) {
+                e.preventDefault();
+                openChainWatchModal();
+            } else if (t.closest('.war-dashboard-chain-watch-rewards-trigger')) {
+                e.preventDefault();
+                openChainWatchRewardsModal();
+            }
+        });
+        document.getElementById('war-dashboard-chain-watch-close')?.addEventListener('click', () => closeChainWatchModal());
+        document.getElementById('war-dashboard-chain-watch-modal')?.addEventListener('click', (e) => {
+            const t = e.target;
+            if (t && t.closest && t.closest('.war-dashboard-chain-watch-rewards-trigger')) {
+                e.preventDefault();
+                openChainWatchRewardsModal();
+                return;
+            }
+            if (e.target.id === 'war-dashboard-chain-watch-modal') closeChainWatchModal();
+        });
+        document.getElementById('war-dashboard-chain-watch-rewards-close')?.addEventListener('click', () => closeChainWatchRewardsModal());
+        document.getElementById('war-dashboard-chain-watch-rewards-modal')?.addEventListener('click', (e) => {
+            if (e.target.id === 'war-dashboard-chain-watch-rewards-modal') closeChainWatchRewardsModal();
+        });
+
+        if (window._warDashboardChainWatchPollId) clearInterval(window._warDashboardChainWatchPollId);
+        window._warDashboardChainWatchPollId = setInterval(function () {
+            const p = (window.location.hash || '').replace('#', '').split('/')[0];
+            if (p !== 'war-dashboard' || !lastOurFactionId) return;
+            fetchChainWatchData(false).catch(function () {});
+        }, 60 * 1000);
+
         document.getElementById('war-dashboard-activity-hour-modal-close')?.addEventListener('click', closeActivityHourModal);
         document.getElementById('war-dashboard-activity-hour-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'war-dashboard-activity-hour-modal') closeActivityHourModal();
@@ -2460,13 +4004,16 @@
                 }
                 const current = await getCurrentWarEnemy(apiKey, ourFactionId);
                 if (!current) {
-                    showError('No active ranked war found.');
+                    showError('No active or upcoming ranked war found.');
                     return;
                 }
                 const idInput = document.getElementById('war-dashboard-enemy-faction-id');
                 if (idInput) idInput.value = current.enemyFactionId;
                 if (btn) {
-                    btn.textContent = `Use current ranked war (vs ${current.enemyName})`;
+                    btn.textContent =
+                        current.kind === 'upcoming'
+                            ? `Use upcoming ranked war (vs ${current.enemyName})`
+                            : `Use current ranked war (vs ${current.enemyName})`;
                 }
                 saveSettings();
                 runDashboard();
@@ -2626,6 +4173,10 @@
                     clearInterval(window._warDashboardActivityCloudRefreshId);
                     window._warDashboardActivityCloudRefreshId = null;
                 }
+                if (window._warDashboardChainWatchPollId) {
+                    clearInterval(window._warDashboardChainWatchPollId);
+                    window._warDashboardChainWatchPollId = null;
+                }
             } else {
                 startRefreshTimer();
                 startChainTick();
@@ -2654,12 +4205,22 @@
                         });
                     }, ACTIVITY_FIRESTORE_REFRESH_MS);
                 }
+                if (!window._warDashboardChainWatchPollId) {
+                    window._warDashboardChainWatchPollId = setInterval(function () {
+                        const p = (window.location.hash || '').replace('#', '').split('/')[0];
+                        if (p !== 'war-dashboard' || !lastOurFactionId) return;
+                        fetchChainWatchData(false).catch(function () {});
+                    }, 60 * 1000);
+                }
             }
         }
         window.removeEventListener('hashchange', window._warDashboardHashChange);
         window._warDashboardHashChange = onHashChange;
         window.addEventListener('hashchange', onHashChange);
 
+        // Show chains row shell so Chain watch (under Our Chain) is visible before runDashboard finishes.
+        showWarDashboardChainsRow();
+        updateChainWatchBarVisibility();
         runDashboard();
         startRefreshTimer();
         startChainTick();

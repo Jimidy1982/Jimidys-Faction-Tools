@@ -9,10 +9,26 @@
         return (localStorage.getItem('tornApiKey') || '').trim().replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
     }
 
+    /** Torn often returns error as a string or as { code, error } — avoid new Error(object) → message "[object Object]". */
+    function tornApiErrorToMessage(errField) {
+        if (errField == null) return 'Unknown API error';
+        if (typeof errField === 'string') return errField;
+        if (typeof errField === 'object') {
+            if (typeof errField.error === 'string') return errField.error;
+            if (typeof errField.message === 'string') return errField.message;
+            try {
+                return JSON.stringify(errField);
+            } catch (e) {
+                return String(errField);
+            }
+        }
+        return String(errField);
+    }
+
     async function fetchJson(url) {
         const res = await fetch(url);
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        if (data.error) throw new Error(tornApiErrorToMessage(data.error));
         return data;
     }
 
@@ -251,8 +267,14 @@
     function showError(msg) {
         const el = document.getElementById('vault-checker-error');
         if (!el) return;
-        el.textContent = msg || '';
-        el.style.display = msg ? 'block' : 'none';
+        let text = '';
+        if (msg != null && msg !== '') {
+            if (typeof msg === 'string') text = msg;
+            else if (typeof msg === 'object' && typeof msg.message === 'string') text = msg.message;
+            else text = String(msg);
+        }
+        el.textContent = text;
+        el.style.display = text ? 'block' : 'none';
     }
 
     function slug(s) {
@@ -439,7 +461,12 @@
             const wrap = document.getElementById('vault-checker-tabs-wrap');
             if (wrap) wrap.style.display = 'block';
         } catch (err) {
-            showError(err.message || 'Failed to load vault.');
+            const fallback = 'Failed to load vault.';
+            const msg =
+                err && typeof err === 'object' && typeof err.message === 'string' && err.message
+                    ? err.message
+                    : fallback;
+            showError(msg);
             console.error('Vault Checker:', err);
         } finally {
             showLoading(false);
