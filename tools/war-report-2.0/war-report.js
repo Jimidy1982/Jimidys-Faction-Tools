@@ -1687,6 +1687,58 @@ function calculatePlayerPayout(player, payPerHit) {
 }
 
 // --- Add input formatting for thousand separators with shortcuts ---
+/** Always format payout money fields with en-US (comma thousands, dot decimal) so parsing matches display.
+ *  Browser default locale (e.g. de-DE) would show 1000 as "1.000", which our split-on-dot logic then misreads as decimals. */
+const PAYOUT_INPUT_NUMBER_LOCALE = 'en-US';
+
+/**
+ * Collapse European-style thousand grouping using dots (e.g. 1.000.000 → 1000000).
+ * Leaves US-style decimals alone (e.g. 12.34 keeps one dot when groups after first aren't all length 3).
+ */
+function collapseEuropeanThousandDots(rawDigitsAndDots) {
+    const raw = String(rawDigitsAndDots || '');
+    if (!raw || raw.indexOf('.') === -1) return raw;
+    const parts = raw.split('.');
+    if (parts.length < 2) return raw;
+    if (parts[0].length > 3) return raw;
+    for (let i = 1; i < parts.length; i++) {
+        if (!/^\d{3}$/.test(parts[i])) return raw;
+    }
+    return parts.join('');
+}
+
+/**
+ * Normalize typed/pasted values: strip US thousands commas, treat lone "12,34" as decimal, collapse DE "1.234.567".
+ */
+function normalizePayoutMoneyRawString(valueLower) {
+    let v = String(valueLower || '').trim().toLowerCase();
+    if (!v) return '';
+    v = v.replace(/^(\d+),(\d{1,2})$/, '$1.$2');
+    v = v.replace(/,/g, '');
+    let raw = v.replace(/[^\d.]/g, '');
+    return collapseEuropeanThousandDots(raw);
+}
+
+function formatPayoutInputIntegerPart(intStr) {
+    const n = parseInt(intStr || '0', 10);
+    if (!Number.isFinite(n)) return '0';
+    return n.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
+}
+
+/** Integer parse for payout money inputs (dataset.raw from formatter, or visible value with locale-agnostic normalize). */
+function parsePayoutInputInt(inputEl, fallback) {
+    if (!inputEl) return fallback;
+    const ds = inputEl.dataset && inputEl.dataset.raw;
+    if (ds != null && String(ds).trim() !== '') {
+        const n = Math.round(Number(ds));
+        if (Number.isFinite(n)) return n;
+    }
+    const raw = normalizePayoutMoneyRawString(String(inputEl.value || '').toLowerCase());
+    if (!raw) return fallback;
+    const n = Math.round(parseFloat(raw));
+    return Number.isFinite(n) ? n : fallback;
+}
+
 function addThousandSeparatorInput(input) {
     if (!input) {
         return;
@@ -1701,7 +1753,7 @@ function addThousandSeparatorInput(input) {
         // If it's an input event (not blur) and no letter shortcuts
         if (e.type === 'input' && !hasLetter) {
             // Still update dataset.raw so calculations use the current value
-            let raw = value.replace(/[^\d.]/g, '');
+            let raw = normalizePayoutMoneyRawString(value);
             if (raw === '') {
                 input.value = '';
                 input.dataset.raw = '0';
@@ -1710,12 +1762,17 @@ function addThousandSeparatorInput(input) {
             
             // Format with commas as they type (but don't round decimals yet)
             let numericValue = parseFloat(raw);
+            if (!Number.isFinite(numericValue)) {
+                input.value = '';
+                input.dataset.raw = '0';
+                return;
+            }
             input.dataset.raw = Math.round(numericValue * 100) / 100; // Preserve 2 decimal places
             
             // Format with thousand separators but preserve decimals while typing
             const parts = raw.split('.');
-            const integerPart = parseInt(parts[0] || '0').toLocaleString();
-            const decimalPart = parts[1] !== undefined ? '.' + parts[1] : '';
+            const integerPart = formatPayoutInputIntegerPart(parts[0] || '0');
+            const decimalPart = parts[1] !== undefined ? '.' + String(parts[1]).replace(/[^\d]/g, '') : '';
             input.value = integerPart + decimalPart;
             return;
         }
@@ -1734,7 +1791,7 @@ function addThousandSeparatorInput(input) {
         }
         
         // Extract numbers and decimals
-        let raw = value.replace(/[^\d.]/g, '');
+        let raw = normalizePayoutMoneyRawString(value);
         if (raw === '') raw = '0';
         
         // Apply multiplier
@@ -1742,7 +1799,7 @@ function addThousandSeparatorInput(input) {
         
         // Format with thousand separators (round for display but preserve precision)
         let roundedValue = Math.round(numericValue * 100) / 100; // Preserve 2 decimal places
-        input.value = Math.round(roundedValue).toLocaleString();
+        input.value = Math.round(roundedValue).toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
         input.dataset.raw = Math.round(roundedValue).toString();
     };
     
@@ -1750,9 +1807,9 @@ function addThousandSeparatorInput(input) {
     input.addEventListener('blur', processInput);
     
     // Initialize
-    let raw = input.value.replace(/[^\d.]/g, '');
+    let raw = normalizePayoutMoneyRawString(input.value.toLowerCase());
     if (raw === '') raw = '0';
-    input.value = Number(raw).toLocaleString();
+    input.value = Number(raw).toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
     input.dataset.raw = raw;
 }
 
@@ -2277,7 +2334,7 @@ function renderPayoutTable() {
     // Get payout settings (use raw value for calculations)
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
-    const cacheSales = parseInt(cacheSalesInput?.dataset.raw || cacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
+    const cacheSales = parsePayoutInputInt(cacheSalesInput, 1000000000);
     
     // Check calculation mode (Pay Per Hit vs Faction Cut %)
     const calculationMode = document.querySelector('input[name="hitCalculationMode"]:checked')?.value || 'payPerHit';
@@ -2293,7 +2350,7 @@ function renderPayoutTable() {
         payPerHit = 0;
     } else {
         // Pay Per Hit mode - use input value
-        payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d.]/g, '') || '1000000');
+        payPerHit = parsePayoutInputInt(payPerHitInput, 1000000);
     }
 
     // Get war name and dates for summary
@@ -2321,8 +2378,7 @@ function renderPayoutTable() {
         const input = document.getElementById(cost.id);
         let value = 0;
         if (input) {
-            // Always parse cleaned .value (remove all non-digit chars)
-            value = parseInt(input.value.replace(/[^\d.]/g, '') || '0', 10);
+            value = parsePayoutInputInt(input, 0);
         }
         totalCosts += value;
     });
@@ -2446,7 +2502,7 @@ function renderPayoutTable() {
         // Update the calculated pay per hit display
         const calculatedPayPerHitInput = document.getElementById('calculatedPayPerHit');
         if (calculatedPayPerHitInput) {
-            calculatedPayPerHitInput.value = payPerHit.toLocaleString();
+            calculatedPayPerHitInput.value = payPerHit.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
         }
     }
 
@@ -2821,7 +2877,7 @@ function exportPayoutToCSV() {
     // Get payout settings (same as renderPayoutTable)
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
-    const payPerHit = parseInt(payPerHitInput?.dataset.raw || payPerHitInput?.value.replace(/[^\d.]/g, '') || '1000000');
+    const payPerHit = parsePayoutInputInt(payPerHitInput, 1000000);
     
     // Get advanced payout options (same as renderPayoutTable)
     const payAssists = document.getElementById('payAssists')?.checked;
@@ -2999,7 +3055,7 @@ function renderRespectPayoutTable() {
     // Get respect payout settings (use raw value for calculations)
     const respectCacheSalesInput = document.getElementById('respectCacheSales');
     const respectPayPerHitInput = document.getElementById('respectPayPerHit');
-    const cacheSales = parseInt(respectCacheSalesInput?.dataset.raw || respectCacheSalesInput?.value.replace(/[^\d.]/g, '') || '1000000000');
+    const cacheSales = parsePayoutInputInt(respectCacheSalesInput, 1000000000);
 
     // Get advanced options early
     const removeModifiers = document.getElementById('respectRemoveModifiers')?.checked;
@@ -3157,8 +3213,7 @@ function renderRespectPayoutTable() {
         const input = document.getElementById(cost.id);
         let value = 0;
         if (input) {
-            // Always parse cleaned .value (remove all non-digit chars)
-            value = parseInt(input.value.replace(/[^\d.]/g, '') || '0', 10);
+            value = parsePayoutInputInt(input, 0);
         }
         totalCosts += value;
     });
@@ -3172,7 +3227,7 @@ function renderRespectPayoutTable() {
     
     // Update the readonly input field
     if (respectPayPerHitInput) {
-        respectPayPerHitInput.value = payPerWarHit.toLocaleString();
+        respectPayPerHitInput.value = payPerWarHit.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
         respectPayPerHitInput.dataset.raw = payPerWarHit.toString();
     }
 
