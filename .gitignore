@@ -1,6 +1,9 @@
 # Dependencies (root Vite dev server + functions/)
 node_modules/
 
+# Vite production build output (regenerate with: npx vite build)
+dist/
+
 # Firebase / Functions
 functions/.env
 functions/.env.*
