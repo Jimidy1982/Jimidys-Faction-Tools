@@ -26,6 +26,8 @@
     };
 
     const ACTIVITY_DATA_PREFIX = 'war_dashboard_activity_data_';
+    /** Per-faction timestamp (ms): ignore Firestore + local samples with t < this (user cleared cache; shared cloud docs cannot be deleted per user). */
+    const ACTIVITY_CLOUD_IGNORE_BEFORE_PREFIX = 'war_dashboard_activity_cloud_ignore_before_';
     const ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
@@ -824,6 +826,29 @@
         } catch (e) { /* ignore */ }
     }
 
+    function getActivityCloudIgnoreBeforeMs(factionId) {
+        try {
+            const v = localStorage.getItem(ACTIVITY_CLOUD_IGNORE_BEFORE_PREFIX + String(factionId));
+            if (!v) return 0;
+            const n = parseInt(v, 10);
+            return Number.isFinite(n) && n > 0 ? n : 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    function setActivityCloudIgnoreBeforeMs(factionId, ms) {
+        try {
+            localStorage.setItem(ACTIVITY_CLOUD_IGNORE_BEFORE_PREFIX + String(factionId), String(ms));
+        } catch (e) { /* ignore */ }
+    }
+
+    function clearActivityCloudIgnoreBeforeMs(factionId) {
+        try {
+            localStorage.removeItem(ACTIVITY_CLOUD_IGNORE_BEFORE_PREFIX + String(factionId));
+        } catch (e) { /* ignore */ }
+    }
+
     /** Get activity data from localStorage only (7-day trim). Used for merge and fallback. */
     function getActivityDataFromStorage(factionId) {
         try {
@@ -833,7 +858,11 @@
             const samples = Array.isArray(obj.samples) ? obj.samples : [];
             const members = Array.isArray(obj.members) ? obj.members : [];
             const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
-            const trimmed = samples.filter(s => s.t >= cutoff);
+            const ignoreBefore = getActivityCloudIgnoreBeforeMs(factionId);
+            const trimmed = samples.filter(function (s) {
+                if (!s || s.t < cutoff) return false;
+                return ignoreBefore <= 0 || s.t >= ignoreBefore;
+            });
             return { samples: trimmed, members };
         } catch (e) { return { samples: [], members: [] }; }
     }
@@ -888,16 +917,28 @@
                 const factions = d.factions || {};
                 const factionData = factions[fid];
                 if (factionData && Array.isArray(factionData.onlineIds)) {
-                    firestoreSamples.push({ t: d.t, onlineIds: factionData.onlineIds });
+                    const tVal = d.t != null && typeof d.t.toMillis === 'function' ? d.t.toMillis() : Number(d.t);
+                    if (Number.isFinite(tVal)) {
+                        firestoreSamples.push({ t: tVal, onlineIds: factionData.onlineIds });
+                    }
                 }
             });
         } catch (e) {
             readError = (e && e.message) ? e.message : String(e);
             console.warn('Activity Firestore read failed for faction', fid, e);
         }
+        const ignoreBefore = getActivityCloudIgnoreBeforeMs(fid);
+        if (ignoreBefore > 0) {
+            firestoreSamples = firestoreSamples.filter(function (s) {
+                return s.t >= ignoreBefore;
+            });
+        }
         const local = getActivityDataFromStorage(fid);
+        const localSamples = (local.samples || []).filter(function (s) {
+            return ignoreBefore <= 0 || s.t >= ignoreBefore;
+        });
         const byT = {};
-        (local.samples || []).forEach(function (s) { byT[s.t] = s; });
+        localSamples.forEach(function (s) { byT[s.t] = s; });
         firestoreSamples.forEach(function (s) { byT[s.t] = s; });
         const merged = Object.keys(byT).map(function (k) { return byT[k]; }).filter(function (s) { return s.t >= cutoff; }).sort(function (a, b) { return a.t - b.t; });
         activityDataCache[fid] = { samples: merged, members: local.members || [] };
@@ -3405,26 +3446,43 @@
         }
     }
 
-    /** Compute per-player active range in TCT (UTC). Returns { playerId: { first, last } in ms }. */
-    function getPlayerActiveRanges(factionId) {
-        const data = getActivityData(factionId);
-        const byPlayer = {};
-        for (const s of data.samples) {
-            if (!s.onlineIds) continue;
-            for (const id of s.onlineIds) {
-                if (!byPlayer[id]) byPlayer[id] = { first: s.t, last: s.t };
-                else {
-                    if (s.t < byPlayer[id].first) byPlayer[id].first = s.t;
-                    if (s.t > byPlayer[id].last) byPlayer[id].last = s.t;
-                }
-            }
-        }
-        return byPlayer;
+    /** One TCT hour slot label: "14:00–15:00" (matches chart / hour modal). Hour h = [h:00, h+1:00). */
+    function formatActivityHourSlotRangeTct(hourIndex) {
+        const h = Math.max(0, Math.min(23, Math.floor(Number(hourIndex))));
+        const next = (h + 1) % 24;
+        const z = function (x) {
+            return String(x).padStart(2, '0') + ':00';
+        };
+        return z(h) + '–' + z(next);
     }
 
-    function formatTctTime(ms) {
-        const d = new Date(ms);
-        return d.getUTCHours().toString().padStart(2, '0') + ':' + d.getUTCMinutes().toString().padStart(2, '0');
+    /**
+     * Top N TCT hour slots (0–23) by 5-min sample count for one player.
+     * @param {Array<Object>} byHourArrays from getPlayerSampleCountsByHour(factionId)
+     */
+    function getPlayerTopActiveHoursFromByHour(byHourArrays, playerId, limit) {
+        const pid = String(playerId);
+        const max = Math.max(1, Math.min(24, Number(limit) || 3));
+        const scored = [];
+        for (let h = 0; h < 24; h++) {
+            const c = (byHourArrays[h] && byHourArrays[h][pid]) || 0;
+            if (c > 0) scored.push({ hour: h, count: c });
+        }
+        scored.sort(function (a, b) {
+            if (b.count !== a.count) return b.count - a.count;
+            return a.hour - b.hour;
+        });
+        return scored.slice(0, max);
+    }
+
+    function formatPlayerPeakHoursFromByHour(byHourArrays, playerId) {
+        const top = getPlayerTopActiveHoursFromByHour(byHourArrays, playerId, 3);
+        if (!top.length) return '—';
+        return top
+            .map(function (x) {
+                return formatActivityHourSlotRangeTct(x.hour) + ' (' + x.count + '×)';
+            })
+            .join('; ');
     }
 
     /** Format decimal hours as H:MM (e.g. 1.5 -> "1:30"). Returns "—" for invalid. */
@@ -3447,13 +3505,6 @@
     function formatTrackingStarted(ms) {
         const d = new Date(ms);
         return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    }
-
-    function formatActiveBetween(factionId, playerId) {
-        const ranges = getPlayerActiveRanges(factionId);
-        const r = ranges[playerId];
-        if (!r) return '—';
-        return formatTctTime(r.first) + ' – ' + formatTctTime(r.last);
     }
 
     /** Per-player count of 5-min samples they were seen in. */
@@ -3486,8 +3537,7 @@
         activityTrackerTableSort[factionId] = { by, dir };
     }
 
-    function sortActivityTrackerMembers(members, factionId, by, dir, bsMap, sampleCounts, activeRanges) {
-        const sampleHours = 5 / 60;
+    function sortActivityTrackerMembers(members, factionId, by, dir, bsMap, sampleCounts, peakBestByPlayer) {
         const mult = dir === 'asc' ? 1 : -1;
         return [...members].sort((a, b) => {
             const idA = String(a.id);
@@ -3504,9 +3554,7 @@
             } else if (by === 'hoursActive') {
                 cmp = (sampleCounts[idA] || 0) - (sampleCounts[idB] || 0);
             } else if (by === 'activeBetween') {
-                const tA = activeRanges[idA]?.first ?? 0;
-                const tB = activeRanges[idB]?.first ?? 0;
-                cmp = tA - tB;
+                cmp = (peakBestByPlayer[idA] || 0) - (peakBestByPlayer[idB] || 0);
             }
             return mult * cmp;
         });
@@ -3535,14 +3583,20 @@
         const hoursTracked = getHoursTracked(factionId);
         const members = data.members && data.members.length ? data.members : [];
         const sort = getActivityTrackerSort(factionId);
-        const activeRanges = getPlayerActiveRanges(factionId);
-        const sorted = sortActivityTrackerMembers(members, factionId, sort.by, sort.dir, bsMap, sampleCounts, activeRanges);
+        const byHourCounts = getPlayerSampleCountsByHour(factionId);
+        const peakBestByPlayer = {};
+        members.forEach(function (m) {
+            const tid = String(m.id);
+            const top1 = getPlayerTopActiveHoursFromByHour(byHourCounts, tid, 1);
+            peakBestByPlayer[tid] = top1.length ? top1[0].count : 0;
+        });
+        const sorted = sortActivityTrackerMembers(members, factionId, sort.by, sort.dir, bsMap, sampleCounts, peakBestByPlayer);
         const sampleHours = 5 / 60;
         tbody.innerHTML = sorted.map(m => {
             const id = String(m.id);
             const bs = bsMap[id];
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
-            const activeBetween = formatActiveBetween(factionId, id);
+            const activeBetween = formatPlayerPeakHoursFromByHour(byHourCounts, id);
             const count = sampleCounts[id] || 0;
             const hoursActive = count > 0 ? formatHoursMinutes(count * sampleHours) : '—';
             return `<tr>
@@ -3627,7 +3681,7 @@
                         <h3 style="color: var(--accent-color); font-size: 14px; margin: 0 0 8px 0;">Players and active times (TCT)</h3>
                         <div class="table-scroll-wrapper" style="overflow-x: auto;">
                             <table id="war-dashboard-activity-tracker-table-${escapeHtml(fid)}" class="war-dashboard-table war-dashboard-activity-tracker-sortable-table">
-                                <thead><tr><th class="war-dashboard-activity-tracker-sortable" data-column="member" scope="col">Member<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="level" scope="col">Level<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="stats" scope="col">Est. stats<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="hoursActive" scope="col">Hours active (<span class="war-dashboard-activity-hours-tracked" data-faction-id="${escapeHtml(fid)}">—</span> tracked)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="activeBetween" scope="col">Active between (TCT)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th></tr></thead>
+                                <thead><tr><th class="war-dashboard-activity-tracker-sortable" data-column="member" scope="col">Member<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="level" scope="col">Level<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="stats" scope="col">Est. stats<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="hoursActive" scope="col">Hours active (<span class="war-dashboard-activity-hours-tracked" data-faction-id="${escapeHtml(fid)}">—</span> tracked)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="activeBetween" scope="col">Peak hours (TCT, top 3)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th></tr></thead>
                                 <tbody></tbody>
                             </table>
                         </div>
@@ -3671,13 +3725,23 @@
             const clearBtn = block.querySelector('.war-dashboard-activity-faction-clear');
             clearBtn.addEventListener('click', () => {
                 const factionLabel = t.factionName || 'Faction ' + fid;
-                if (!confirm('Clear all activity data for ' + factionLabel + '? This will remove the activity history and cannot be undone.')) return;
-                try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
+                if (
+                    !confirm(
+                        'Clear all activity data for ' +
+                            factionLabel +
+                            ' in this browser? Local samples and merged cloud history from before now will be hidden; new samples will fill the graph again. (Shared server logs are not deleted; other users are unaffected.)'
+                    )
+                ) {
+                    return;
+                }
+                const cut = Date.now();
+                setActivityCloudIgnoreBeforeMs(fid, cut);
+                try {
+                    localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid);
+                } catch (e) { /* ignore */ }
                 delete activityDataCache[fid];
                 delete activityDataCloudFetchAt[fid];
                 delete activityDataCloudMeta[fid];
-                t.enabled = false;
-                t.disabledAt = Date.now();
                 setActivityConfig(config);
                 updateActivityTrackerUI();
             });
@@ -3688,7 +3752,10 @@
                 if (!confirm('Remove ' + factionLabel + ' from the activity tracker? Its cached data will be cleared. You can add it again later by loading the faction.')) return;
                 config.tracked = config.tracked.filter(x => String(x.factionId) !== String(fid));
                 try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
+                clearActivityCloudIgnoreBeforeMs(fid);
                 delete activityDataCache[fid];
+                delete activityDataCloudFetchAt[fid];
+                delete activityDataCloudMeta[fid];
                 setActivityConfig(config);
                 syncTrackedFactionToFirestore(fid, 'remove');
                 updateActivityTrackerUI();

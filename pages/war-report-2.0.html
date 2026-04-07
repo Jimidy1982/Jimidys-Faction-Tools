@@ -156,8 +156,11 @@
                                     <label style="display: flex; align-items: center;" title="Pay for overseas attacks"><input type="checkbox" id="payOverseas" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Overseas</label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="overseasMultiplier" value="0.25" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="display: flex; align-items: center;" title="Pay for non-war attacks"><input type="checkbox" id="payOtherAttacks" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Other Attacks</label>
-                                    <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="otherAttacksMultiplier" value="0.1" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+                                    <label style="display: flex; align-items: center;" title="Pay for war modifier 1 hits that gain respect (outside-style); not included in Other Attacks payout"><input type="checkbox" id="payOutsideHits" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Outside Hits</label>
+                                    <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="outsideHitsMultiplier" value="0.1" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+
+                                    <label style="display: flex; align-items: center;" title="Pay for other attacks: interrupts, losses (lost/ran/escaped/stalemate), and other non-war-hit buckets. Excludes outside hits — use Pay Outside Hits for those."><input type="checkbox" id="payOtherAttacks" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Other Attacks</label>
+                                    <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="otherAttacksMultiplier" value="0.1" min="0" step="0.01" title="Multiplier for Pay Other Attacks (interrupts, losses, etc.; excludes outside hits)" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
 
                                     <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Filter low FF hits - paid at 'Other Attacks' rate. Retaliations always count as good hits.">
@@ -183,6 +186,17 @@
                                                 <label id="hitMaxThresholdLabel" style="color: #ccc; font-size: 0.9em;">Max Hits:</label>
                                                 <input type="number" id="hitMaxThreshold" value="50" min="0" step="1" style="width: 80px; padding: 4px; background-color: #2a2a2a; border: 1px solid #404040; color: #fff; border-radius: 3px;">
                                             </div>
+                                            <div style="margin-top: 8px; padding: 10px 12px; background: #222; border-radius: 4px; border-left: 2px solid #555;">
+                                                <div style="font-size: 0.8em; color: #aaa; margin-bottom: 8px;">Include in minimum hit count (war hits always count):</div>
+                                                <div style="display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;">
+                                                    <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Add war assists to the total compared to Min Hits">
+                                                        <input type="checkbox" id="hitThresholdIncludeAssists" checked style="accent-color: #ffd700; margin-right: 6px;"> Assists
+                                                    </label>
+                                                    <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Add outside hits (war modifier 1 with respect) to the total compared to Min Hits">
+                                                        <input type="checkbox" id="hitThresholdIncludeOutsideHits" style="accent-color: #ffd700; margin-right: 6px;"> Outside hits
+                                                    </label>
+                                                </div>
+                                            </div>
                                         </div>
                                         <div style="display: flex; flex-direction: column; gap: 8px;">
                                             <label style="color: #ffd700; font-weight: bold; margin-bottom: 5px;">Payout Mode:</label>
@@ -201,7 +215,8 @@
                                         <div style="font-size: 0.8em; color: #999; line-height: 1.4;">
                                             <div>• <strong>Ratio:</strong> Pay Per War Hit × adjusted hits (capped at max threshold)</div>
                                             <div>• <strong>Equal:</strong> Pay Per War Hit × minimum threshold (ignores max threshold)</div>
-                                            <div>• <strong>Other modifiers:</strong> Capped at minimum threshold payout when below threshold</div>
+                                            <div>• <strong>Minimum:</strong> War hits plus any checked categories (assists / outside hits); below Min Hits → no payout</div>
+                                            <div>• <strong>Above minimum:</strong> War hit pay from thresholds; retals/overseas/outside/other/low-FF off; assists only if Pay Assists is on</div>
                                         </div>
                                     </div>
                                 </div>
@@ -242,7 +257,7 @@
                                 </div>
                             </div>
                             <div style="flex: 1;">
-                                <label for="respectPayPerHit">Pay Per War Hit (Auto-calculated):</label>
+                                <label for="respectPayPerHit" title="Dollar rate per effective hit: payout budget divided by (total war hits + weighted retals/assists/outside/other/low-FF lines). Modifier multipliers apply only to those lines; the rest funds the respect pool split.">Pay Per War Hit (Auto-calculated):</label>
                                                                     <div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="respectPayPerHit" value="0" style="width: 100%; padding: 8px; margin-top: 5px;" readonly></div>
                                 <h3 style="color: #fff; font-weight: normal; font-size: 1em; margin: 18px 0 8px 0;">Advanced Payout Options:</h3>
                                 <div style="margin-top: 15px; display: grid; grid-template-columns: 1.5fr 1fr; gap: 8px 12px; align-items: center;">
@@ -263,14 +278,25 @@
                                     </label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectOverseasMultiplier" value="0.25" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="display: flex; align-items: center;" title="Pay for non-war attacks"><input type="checkbox" id="respectPayOtherAttacks" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Other Attacks</label>
-                                    <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectOtherAttacksMultiplier" value="0.1" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+                                    <label style="display: flex; align-items: center;" title="Pay outside hits at outside multiplier × Pay Per War Hit. When on, outside respect is not also used to split the main respect pool (avoids paying outside twice)."><input type="checkbox" id="respectPayOutsideHits" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Outside Hits</label>
+                                    <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectOutsideHitsMultiplier" value="0.1" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Require minimum war hits + assists to qualify">
+                                    <label style="display: flex; align-items: center;" title="Pay for other attacks: interrupts, losses (lost/ran/escaped/stalemate), and other non-war-hit buckets. Excludes outside hits — use Pay Outside Hits for those."><input type="checkbox" id="respectPayOtherAttacks" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Other Attacks</label>
+                                    <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectOtherAttacksMultiplier" value="0.1" min="0" step="0.01" title="Multiplier for Pay Other Attacks (interrupts, losses, etc.; excludes outside hits)" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+
+                                    <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Require a minimum total: war hits always, plus outside hits and/or assists if checked below">
                                         <input type="checkbox" id="respectEnableCombinedMin" checked style="accent-color: #ffd700; margin-right: 8px;">
-                                        Combined War Hits + Assists
+                                        Combined hits
                                     </label>
-                                    <span style="justify-self: end; text-align: right;">Min: <input type="number" id="respectCombinedMin" value="20" min="0" step="1" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+                                    <span style="justify-self: end; text-align: right;">Min: <input type="number" id="respectCombinedMin" value="20" min="0" step="1" title="Minimum sum: war hits (always) plus any categories checked below" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
+
+                                    <div id="respectCombinedHitsSubwrap" style="grid-column: 1 / span 2; margin: 0 0 4px 0; padding: 10px 12px; background: #222; border-radius: 4px; border-left: 2px solid #555;">
+                                        <div style="font-size: 0.8em; color: #aaa; margin-bottom: 8px;">War hits always count. Also include:</div>
+                                        <div style="display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;">
+                                            <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Count outside hits (war modifier 1 + respect) toward the minimum"><input type="checkbox" id="respectCombinedIncludeOutsideHits" style="accent-color: #ffd700; margin-right: 6px;"> Outside hits</label>
+                                            <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Count war assists toward the minimum"><input type="checkbox" id="respectCombinedIncludeAssists" checked style="accent-color: #ffd700; margin-right: 6px;"> Assists</label>
+                                        </div>
+                                    </div>
 
                                     <label style="grid-column: 1 / span 1; display: flex; align-items: center; color: #ffd700;" title="Remove chain & group bonuses from respect calculations">
                                         <input type="checkbox" id="respectRemoveModifiers" style="accent-color: #ffd700; margin-right: 8px;">

@@ -1647,6 +1647,12 @@ button:hover {
     border-bottom: 1px solid var(--border-color);
 }
 
+/* Hit-based payout: centre numeric columns (match respect payout table); keep member name left */
+#payoutTable tbody td:not(:first-child),
+#payoutTable tfoot td:not(:first-child) {
+    text-align: center;
+}
+
 #payoutTable th {
     background-color: var(--secondary-color);
     color: var(--accent-color);
@@ -4924,4 +4930,30 @@ th small {
 
 .war-report-custom-end-vip-locked {
     cursor: help;
+}
+
+/* War Report 2.0: gold vertical rules at grouped column boundaries (Respect / Support / Other / totals) */
+#respectPayoutTable th.war-report-col-group-lead,
+#respectPayoutTable td.war-report-col-group-lead,
+#payoutTable th.war-report-col-group-lead,
+#payoutTable td.war-report-col-group-lead,
+#membersTable th.war-report-col-group-lead,
+#membersTable td.war-report-col-group-lead {
+    border-left: 2px solid rgba(255, 215, 0, 0.48);
+}
+
+#respectPayoutTable td.war-report-col-group-lead,
+#payoutTable td.war-report-col-group-lead,
+#membersTable td.war-report-col-group-lead {
+    border-left-color: rgba(255, 215, 0, 0.36);
+}
+
+/* War Report payout tables: brand (gold) checkboxes for column breakdown toggles */
+#respectPayoutTable .war-report-breakdown-cb,
+#payoutTable .war-report-breakdown-cb {
+    accent-color: #ffd700;
+    width: 1.05em;
+    height: 1.05em;
+    cursor: pointer;
+    vertical-align: middle;
 }
