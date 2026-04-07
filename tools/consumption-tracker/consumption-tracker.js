@@ -8,6 +8,548 @@ if (!window.consumptionTrackerData) {
 // Create local reference for convenience (use var to allow redeclaration on script reload)
 var consumptionTrackerData = window.consumptionTrackerData;
 
+/** Parse Y-m-d from flatpickr; returns { y, m (0-11), d } or null */
+function consumptionParseYmd(ymd) {
+    if (!ymd || typeof ymd !== 'string') return null;
+    const p = ymd.split('-').map(Number);
+    if (p.length !== 3 || p.some(n => !Number.isFinite(n))) return null;
+    return { y: p[0], m: p[1] - 1, d: p[2] };
+}
+
+function consumptionClampInt(n, lo, hi, fallback) {
+    const x = Math.floor(Number(n));
+    if (!Number.isFinite(x)) return fallback;
+    return Math.max(lo, Math.min(hi, x));
+}
+
+/** Exact instant on calendar day ymd at H:M:S, TCT (= UTC). */
+function consumptionTctInstantUnix(ymd, hour, minute, second) {
+    const parts = consumptionParseYmd(ymd);
+    if (!parts) return null;
+    const h = consumptionClampInt(hour, 0, 23, 0);
+    const m = consumptionClampInt(minute, 0, 59, 0);
+    const s = consumptionClampInt(second, 0, 59, 0);
+    return Math.floor(Date.UTC(parts.y, parts.m, parts.d, h, m, s) / 1000);
+}
+
+function consumptionFormatTctUtc(ts) {
+    return new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+function consumptionUtcYmd() {
+    const t = new Date();
+    const y = t.getUTCFullYear();
+    const m = String(t.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(t.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+function consumptionFillHmsSelect(sel, isHour) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    const max = isHour ? 23 : 59;
+    for (let i = 0; i <= max; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = String(i).padStart(2, '0');
+        sel.appendChild(opt);
+    }
+}
+
+function consumptionPopulateTctTimeSelects() {
+    const root = document.getElementById('consumptionTctTimesRoot');
+    if (root && root.dataset.tctPopulated === '2') {
+        return;
+    }
+
+    const startH = document.getElementById('consumptionStartHourTCT');
+    const startM = document.getElementById('consumptionStartMinTCT');
+    const startS = document.getElementById('consumptionStartSecTCT');
+    const endH = document.getElementById('consumptionEndHourTCT');
+    const endM = document.getElementById('consumptionEndMinTCT');
+    const endS = document.getElementById('consumptionEndSecTCT');
+    if (!startH || !startM || !startS || !endH || !endM || !endS) return;
+
+    consumptionFillHmsSelect(startH, true);
+    consumptionFillHmsSelect(startM, false);
+    consumptionFillHmsSelect(startS, false);
+    consumptionFillHmsSelect(endH, true);
+    consumptionFillHmsSelect(endM, false);
+    consumptionFillHmsSelect(endS, false);
+
+    startH.value = '0';
+    startM.value = '0';
+    startS.value = '0';
+    endH.value = '23';
+    endM.value = '59';
+    endS.value = '59';
+
+    if (root) root.dataset.tctPopulated = '2';
+}
+
+function consumptionTornFetchUrl(url) {
+    return typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
+}
+
+function consumptionUnixToYmdHms(ts) {
+    const d = new Date(ts * 1000);
+    return {
+        ymd: d.toISOString().slice(0, 10),
+        h: d.getUTCHours(),
+        m: d.getUTCMinutes(),
+        s: d.getUTCSeconds()
+    };
+}
+
+function consumptionSetFlatpickrYmd(inputId, ymd) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    if (el._flatpickr) el._flatpickr.setDate(ymd, false);
+    else el.value = ymd;
+}
+
+function consumptionSetSelectByInt(id, num, maxVal) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const hi = maxVal != null ? maxVal : 59;
+    const v = String(consumptionClampInt(num, 0, hi, 0));
+    if ([...el.options].some(o => o.value === v)) el.value = v;
+}
+
+var CONSUMPTION_EXACT_WAR_TIMES_VIP_REQUIRED = 1;
+
+/**
+ * VIP 1+ unlocks “exact war & chain times” for the war→war preset (same pattern as War Report custom end).
+ */
+async function consumptionResolveExactWarTimesVipAccess(apiKey) {
+    window.consumptionExactWarTimesVipUnlocked = false;
+    const key = (apiKey || '').trim();
+    if (!key) return false;
+
+    if (window.vipLevelKnown === true && typeof window.currentVipLevel === 'number') {
+        window.consumptionExactWarTimesVipUnlocked = window.currentVipLevel >= CONSUMPTION_EXACT_WAR_TIMES_VIP_REQUIRED;
+        return window.consumptionExactWarTimesVipUnlocked;
+    }
+
+    try {
+        if (typeof firebase === 'undefined' || !firebase.functions) {
+            return false;
+        }
+        const userRes = await fetch(consumptionTornFetchUrl(`https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(key)}`));
+        const userData = await userRes.json();
+        if (userData.error || userData.player_id == null) return false;
+        const fn = firebase.functions().httpsCallable('getVipBalance');
+        const res = await fn({ playerId: String(userData.player_id) });
+        const d = res && res.data;
+        const lvl = d && typeof d.vipLevel === 'number' ? d.vipLevel : 0;
+        window.consumptionExactWarTimesVipUnlocked = lvl >= CONSUMPTION_EXACT_WAR_TIMES_VIP_REQUIRED;
+        return window.consumptionExactWarTimesVipUnlocked;
+    } catch (e) {
+        console.warn('[CONSUMPTION] VIP check for exact war times:', e);
+        window.consumptionExactWarTimesVipUnlocked = false;
+        return false;
+    }
+}
+
+function consumptionSyncHmsSectionVisibility() {
+    const wrap = document.getElementById('consumptionExactTimesDetail');
+    const warPanel = document.getElementById('consumptionWarPresetPanel');
+    const desired = consumptionUseExactWarTimesDesired();
+
+    if (wrap) {
+        if (desired) {
+            wrap.removeAttribute('hidden');
+            consumptionPopulateTctTimeSelects();
+        } else {
+            wrap.setAttribute('hidden', 'hidden');
+        }
+    }
+
+    if (warPanel) {
+        if (desired) {
+            warPanel.removeAttribute('hidden');
+        } else {
+            warPanel.setAttribute('hidden', 'hidden');
+            const chainCb = document.getElementById('consumptionWarRangeIncludeChains');
+            if (chainCb) chainCb.checked = false;
+            if (consumptionWarPreviewDebounceId) {
+                clearTimeout(consumptionWarPreviewDebounceId);
+                consumptionWarPreviewDebounceId = null;
+            }
+            consumptionHideWarToWarPreview();
+            const statusEl = document.getElementById('consumptionWarRangeStatus');
+            if (statusEl) statusEl.textContent = '';
+        }
+    }
+}
+
+function consumptionUpdateExactWarTimesVipUI() {
+    const en = document.getElementById('consumptionWarExactTimesEnabled');
+    const lo = document.getElementById('consumptionWarExactTimesLocked');
+    const cb = document.getElementById('consumptionWarExactTimes');
+    if (!en || !lo) return;
+    const ok = !!window.consumptionExactWarTimesVipUnlocked;
+    en.style.display = ok ? 'block' : 'none';
+    lo.style.display = ok ? 'none' : 'flex';
+    if (cb) {
+        if (!ok) {
+            cb.checked = false;
+            cb.disabled = true;
+        } else {
+            cb.disabled = false;
+        }
+    }
+    consumptionSyncHmsSectionVisibility();
+}
+
+function consumptionUseExactWarTimesDesired() {
+    const cb = document.getElementById('consumptionWarExactTimes');
+    return !!(cb && cb.checked && window.consumptionExactWarTimesVipUnlocked);
+}
+
+/** When useExact is false, expand range to full TCT days (00:00 first day → 23:59:59 last day). */
+function consumptionAdjustWarRangePrecision(result, useExact) {
+    if (!result || !result.ok) return result;
+    if (useExact) return result;
+    const a = consumptionUnixToYmdHms(result.fromTs);
+    const b = consumptionUnixToYmdHms(result.toTs);
+    const fromTs = consumptionTctInstantUnix(a.ymd, 0, 0, 0);
+    const toTs = consumptionTctInstantUnix(b.ymd, 23, 59, 59);
+    if (fromTs == null || toTs == null) return result;
+    return { ...result, fromTs, toTs };
+}
+
+/** Match post-war chains to ranked wars. */
+function consumptionMatchChainsToWars(wars, chains) {
+    const matches = new Map();
+    wars.forEach(war => {
+        const warStart = war.start;
+        const warEnd = war.end || Math.floor(Date.now() / 1000);
+        const matchingChains = chains.filter(chain =>
+            chain.start >= warStart &&
+            chain.start <= warEnd &&
+            chain.end > warEnd
+        );
+        if (matchingChains.length > 0) {
+            const longestChain = matchingChains.reduce((longest, current) =>
+                current.chain > longest.chain ? current : longest
+            );
+            matches.set(war.id, {
+                chain: longestChain.chain,
+                start: longestChain.start,
+                end: longestChain.end
+            });
+        }
+    });
+    return matches;
+}
+
+function consumptionEffectiveRankedWarEnd(war, chainMatches) {
+    const official = war.end;
+    if (!official || official <= 0) return null;
+    if (!chainMatches || !chainMatches.has(war.id)) return official;
+    const c = chainMatches.get(war.id);
+    return c && c.end > official ? c.end : official;
+}
+
+/** Enemy faction name for a ranked war row (same as War Report 2.0 war cards). */
+function consumptionRankedWarEnemyName(war, ourFactionId) {
+    if (!war || ourFactionId == null || ourFactionId === '') return 'Unknown';
+    const factions = war.factions;
+    if (!factions || !Array.isArray(factions)) return 'Unknown';
+    const enemy = factions.find(f => String(f.id) !== String(ourFactionId));
+    return (enemy && enemy.name) ? String(enemy.name) : 'Unknown';
+}
+
+async function consumptionFetchChainsForWarPreset(apiKey) {
+    const url = consumptionTornFetchUrl(`https://api.torn.com/faction/?selections=chains&key=${encodeURIComponent(apiKey)}`);
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.error || 'Chains API error');
+    return Object.values(data.chains || {});
+}
+
+/**
+ * Compute war-to-war range (same logic as Apply). Returns { ok: true, fromTs, toTs, previous, recent, includeChains } or { ok: false, message }.
+ */
+async function consumptionComputeWarToWarRange(apiKey, includeChains) {
+    const key = (apiKey || '').trim();
+    if (!key) return { ok: false, message: 'Enter an API key in the sidebar first.' };
+
+    // Match War Report 2.0 / app welcome: profile (not basic) — basic often omits faction for limited keys.
+    const userUrl = consumptionTornFetchUrl(`https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(key)}`);
+    const userRes = await fetch(userUrl);
+    const userData = await userRes.json();
+    if (userData.error) return { ok: false, message: userData.error.error || 'User API error' };
+
+    const factionId =
+        userData.faction_id ||
+        userData.faction?.faction_id ||
+        (userData.faction && userData.faction.id != null ? userData.faction.id : null);
+    if (!factionId) {
+        return {
+            ok: false,
+            message: 'No faction on your profile (not in a faction, or key cannot read profile). War Payout uses the same profile call — try a Limited Access key with faction permissions.'
+        };
+    }
+
+    const warsUrl = consumptionTornFetchUrl(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${encodeURIComponent(key)}`);
+    const warsRes = await fetch(warsUrl);
+    const warsData = await warsRes.json();
+    if (warsData.error) return { ok: false, message: warsData.error.error || 'Ranked wars API error' };
+
+    const rawRanked = warsData.rankedwars || [];
+    const rawWars = Array.isArray(rawRanked)
+        ? rawRanked
+        : rawRanked && typeof rawRanked === 'object'
+          ? Object.values(rawRanked)
+          : [];
+    const completed = rawWars.filter(w => w && w.end > 0).sort((a, b) => b.start - a.start);
+    if (completed.length < 2) {
+        return { ok: false, message: 'Need at least two completed ranked wars in recent history.' };
+    }
+
+    const recent = completed[0];
+    const previous = completed[1];
+
+    let chainMatches = new Map();
+    if (includeChains) {
+        try {
+            const chains = await consumptionFetchChainsForWarPreset(key);
+            chainMatches = consumptionMatchChainsToWars(rawWars, chains);
+        } catch (e) {
+            return { ok: false, message: e.message || 'Chains API error' };
+        }
+    }
+
+    const fromTs = consumptionEffectiveRankedWarEnd(previous, chainMatches);
+    const toTs = consumptionEffectiveRankedWarEnd(recent, chainMatches);
+    if (fromTs == null || toTs == null) return { ok: false, message: 'Invalid war end times.' };
+    if (fromTs > toTs) return { ok: false, message: 'Previous war ends after the latest war (unexpected). Check war list.' };
+
+    const previousEnemyName = consumptionRankedWarEnemyName(previous, factionId);
+    const recentEnemyName = consumptionRankedWarEnemyName(recent, factionId);
+
+    let previousChainDetail = null;
+    let recentChainDetail = null;
+    if (includeChains) {
+        if (chainMatches.has(previous.id)) {
+            const c = chainMatches.get(previous.id);
+            previousChainDetail = { hits: c.chain, endUnix: c.end };
+        }
+        if (chainMatches.has(recent.id)) {
+            const c = chainMatches.get(recent.id);
+            recentChainDetail = { hits: c.chain, endUnix: c.end };
+        }
+    }
+
+    return {
+        ok: true,
+        fromTs,
+        toTs,
+        previous,
+        recent,
+        includeChains,
+        factionId,
+        previousEnemyName,
+        recentEnemyName,
+        previousOfficialEndUnix: previous.end,
+        recentOfficialEndUnix: recent.end,
+        previousChainDetail,
+        recentChainDetail
+    };
+}
+
+function consumptionEscapeHtml(str) {
+    if (str == null) return '';
+    const d = document.createElement('div');
+    d.textContent = String(str);
+    return d.innerHTML;
+}
+
+function consumptionHideWarToWarPreview() {
+    const el = document.getElementById('consumptionWarRangePreview');
+    if (!el) return;
+    el.hidden = true;
+    el.innerHTML = '';
+}
+
+function consumptionPreviewChainLine(warLabel, enemyName, chainDetail, officialEndUnix, boundTs) {
+    const enemy = consumptionEscapeHtml(enemyName || 'Unknown');
+    if (chainDetail && chainDetail.hits != null) {
+        const hits = consumptionEscapeHtml(String(chainDetail.hits));
+        const through = consumptionEscapeHtml(consumptionFormatTctUtc(boundTs));
+        return (
+            `<li><span class="consumption-war-preset-preview-chain-war">${consumptionEscapeHtml(warLabel)} vs ${enemy}:</span> ` +
+            `<span class="consumption-war-preset-preview-chain-include">Include ${hits} Chain</span> ` +
+            `<span class="consumption-war-preset-preview-chain-through">(through ${through})</span></li>`
+        );
+    }
+    const official = consumptionEscapeHtml(consumptionFormatTctUtc(officialEndUnix));
+    return (
+        `<li><span class="consumption-war-preset-preview-chain-war">${consumptionEscapeHtml(warLabel)} vs ${enemy}:</span> ` +
+        `<span class="consumption-war-preset-preview-chain-none">No matching post-war chain</span> ` +
+        `<span class="consumption-war-preset-preview-chain-through">(official end ${official})</span></li>`
+    );
+}
+
+function consumptionRenderWarToWarPreviewFromOk(r, useExact) {
+    const el = document.getElementById('consumptionWarRangePreview');
+    const cb = document.getElementById('consumptionWarRangeIncludeChains');
+    if (!el || !r || r.fromTs == null || r.toTs == null) return;
+    if (!cb || !cb.checked) {
+        consumptionHideWarToWarPreview();
+        return;
+    }
+    const prevEnemy = r.previousEnemyName || 'Unknown';
+    const latestEnemy = r.recentEnemyName || 'Unknown';
+    const chainLines =
+        '<div class="consumption-war-preset-preview-chains-head">Chains included per war (same “Include N Chain” rule as on each war card)</div>' +
+        '<ul class="consumption-war-preset-preview-chains">' +
+        consumptionPreviewChainLine(
+            'Previous war',
+            prevEnemy,
+            r.previousChainDetail,
+            r.previousOfficialEndUnix,
+            r.fromTs
+        ) +
+        consumptionPreviewChainLine(
+            'Latest war',
+            latestEnemy,
+            r.recentChainDetail,
+            r.recentOfficialEndUnix,
+            r.toTs
+        ) +
+        '</ul>';
+    const precisionNote = useExact
+        ? '<div class="consumption-war-preset-preview-precision">Time precision: <strong>exact</strong> war/chain timestamps to the second (VIP).</div>'
+        : '<div class="consumption-war-preset-preview-precision">Time precision: <strong>full TCT calendar days</strong> (00:00:00 on the first day through 23:59:59 on the last day). Enable <strong>Exact war &amp; chain times</strong> with VIP 1+ for second-level bounds.</div>';
+    el.hidden = false;
+    el.innerHTML =
+        '<div class="consumption-war-preset-preview-title">Apply would use this range (TCT / UTC)</div>' +
+        '<div class="consumption-war-preset-preview-times">' +
+        '<span class="consumption-war-preset-preview-k">From</span> ' +
+        consumptionEscapeHtml(consumptionFormatTctUtc(r.fromTs)) +
+        ' <span class="consumption-war-preset-preview-arrow">→</span> ' +
+        '<span class="consumption-war-preset-preview-k">To</span> ' +
+        consumptionEscapeHtml(consumptionFormatTctUtc(r.toTs)) +
+        '</div>' +
+        '<div class="consumption-war-preset-preview-meta">' +
+        consumptionEscapeHtml(`Previous war vs ${prevEnemy} → Latest war vs ${latestEnemy}.`) +
+        '</div>' +
+        chainLines +
+        precisionNote;
+}
+
+let consumptionWarPreviewDebounceId = null;
+
+async function consumptionRefreshWarToWarPreview() {
+    const el = document.getElementById('consumptionWarRangePreview');
+    const cb = document.getElementById('consumptionWarRangeIncludeChains');
+    if (!el) return;
+
+    if (!cb || !cb.checked) {
+        consumptionHideWarToWarPreview();
+        return;
+    }
+
+    const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
+    if (!apiKey) {
+        consumptionHideWarToWarPreview();
+        return;
+    }
+
+    el.hidden = false;
+    el.innerHTML = '<div class="consumption-war-preset-preview-loading">Loading preview…</div>';
+
+    const includeChains = true;
+    const r = await consumptionComputeWarToWarRange(apiKey, includeChains);
+    if (!cb.checked) {
+        consumptionHideWarToWarPreview();
+        return;
+    }
+    if (!r.ok) {
+        el.innerHTML = '<div class="consumption-war-preset-preview-error">' + consumptionEscapeHtml(r.message) + '</div>';
+        return;
+    }
+    const useExact = consumptionUseExactWarTimesDesired();
+    const rAdj = consumptionAdjustWarRangePrecision(r, useExact);
+    consumptionRenderWarToWarPreviewFromOk(rAdj, useExact);
+}
+
+function consumptionScheduleWarToWarPreview() {
+    if (consumptionWarPreviewDebounceId) clearTimeout(consumptionWarPreviewDebounceId);
+    consumptionWarPreviewDebounceId = setTimeout(() => {
+        consumptionWarPreviewDebounceId = null;
+        consumptionRefreshWarToWarPreview();
+    }, 300);
+}
+
+async function consumptionApplyWarToWarPreset() {
+    const statusEl = document.getElementById('consumptionWarRangeStatus');
+    const btn = document.getElementById('consumptionWarToWarPresetBtn');
+    const includeChains = !!(document.getElementById('consumptionWarRangeIncludeChains') || {}).checked;
+
+    const setStatus = (msg, isErr) => {
+        if (statusEl) {
+            statusEl.textContent = msg;
+            statusEl.style.color = isErr ? '#f44336' : '#8bc34a';
+        }
+    };
+
+    const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
+    if (!apiKey) {
+        alert('Please enter your API key in the sidebar first.');
+        return;
+    }
+
+    if (btn) btn.disabled = true;
+    setStatus('Loading…', false);
+
+    try {
+        await consumptionResolveExactWarTimesVipAccess(apiKey);
+        consumptionUpdateExactWarTimesVipUI();
+
+        const r0 = await consumptionComputeWarToWarRange(apiKey, includeChains);
+        if (!r0.ok) throw new Error(r0.message);
+
+        const useExact = consumptionUseExactWarTimesDesired();
+        const r = consumptionAdjustWarRangePrecision(r0, useExact);
+
+        const a = consumptionUnixToYmdHms(r.fromTs);
+        const b = consumptionUnixToYmdHms(r.toTs);
+        consumptionPopulateTctTimeSelects();
+        consumptionSetFlatpickrYmd('startDate', a.ymd);
+        consumptionSetFlatpickrYmd('endDate', b.ymd);
+        consumptionSetSelectByInt('consumptionStartHourTCT', a.h, 23);
+        consumptionSetSelectByInt('consumptionStartMinTCT', a.m, 59);
+        consumptionSetSelectByInt('consumptionStartSecTCT', a.s, 59);
+        consumptionSetSelectByInt('consumptionEndHourTCT', b.h, 23);
+        consumptionSetSelectByInt('consumptionEndMinTCT', b.m, 59);
+        consumptionSetSelectByInt('consumptionEndSecTCT', b.s, 59);
+
+        if (includeChains) {
+            consumptionRenderWarToWarPreviewFromOk(r, useExact);
+        } else {
+            consumptionHideWarToWarPreview();
+        }
+
+        const prevLabel = r.previousEnemyName && r.previousEnemyName !== 'Unknown' ? `vs ${r.previousEnemyName}` : `war #${r.previous.id}`;
+        const latestLabel = r.recentEnemyName && r.recentEnemyName !== 'Unknown' ? `vs ${r.recentEnemyName}` : `war #${r.recent.id}`;
+        const prec = useExact ? ', exact times' : ', full calendar days';
+        setStatus(
+            `Applied (${prevLabel} → ${latestLabel}${includeChains ? ', chains' : ''}${prec}).`,
+            false
+        );
+    } catch (e) {
+        console.error('[CONSUMPTION] War preset:', e);
+        setStatus(e.message || 'Failed', true);
+        alert(e.message || 'Could not apply war range.');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
 // --- Local cache for faction news (reduces API reads across different date ranges) ---
 const CONSUMPTION_CACHE_KEY = 'consumption_news_cache';
 const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -128,6 +670,53 @@ function initConsumptionTracker() {
     
     // Initialize date pickers using global function (same as War & Chain Reporter)
     setTimeout(() => {
+        consumptionPopulateTctTimeSelects();
+        window.consumptionExactWarTimesVipUnlocked = false;
+        consumptionUpdateExactWarTimesVipUI();
+        const apiKeyInit = (localStorage.getItem('tornApiKey') || '').trim();
+        consumptionResolveExactWarTimesVipAccess(apiKeyInit).then(() => consumptionUpdateExactWarTimesVipUI());
+
+        const warBtn = document.getElementById('consumptionWarToWarPresetBtn');
+        if (warBtn && !warBtn.dataset.wired) {
+            warBtn.dataset.wired = '1';
+            warBtn.addEventListener('click', () => consumptionApplyWarToWarPreset());
+        }
+        const chainCb = document.getElementById('consumptionWarRangeIncludeChains');
+        if (chainCb && !chainCb.dataset.previewWired) {
+            chainCb.dataset.previewWired = '1';
+            chainCb.addEventListener('change', () => {
+                if (!chainCb.checked) {
+                    if (consumptionWarPreviewDebounceId) clearTimeout(consumptionWarPreviewDebounceId);
+                    consumptionWarPreviewDebounceId = null;
+                    consumptionHideWarToWarPreview();
+                } else {
+                    consumptionScheduleWarToWarPreview();
+                }
+            });
+        }
+        const exactCb = document.getElementById('consumptionWarExactTimes');
+        if (exactCb && !exactCb.dataset.previewWired) {
+            exactCb.dataset.previewWired = '1';
+            exactCb.addEventListener('change', () => {
+                consumptionSyncHmsSectionVisibility();
+                const c = document.getElementById('consumptionWarRangeIncludeChains');
+                if (c && c.checked) consumptionScheduleWarToWarPreview();
+            });
+        }
+        if (!window._consumptionWarPreviewKeyListener) {
+            window._consumptionWarPreviewKeyListener = true;
+            window.addEventListener('apiKeyUpdated', async (ev) => {
+                const k = ev.detail && ev.detail.apiKey != null
+                    ? String(ev.detail.apiKey).trim()
+                    : (localStorage.getItem('tornApiKey') || '').trim();
+                await consumptionResolveExactWarTimesVipAccess(k);
+                consumptionUpdateExactWarTimesVipUI();
+                const c = document.getElementById('consumptionWarRangeIncludeChains');
+                if (c && c.checked) consumptionScheduleWarToWarPreview();
+                else consumptionHideWarToWarPreview();
+            });
+        }
+        consumptionRefreshWarToWarPreview();
         if (window.initDatePickers) {
             window.initDatePickers('startDate', 'endDate', {
                 startDefaultDate: "today",
@@ -158,39 +747,80 @@ const handleConsumptionFetch = async () => {
 
     // No faction ID needed - the API key determines the faction
 
-    // Handle date range
-    let startDate = startDateInput.value;
-    let endDate = endDateInput.value;
-    
-    // If no end date provided, default to today
-    if (!endDate) {
-        endDate = new Date().toISOString().split('T')[0];
-        console.log(`No end date provided, using default: ${endDate}`);
+    consumptionPopulateTctTimeSelects();
+    const useExactTimes = consumptionUseExactWarTimesDesired();
+    const startHourEl = document.getElementById('consumptionStartHourTCT');
+    const startMinEl = document.getElementById('consumptionStartMinTCT');
+    const startSecEl = document.getElementById('consumptionStartSecTCT');
+    const endHourEl = document.getElementById('consumptionEndHourTCT');
+    const endMinEl = document.getElementById('consumptionEndMinTCT');
+    const endSecEl = document.getElementById('consumptionEndSecTCT');
+
+    let startHour;
+    let startMin;
+    let startSec;
+    let endHour;
+    let endMin;
+    let endSec;
+    if (useExactTimes) {
+        startHour = startHourEl ? consumptionClampInt(startHourEl.value, 0, 23, 0) : 0;
+        startMin = startMinEl ? consumptionClampInt(startMinEl.value, 0, 59, 0) : 0;
+        startSec = startSecEl ? consumptionClampInt(startSecEl.value, 0, 59, 0) : 0;
+        endHour = endHourEl ? consumptionClampInt(endHourEl.value, 0, 23, 23) : 23;
+        endMin = endMinEl ? consumptionClampInt(endMinEl.value, 0, 59, 59) : 59;
+        endSec = endSecEl ? consumptionClampInt(endSecEl.value, 0, 59, 59) : 59;
+    } else {
+        startHour = 0;
+        startMin = 0;
+        startSec = 0;
+        endHour = 23;
+        endMin = 59;
+        endSec = 59;
     }
 
-    // Convert end date to timestamp (use local time to avoid timezone issues)
-    const toTimestamp = Math.floor(new Date(endDate + 'T23:59:59').getTime() / 1000);
-    
-    // If no start date provided, use a reasonable default
+    // Handle date range (calendar dates from flatpickr + TCT/UTC time)
+    let startDate = startDateInput.value.trim();
+    let endDate = endDateInput.value.trim();
+
+    if (!endDate) {
+        endDate = consumptionUtcYmd();
+        console.log(`No end date provided, using today (UTC): ${endDate}`);
+    }
+
+    const toTimestamp = consumptionTctInstantUnix(endDate, endHour, endMin, endSec);
+    if (toTimestamp == null) {
+        alert('Invalid end date. Use YYYY-MM-DD from the date picker.');
+        return;
+    }
+
     let fromTimestamp = null;
     if (startDate) {
-        fromTimestamp = Math.floor(new Date(startDate + 'T00:00:00').getTime() / 1000);
-        console.log(`Using provided start date: ${startDate} (${fromTimestamp})`);
+        fromTimestamp = consumptionTctInstantUnix(startDate, startHour, startMin, startSec);
+        if (fromTimestamp == null) {
+            alert('Invalid start date. Use YYYY-MM-DD from the date picker.');
+            return;
+        }
+        console.log(`Start (TCT/UTC): ${consumptionFormatTctUtc(fromTimestamp)}`);
     } else {
-        // Default to 30 days ago if no start date provided
-        fromTimestamp = Math.floor((Date.now() - (30 * 24 * 60 * 60 * 1000)) / 1000);
-        console.log(`No start date provided, using 30 days ago: ${fromTimestamp}`);
+        const t = new Date();
+        const midnightUtc = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), 0, 0, 0);
+        fromTimestamp = Math.floor(midnightUtc / 1000) - 30 * 24 * 60 * 60;
+        console.log('No start date: using 30 days before today’s UTC midnight');
     }
-    
-    console.log(`Final date range: ${fromTimestamp} to ${toTimestamp}`);
-    console.log(`Final date range (human readable): ${new Date(fromTimestamp * 1000).toLocaleDateString()} to ${new Date(toTimestamp * 1000).toLocaleDateString()}`);
+
+    if (fromTimestamp > toTimestamp) {
+        alert('Start date and time must be before end date and time (TCT / UTC).');
+        return;
+    }
+
+    console.log(`Final range (TCT/UTC): ${consumptionFormatTctUtc(fromTimestamp)} → ${consumptionFormatTctUtc(toTimestamp)}`);
 
     try {
         if (loadingSpinner) loadingSpinner.style.display = 'inline-block';
         if (fetchBtn) fetchBtn.disabled = true;
 
         console.log('Fetching consumption data for faction (from API key)');
-        console.log('Date range:', new Date(fromTimestamp * 1000).toLocaleDateString(), 'to', new Date(toTimestamp * 1000).toLocaleDateString());
+        console.log('Date range (TCT/UTC):', consumptionFormatTctUtc(fromTimestamp), 'to', consumptionFormatTctUtc(toTimestamp));
         
         // Get API key from localStorage
         const apiKey = localStorage.getItem('tornApiKey');
@@ -367,7 +997,7 @@ const handleConsumptionFetch = async () => {
         const progressFill = document.getElementById('progressFill');
         const progressDetails = document.getElementById('progressDetails');
         const daysDiff = Math.ceil((toTimestamp - fromTimestamp) / (24 * 60 * 60));
-
+        
         if (progressContainer) {
             progressContainer.style.display = 'block';
             progressMessage.textContent = daysDiff > 30 ? `Fetching consumption data for ${daysDiff} days (this may take a while)...` : daysDiff > 7 ? `Fetching consumption data for ${daysDiff} days...` : 'Fetching consumption data...';
@@ -436,7 +1066,7 @@ const handleConsumptionFetch = async () => {
         for (const newsEntry of allNews) {
             processedCount++;
             if (processedCount % 10 === 0 && progressContainer) {
-                progressDetails.textContent = `Processing ${processedCount}/${allNews.length} entries...`;
+                    progressDetails.textContent = `Processing ${processedCount}/${allNews.length} entries...`;
             }
             
             const logText = newsEntry.text || '';
@@ -655,7 +1285,7 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
         return;
     }
     
-    // Define columns for the table
+               // Define columns for the table
            const columns = [
                { id: 'xanax', label: 'Xanax', itemName: 'Xanax' },
                { id: 'vicodin', label: 'Vicodin', itemName: 'Vicodin' },
@@ -731,9 +1361,10 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
     const summarySection = document.createElement('div');
     summarySection.className = 'summary-section';
     
-    // Calculate date range
-    const startDate = new Date(fromTimestamp * 1000).toLocaleDateString();
-    const endDate = new Date(toTimestamp * 1000).toLocaleDateString();
+    const rangeLabel =
+        fromTimestamp != null && toTimestamp != null
+            ? `${consumptionFormatTctUtc(fromTimestamp)} → ${consumptionFormatTctUtc(toTimestamp)}`
+            : '—';
     
     // Calculate total value
     const totalValue = Object.values(totalValues).reduce((sum, cost) => sum + cost, 0);
@@ -742,8 +1373,8 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
     let summaryHTML = `
         <div class="summary-grid">
             <div class="summary-item">
-                <span class="summary-label">Date Range:</span>
-                <span class="summary-value">${startDate} to ${endDate}</span>
+                <span class="summary-label">Time range (TCT / UTC):</span>
+                <span class="summary-value" style="font-size:0.95em;">${rangeLabel}</span>
             </div>
             <div class="summary-item">
                 <span class="summary-label">Total Value:</span>
@@ -1128,12 +1759,11 @@ function exportGroupedToCSV() {
         totalValues[col.id] = totals[col.id] * itemValue;
     });
     
-    // Create CSV content
-    const startDate = new Date(fromTimestamp * 1000).toLocaleDateString();
-    const endDate = new Date(toTimestamp * 1000).toLocaleDateString();
+    const rangeCsv = `Time Range (TCT / UTC): ${consumptionFormatTctUtc(fromTimestamp)} to ${consumptionFormatTctUtc(toTimestamp)}`;
+    const fileStamp = `${new Date(fromTimestamp * 1000).toISOString().slice(0, 10)}_${new Date(toTimestamp * 1000).toISOString().slice(0, 10)}`;
     
     let csvContent = `Consumption Tracker - Grouped Items\n`;
-    csvContent += `Date Range: ${startDate} to ${endDate}\n\n`;
+    csvContent += `${rangeCsv}\n\n`;
     
     Object.keys(groupedItems).forEach(groupType => {
         csvContent += `${groupType}\n`;
@@ -1182,7 +1812,7 @@ function exportGroupedToCSV() {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `consumption-grouped-${startDate}-${endDate}.csv`);
+    link.setAttribute('download', `consumption-grouped-${fileStamp}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -1233,12 +1863,11 @@ function exportPlayersToCSV() {
                { id: 'points', label: 'Points', itemName: 'Points', isPoints: true }
            ];
     
-    // Create CSV content
-    const startDate = new Date(fromTimestamp * 1000).toLocaleDateString();
-    const endDate = new Date(toTimestamp * 1000).toLocaleDateString();
+    const rangeCsv = `Time Range (TCT / UTC): ${consumptionFormatTctUtc(fromTimestamp)} to ${consumptionFormatTctUtc(toTimestamp)}`;
+    const fileStamp = `${new Date(fromTimestamp * 1000).toISOString().slice(0, 10)}_${new Date(toTimestamp * 1000).toISOString().slice(0, 10)}`;
     
     let csvContent = `Consumption Tracker - Player Details\n`;
-    csvContent += `Date Range: ${startDate} to ${endDate}\n\n`;
+    csvContent += `${rangeCsv}\n\n`;
     
     // Calculate which items have usage across all players
     const itemsWithUsage = {};
@@ -1319,7 +1948,7 @@ function exportPlayersToCSV() {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `consumption-players-${startDate}-${endDate}.csv`);
+    link.setAttribute('download', `consumption-players-${fileStamp}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();

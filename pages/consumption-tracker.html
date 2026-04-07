@@ -2,14 +2,78 @@
     <h1>Faction Consumption Tracker</h1>
     
     <div class="input-section">
-        <div class="date-range-section">
-            <div class="date-input">
-                <label for="startDate">Start Date:</label>
-                <input type="text" id="startDate" placeholder="Select start date">
+        <div id="consumptionTctTimesRoot" class="consumption-datetime-stack">
+            <div class="date-range-section consumption-date-only-section">
+                <div class="consumption-range-col">
+                    <div class="date-input">
+                        <label for="startDate">Start Date</label>
+                        <input type="text" id="startDate" placeholder="Select start date">
+                    </div>
+                </div>
+                <div class="consumption-range-col">
+                    <div class="date-input">
+                        <label for="endDate">End Date</label>
+                        <input type="text" id="endDate" placeholder="Select end date">
+                    </div>
+                </div>
             </div>
-            <div class="date-input">
-                <label for="endDate">End Date:</label>
-                <input type="text" id="endDate" placeholder="Select end date">
+            <div class="consumption-exact-times-row">
+                <div id="consumptionWarExactTimesEnabled" class="consumption-war-preset-check" style="display: none;">
+                    <label>
+                        <input type="checkbox" id="consumptionWarExactTimes" />
+                        <span>Use exact war &amp; chain times (to the second)</span>
+                    </label>
+                </div>
+                <div id="consumptionWarExactTimesLocked" class="consumption-war-preset-vip-locked" style="display: none;" title="Send Xanax to support the tools — see the welcome banner for VIP tiers.">
+                    <span class="consumption-war-preset-vip-locked-icon" aria-hidden="true">🔒</span>
+                    <span class="consumption-war-preset-vip-locked-text"><strong>Exact times</strong> <span class="consumption-war-preset-vip-badge">VIP 1+</span> — set start and end to the exact second, and use the ranked-war date shortcut.</span>
+                </div>
+            </div>
+            <div id="consumptionExactTimesDetail" class="consumption-exact-times-detail" hidden>
+                <div id="consumptionHmsRow" class="date-range-section consumption-hms-section">
+                    <div class="consumption-range-col">
+                        <div class="consumption-tct-block">
+                            <label for="consumptionStartHourTCT" title="Torn City Time = UTC">Start time (TCT)</label>
+                            <div class="consumption-tct-hms" role="group" aria-label="Start time hour minute second TCT">
+                                <select id="consumptionStartHourTCT" title="Hour"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="consumptionStartMinTCT" title="Minute"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="consumptionStartSecTCT" title="Second"></select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="consumption-range-col">
+                        <div class="consumption-tct-block">
+                            <label for="consumptionEndHourTCT" title="Torn City Time = UTC">End time (TCT)</label>
+                            <div id="consumptionEndHmsWrap" class="consumption-tct-hms" role="group" aria-label="End time hour minute second TCT">
+                                <select id="consumptionEndHourTCT" title="Hour"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="consumptionEndMinTCT" title="Minute"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="consumptionEndSecTCT" title="Second"></select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <p class="consumption-tct-hint" id="consumptionTctExactHint">
+                    All times use <strong>Torn City Time</strong> (same as <strong>UTC</strong>). <strong>Exact mode</strong> uses the <strong>H:M:S</strong> values below for manual fetch and war preset. Uncheck the box above to use full calendar days (<strong>00:00:00</strong>–<strong>23:59:59</strong>).
+                </p>
+            </div>
+        </div>
+
+        <div id="consumptionWarPresetPanel" class="consumption-war-preset-panel" hidden>
+            <p class="consumption-war-preset-intro"><strong>Ranked war → war</strong> — fills the range from your faction’s previous completed ranked war end through your latest completed war end.</p>
+            <div class="consumption-war-preset-check">
+                <label>
+                    <input type="checkbox" id="consumptionWarRangeIncludeChains" />
+                    <span>Include post-war chains (extend each war’s end to chain end)</span>
+                </label>
+            </div>
+            <div id="consumptionWarRangePreview" class="consumption-war-preset-preview" role="status" aria-live="polite" hidden></div>
+            <div class="consumption-war-preset-actions">
+                <button type="button" id="consumptionWarToWarPresetBtn" class="consumption-war-preset-btn">Apply previous war end → latest war end</button>
+                <span id="consumptionWarRangeStatus"></span>
             </div>
         </div>
 
