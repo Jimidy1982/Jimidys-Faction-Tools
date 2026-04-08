@@ -774,19 +774,21 @@ function loadRespectPayoutSettings() {
 
 var tabsInitialized = false;
 
-// Guard to prevent double initialization
-var warReportInitialized = false;
-
 function initWarReport2() {
     console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
-    console.trace('[WAR REPORT 2.0] Call stack:');
-    
-    if (warReportInitialized) {
-        console.warn('[WAR REPORT 2.0] Already initialized, skipping duplicate initialization');
+
+    // Per-DOM guard (SPA replaces #appContent; globals alone are not enough — stale guard blocked re-init)
+    const warListContainer = document.getElementById('warListContainer');
+    if (!warListContainer) {
+        console.error('[WAR REPORT 2.0] warListContainer not found');
         return;
     }
-    warReportInitialized = true;
-    
+    if (warListContainer.getAttribute('data-wr2-wired') === '1') {
+        console.warn('[WAR REPORT 2.0] This DOM is already wired, skipping duplicate init');
+        return;
+    }
+    warListContainer.setAttribute('data-wr2-wired', '1');
+
     // Load saved respect payout settings
     loadRespectPayoutSettings();
     
@@ -813,8 +815,7 @@ function initWarReport2() {
             console.log('[WAR REPORT 2.0] No API key found, skipping auto-fetch');
         }
     }, 500);
-    
-    const warListContainer = document.getElementById('warListContainer');
+
     const warList = document.getElementById('warList');
     const loadMoreBtn = document.getElementById('loadMoreWars');
     const factionIdInput = document.getElementById('factionId');
@@ -865,11 +866,13 @@ function initWarReport2() {
     };
 
     // Auto-fetch faction ID and wars when API key is available
-    const autoFetchFactionAndWars = async () => {
+    const autoFetchFactionAndWars = async (keyOverride) => {
         console.log('[WAR REPORT 2.0] autoFetchFactionAndWars called');
-            const globalApiKeyInput = document.getElementById('globalApiKey');
-            const apiKey = globalApiKeyInput ? globalApiKeyInput.value.trim() : '';
-        
+        const globalApiKeyInput = document.getElementById('globalApiKey');
+        let apiKey = typeof keyOverride === 'string' ? keyOverride.trim() : '';
+        if (!apiKey && globalApiKeyInput) apiKey = globalApiKeyInput.value.trim();
+        if (!apiKey) apiKey = (getApiKeyFromStorage() || '').trim();
+
         if (apiKey && factionIdInput) {
             try {
                 console.log('[WAR REPORT 2.0] Fetching user profile...');

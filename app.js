@@ -3629,6 +3629,18 @@ document.addEventListener('DOMContentLoaded', () => {
             appContent.innerHTML = await response.text();
             console.log('[APP] Loaded page:', page);
 
+            // War Payout Calculator (SPA): hide "enter API key" immediately if key is already stored.
+            // Full init runs after war-report.js loads; without this, a skipped init left the welcome banner visible.
+            if (page.includes('war-report-2.0')) {
+                const k = (localStorage.getItem('tornApiKey') || '').trim();
+                if (k) {
+                    const inst = document.getElementById('apiKeyInstructionMessage');
+                    const err = document.getElementById('apiKeyErrorMessage');
+                    if (inst) inst.style.display = 'none';
+                    if (err) err.style.display = 'none';
+                }
+            }
+
             // After loading, initialize any scripts needed for that page
             if (page.includes('consumption-tracker')) {
                 // Remove any previous script for this tool
@@ -3674,19 +3686,19 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (page.includes('war-chain-reporter')) {
                 initWarChainReporter();
             } else if (page.includes('war-report-2.0')) {
+                window.tabsInitialized = false;
                 // Remove any previous script for this tool
                 const oldScript = document.getElementById('war-report-2.0-script');
                 if (oldScript) oldScript.remove();
-                // Dynamically load the script
+                // Dynamically load the script (cache-bust so the file always re-executes on SPA re-entry)
                 const script = document.createElement('script');
-                script.src = 'tools/war-report-2.0/war-report.js';
+                script.src = `tools/war-report-2.0/war-report.js?v=${Date.now()}`;
                 script.id = 'war-report-2.0-script';
                 script.onload = () => {
                     console.log('[APP] war-report-2.0/war-report.js loaded, calling initWarReport2');
-                    if (typeof initWarReport2 === 'function') {
-                        initWarReport2();
-                    } else if (window.initWarReport2) {
-                        window.initWarReport2();
+                    const run = window.initWarReport2;
+                    if (typeof run === 'function') {
+                        run();
                     } else {
                         console.error('[APP] initWarReport2 is still not available after script load!');
                     }
