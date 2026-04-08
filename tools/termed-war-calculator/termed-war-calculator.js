@@ -24,6 +24,71 @@ let cacheSwapData = {
 // Display order for cache types under each faction: Heavy, Armour, Medium, Melee, Small
 const CACHE_DISPLAY_ORDER = ['Heavy Arms Cache', 'Armor Cache', 'Medium Arms Cache', 'Melee Cache', 'Small Arms Cache'];
 
+const LS_KEY_LOSER_LEAD_PCT = 'termedWarLoserLeadPercent';
+
+/** When true, programmatic updates to score inputs must not disable “losing % of starting lead”. */
+let termedWarSuppressScoreInputEvents = false;
+
+function loadTermedWarLoserLeadPercentFromStorage() {
+    try {
+        const raw = localStorage.getItem(LS_KEY_LOSER_LEAD_PCT);
+        if (raw == null || raw === '') return null;
+        const n = parseInt(raw, 10);
+        if (!Number.isFinite(n)) return null;
+        return Math.min(100, Math.max(1, n));
+    } catch (e) {
+        return null;
+    }
+}
+
+function saveTermedWarLoserLeadPercentToStorage(clampedPercent) {
+    try {
+        localStorage.setItem(LS_KEY_LOSER_LEAD_PCT, String(clampedPercent));
+    } catch (e) {
+        /* ignore quota / private mode */
+    }
+}
+
+/** Persist % if the field has a valid number; skip empty while user is editing. */
+function persistLoserLeadPercentFromFieldIfValid() {
+    const el = document.getElementById('loserScoreAutoFromLeadPercent');
+    if (!el) return;
+    const raw = String(el.value).trim();
+    if (raw === '') return;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return;
+    saveTermedWarLoserLeadPercentToStorage(Math.min(100, Math.max(1, n)));
+}
+
+function handleLoserLeadPercentUserChange() {
+    const cb = document.getElementById('loserScoreAutoFromLead');
+    if (cb && !cb.checked) cb.checked = true;
+    persistLoserLeadPercentFromFieldIfValid();
+    handleAutoCalculation();
+}
+
+function getLoserAutoLeadPercent() {
+    const el = document.getElementById('loserScoreAutoFromLeadPercent');
+    const n = parseInt(el && el.value, 10);
+    if (!Number.isFinite(n)) return 50;
+    return Math.min(100, Math.max(1, n));
+}
+
+function loserAutoFromLeadActive() {
+    const cb = document.getElementById('loserScoreAutoFromLead');
+    return !!(cb && cb.checked);
+}
+
+function disableLoserAutoFromLeadOption() {
+    const cb = document.getElementById('loserScoreAutoFromLead');
+    if (cb) cb.checked = false;
+}
+
+function clearTermedWarStartingLeadAttention() {
+    const el = document.getElementById('startingLeadRequirement');
+    if (el) el.classList.remove('termed-war-starting-lead-attention');
+}
+
 function initTermedWarCalculator() {
     console.log('[TERMED WAR CALCULATOR] initTermedWarCalculator CALLED');
     
@@ -47,7 +112,23 @@ function initTermedWarCalculator() {
     if (warStartHourSelect) warStartHourSelect.addEventListener('change', handleAutoCalculation);
     if (warFinishDaySelect) warFinishDaySelect.addEventListener('change', handleAutoCalculation);
     if (warFinishHourSelect) warFinishHourSelect.addEventListener('change', handleAutoCalculation);
-    if (startingLeadInput) startingLeadInput.addEventListener('input', handleAutoCalculation);
+    if (startingLeadInput) {
+        startingLeadInput.addEventListener('input', handleAutoCalculation);
+        startingLeadInput.classList.add('termed-war-starting-lead-attention');
+        startingLeadInput.addEventListener('input', clearTermedWarStartingLeadAttention, { once: true });
+    }
+
+    const loserAutoCb = document.getElementById('loserScoreAutoFromLead');
+    const loserAutoPct = document.getElementById('loserScoreAutoFromLeadPercent');
+    const savedLoserPct = loadTermedWarLoserLeadPercentFromStorage();
+    if (savedLoserPct != null && loserAutoPct) {
+        loserAutoPct.value = String(savedLoserPct);
+    }
+    if (loserAutoCb) loserAutoCb.addEventListener('change', handleAutoCalculation);
+    if (loserAutoPct) {
+        loserAutoPct.addEventListener('input', handleLoserLeadPercentUserChange);
+        loserAutoPct.addEventListener('change', handleLoserLeadPercentUserChange);
+    }
 
     // Add event listeners for score updates
     if (winningScoreInput) winningScoreInput.addEventListener('input', handleWinningScoreChange);
@@ -133,23 +214,25 @@ const handleAutoCalculation = () => {
         // Update the lead requirement display (this will be used for score calculations)
         // Don't update lead requirement display here - it will be updated when scores change
 
-        // Update scores based on current losing score and FINAL lead requirement (after decay)
-        const currentLosingScore = parseInt(document.getElementById('losingScore')?.value || 2000);
-        const finalLeadRequirement = results.finalLeadRequirement; // This is the decayed lead requirement
-        
-        // Update the losing score input with current value and calculate winning score
+        // Losing score: optional % of *starting* lead; otherwise keep the value in the box
+        const finalLeadRequirement = results.finalLeadRequirement;
+        const currentLosingScore = loserAutoFromLeadActive()
+            ? Math.max(0, Math.round((startingLead * getLoserAutoLeadPercent()) / 100))
+            : parseInt(document.getElementById('losingScore')?.value || 2000, 10);
+
         const losingScoreInput = document.getElementById('losingScore');
         const winningScoreInput = document.getElementById('winningScore');
-        
+
         if (losingScoreInput && winningScoreInput) {
             const winningScore = currentLosingScore + finalLeadRequirement;
+            termedWarSuppressScoreInputEvents = true;
             losingScoreInput.value = currentLosingScore;
             winningScoreInput.value = winningScore;
-            
+            termedWarSuppressScoreInputEvents = false;
+
             termedWarData.losingScore = currentLosingScore;
             termedWarData.winningScore = winningScore;
-            
-            // Update lead requirement display to show the actual difference
+
             const actualLead = winningScore - currentLosingScore;
             updateLeadRequirementDisplay(actualLead);
         }
@@ -161,6 +244,8 @@ const handleAutoCalculation = () => {
 
 // Handle winning score changes
 const handleWinningScoreChange = (event) => {
+    if (termedWarSuppressScoreInputEvents) return;
+    disableLoserAutoFromLeadOption();
     const winningScore = parseInt(event.target.value) || 0;
     const finalLeadRequirement = termedWarData.calculatedResults?.finalLeadRequirement || 1000;
     const losingScore = Math.max(0, winningScore - finalLeadRequirement);
@@ -183,6 +268,8 @@ const handleWinningScoreChange = (event) => {
 
 // Handle losing score changes
 const handleLosingScoreChange = (event) => {
+    if (termedWarSuppressScoreInputEvents) return;
+    disableLoserAutoFromLeadOption();
     const losingScore = parseInt(event.target.value) || 0;
     updateScoreFromLosing(losingScore);
 };

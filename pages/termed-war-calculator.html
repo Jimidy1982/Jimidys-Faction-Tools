@@ -118,6 +118,14 @@
                     <div class="help-tip">
                         <strong>⚠️ Critical:</strong> Enter the exact lead requirement the game displays. This is the starting value before any decay occurs!
                     </div>
+                    <div class="loser-score-from-lead-option">
+                        <label class="loser-score-from-lead-label" for="loserScoreAutoFromLead">
+                            <input type="checkbox" id="loserScoreAutoFromLead" checked>
+                            <span>Set losing score to</span>
+                            <input type="number" id="loserScoreAutoFromLeadPercent" class="termed-war-pct-input" value="50" min="1" max="100" step="1" title="Percentage of starting lead requirement" aria-label="Percent of starting lead for losing score">
+                            <span>% of starting lead — turns off if you edit scores below.</span>
+                        </label>
+                    </div>
                 </div>
                 
                 <div class="score-display-section">
