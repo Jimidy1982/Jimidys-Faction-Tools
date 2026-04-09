@@ -782,7 +782,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                 <table id="playerTable" style="width: 100%; min-width: 700px; border-collapse: collapse;">
                     <thead>
                         <tr>
-                            <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Player Name <span class="sort-indicator"></span></th>
+                            <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">${window.toolsMemberColumnHeaderWrap('<span>Player Name <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                             <th data-column="totalParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Total Participations <span class="sort-indicator"></span></th>
                             <th data-column="totalScore" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Score = Difficulty × (Participants ÷ 6). Full team (6 people) = 100% of difficulty points. Partial team gets proportional points.">Score <span class="sort-indicator"></span></th>
                             <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
@@ -803,8 +803,8 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
             html += `
                 <tr style="border-bottom: 1px solid var(--border-color);" data-player-id="${player.id}">
                     <td style="padding: 12px;">
-                        <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link">
-                            ${player.name}
+                        <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link"${window.toolsMemberLinkAttrs(player.name, player.id)}>
+                            ${window.toolsFormatMemberDisplayLabel(player, window.toolsGetShowMemberIdInBrackets())}
                         </a>
                     </td>
                     <td style="padding: 12px; text-align: center; font-weight: bold;">${player.totalParticipations}</td>
@@ -1113,7 +1113,7 @@ function exportOCStatsToCSV() {
     csvContent += '\n\nPLAYER PARTICIPATION STATS\n';
     csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate,Rewards\n';
     sortedPlayerStats.forEach(player => {
-        csvContent += `"${player.name}",${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%,"${Array.isArray(player.rewardParticipations) ? formatDollars(getPlayerTotalRewardValue(player)) : formatRewardsSummary(player)}"\n`;
+        csvContent += `${window.toolsCsvMemberCell(player)},${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%,"${Array.isArray(player.rewardParticipations) ? formatDollars(getPlayerTotalRewardValue(player)) : formatRewardsSummary(player)}"\n`;
     });
     
     csvContent += '\n\nPLAYER DIFFICULTY BREAKDOWN\n';
@@ -1124,7 +1124,7 @@ function exportOCStatsToCSV() {
                 const breakdown = player.difficultyBreakdown[diff];
                 if (breakdown && breakdown.total > 0) {
                     const diffSuccessRate = Math.round((breakdown.successful / breakdown.total) * 100);
-                    csvContent += `"${player.name}",${diff}/10,${breakdown.total},${breakdown.successful},${breakdown.failed},${diffSuccessRate}%\n`;
+                    csvContent += `${window.toolsCsvMemberCell(player)},${diff}/10,${breakdown.total},${breakdown.successful},${breakdown.failed},${diffSuccessRate}%\n`;
                 }
             }
         }
@@ -1445,7 +1445,7 @@ function updatePlayerStatsUI(playerStats) {
             <table id="playerTable" style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr>
-                        <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Player Name <span class="sort-indicator"></span></th>
+                        <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">${window.toolsMemberColumnHeaderWrap('<span>Player Name <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                         <th data-column="totalParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Total Participations <span class="sort-indicator"></span></th>
                         <th data-column="totalScore" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Score = Difficulty × (Participants ÷ 6). Full team (6 people) = 100% of difficulty points. Partial team gets proportional points.">Score <span class="sort-indicator"></span></th>
                         <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
@@ -1465,8 +1465,8 @@ function updatePlayerStatsUI(playerStats) {
             html += `
                 <tr style="border-bottom: 1px solid var(--border-color);" data-player-id="${player.id}">
                     <td style="padding: 12px;">
-                        <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link">
-                            ${player.name}
+                        <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link"${window.toolsMemberLinkAttrs(player.name, player.id)}>
+                            ${window.toolsFormatMemberDisplayLabel(player, window.toolsGetShowMemberIdInBrackets())}
                         </a>
                     </td>
                     <td style="padding: 12px; text-align: center; font-weight: bold;">${player.totalParticipations}</td>
@@ -1594,4 +1594,13 @@ function updatePlayerStatsUI(playerStats) {
 }
 
 console.log('[ORGANISED CRIME STATS] Script loaded');
+
+if (!window._ocStatsToolsMemberIdListener) {
+    window._ocStatsToolsMemberIdListener = true;
+    window.addEventListener('toolsMemberIdDisplayChanged', () => {
+        if (typeof ocStatsData !== 'undefined' && ocStatsData.playerStats && ocStatsData.playerStats.length) {
+            updatePlayerStatsUI(ocStatsData.playerStats);
+        }
+    });
+}
 

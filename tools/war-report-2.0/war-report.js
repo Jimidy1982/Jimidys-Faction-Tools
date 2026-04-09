@@ -1807,7 +1807,7 @@ function renderWarReportTable() {
             <table id="membersTable" style="min-width:900px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
-                    <th rowspan="2" data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${sortState.column === 'name' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="2" data-column="name" style="cursor: pointer;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator">' + (sortState.column === 'name' ? (sortState.direction === 'asc' ? '↑' : '↓') : '') + '</span></span>')}</th>
                     <th rowspan="2" data-column="level" style="cursor: pointer;">Level <span class="sort-indicator">${sortState.column === 'level' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="2" data-column="warScore" style="cursor: pointer;">Score <span class="sort-indicator">${sortState.column === 'warScore' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="2" data-column="respectBleed" style="cursor: pointer;">Respect Bleed <span class="sort-indicator">${sortState.column === 'respectBleed' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -1829,7 +1829,7 @@ function renderWarReportTable() {
                     const avgDefLevel = player.avgDefLevel.toFixed(1);
                     return `
                         <tr>
-                            <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
+                            <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank"${window.toolsMemberLinkAttrs(player.name, player.id)}>${window.toolsFormatMemberDisplayLabel(player, window.toolsGetShowMemberIdInBrackets())}</a></td>
                             <td>${player.level}</td>
                             <td>${Math.round(player.warScore || 0)}</td>
                             <td>${Math.round(player.respectBleed || 0)}</td>
@@ -1950,7 +1950,7 @@ function exportWarReportToCSV() {
     let csvContent = headers.join(',') + '\r\n';
     sorted.forEach(player => {
         const row = [
-            '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
+            window.toolsCsvMemberCell(player),
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
             player.warScore || 0,
             player.respectBleed || 0,
@@ -2948,6 +2948,7 @@ function renderPayoutTable() {
     const hitHdrRowspan = hitHdrSubRow ? 2 : 1;
     let hitTableMinW = showOtherBreakdown ? 1240 : 1000;
     if (!showSupportColBreakdownHit) hitTableMinW -= 120;
+    const showMemberIdBrackets = window.toolsGetShowMemberIdInBrackets();
     const othSortInd = warData.payoutSortState.column === 'otherAttacks' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : '';
     const supSortIndHit = warData.payoutSortState.column === 'supportHitsTotal' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : '';
     const supportBreakdownLabelHit =
@@ -3008,7 +3009,15 @@ function renderPayoutTable() {
             <table id="payoutTable" style="min-width:${hitTableMinW}px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
-                    <th rowspan="${hitHdrRowspan}" data-column="name" style="cursor: pointer;">Member <span class="sort-indicator">${warData.payoutSortState.column === 'name' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${hitHdrRowspan}" data-column="name" style="cursor: pointer; vertical-align: middle; text-align: center;">
+                        <div style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">
+                            <span>Member <span class="sort-indicator">${warData.payoutSortState.column === 'name' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></span>
+                            <label class="tools-member-id-cb-label" style="display: inline-flex; align-items: center; gap: 4px; font-weight: normal; font-size: 11px; color: #999; cursor: pointer; margin: 0;" title="Show Name [player ID] like in Torn (for spreadsheets)">
+                                <input type="checkbox" class="tools-show-member-id-cb" ${showMemberIdBrackets ? 'checked' : ''} style="accent-color: #ffd700; flex-shrink: 0;" />
+                                [ID]
+                            </label>
+                        </div>
+                    </th>
                     <th rowspan="${hitHdrRowspan}" data-column="level" style="cursor: pointer;">Level <span class="sort-indicator">${warData.payoutSortState.column === 'level' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${hitHdrRowspan}" data-column="warHits" style="cursor: pointer;">War Hits <span class="sort-indicator">${warData.payoutSortState.column === 'warHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${hitHdrRowspan}" data-column="lowFFHits" style="cursor: pointer; color: #ff6b6b;">Low FF Hits <span class="sort-indicator">${warData.payoutSortState.column === 'lowFFHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -3033,7 +3042,7 @@ function renderPayoutTable() {
                     const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
                     return `
                         <tr>
-                            <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
+                            <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank"${window.toolsMemberLinkAttrs(player.name, player.id)}>${window.toolsFormatMemberDisplayLabel(player, showMemberIdBrackets)}</a></td>
                             <td>${player.level}</td>
                             <td>${player.warHits || 0}</td>
                             <td style="color: #ff6b6b;">${player.lowFFHits || 0}</td>
@@ -3357,7 +3366,7 @@ function exportPayoutToCSV() {
     playersWithPayouts.forEach(player => {
         const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
         const row = [
-            '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
+            window.toolsCsvMemberCell(player),
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
             player.warHits || 0,
             player.lowFFHits || 0
@@ -3969,6 +3978,7 @@ function renderRespectPayoutTable() {
     const showSupportColBreakdownR = warReportGetSupportColumnBreakdown();
     const respectHdrSubRow = showRespectColBreakdownR || showSupportColBreakdownR || showOtherBreakdownR;
     const respectHdrRowspan = respectHdrSubRow ? 2 : 1;
+    const showMemberIdBracketsR = window.toolsGetShowMemberIdInBrackets();
     let respectTableMinW = showOtherBreakdownR ? 1240 : 1100;
     if (!showRespectColBreakdownR) respectTableMinW -= 150;
     if (!showSupportColBreakdownR) respectTableMinW -= 110;
@@ -4059,7 +4069,15 @@ function renderRespectPayoutTable() {
             <table id="respectPayoutTable" style="min-width:${respectTableMinW}px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
-                    <th rowspan="${respectHdrRowspan}" data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Member <span class="sort-indicator">${warData.respectPayoutSortState.column === 'name' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${respectHdrRowspan}" data-column="name" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">
+                        <div style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">
+                            <span>Member <span class="sort-indicator">${warData.respectPayoutSortState.column === 'name' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></span>
+                            <label class="tools-member-id-cb-label" style="display: inline-flex; align-items: center; gap: 4px; font-weight: normal; font-size: 11px; color: #bbb; cursor: pointer; margin: 0;" title="Show Name [player ID] like in Torn (for spreadsheets)">
+                                <input type="checkbox" class="tools-show-member-id-cb" ${showMemberIdBracketsR ? 'checked' : ''} style="accent-color: #ffd700; flex-shrink: 0;" />
+                                [ID]
+                            </label>
+                        </div>
+                    </th>
                     <th rowspan="${respectHdrRowspan}" data-column="level" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Level <span class="sort-indicator">${warData.respectPayoutSortState.column === 'level' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${respectHdrRowspan}" data-column="warHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">War Hits <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     ${respectHeadRow1R}
@@ -4087,7 +4105,7 @@ function renderRespectPayoutTable() {
                     const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
                     return `
                         <tr>
-                            <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank">${player.name}</a></td>
+                            <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank"${window.toolsMemberLinkAttrs(player.name, player.id)}>${window.toolsFormatMemberDisplayLabel(player, showMemberIdBracketsR)}</a></td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.level}</td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warHits || 0}</td>
                             ${respectCellsR}
@@ -4329,7 +4347,7 @@ function exportRespectPayoutToCSV() {
     sortedPlayers.forEach(player => {
         const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
         const row = [
-            '"' + ((player.name && typeof player.name === 'string' && player.name.trim().length > 0) ? player.name : 'Unknown') + '"',
+            window.toolsCsvMemberCell(player),
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
             player.warHits || 0
         ];

@@ -1401,6 +1401,12 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
     summaryHTML += `
             </div>
         </div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,215,0,0.15);display:flex;align-items:center;flex-wrap:wrap;gap:8px;">
+            <label class="tools-member-id-cb-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:#ccc;font-size:13px;">
+                <input type="checkbox" class="tools-show-member-id-cb" ${window.toolsGetShowMemberIdInBrackets() ? 'checked' : ''} style="accent-color:#ffd700;" />
+                Show player <strong>Name [ID]</strong> in lists (like Torn)
+            </label>
+        </div>
     `;
     
     summarySection.innerHTML = summaryHTML;
@@ -1490,8 +1496,8 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
                                    : `<span class="player-cost">$${(quantity * itemPrice).toLocaleString()}</span>`;
                                return `
                                <div class="player-item">
-                                   <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link">
-                                       ${player.name}
+                                   <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link"${window.toolsMemberLinkAttrs(player.name, player.id)}>
+                                       ${window.toolsFormatMemberDisplayLabel(player, window.toolsGetShowMemberIdInBrackets())}
                                    </a>
                                    <span class="player-quantity">${quantity}</span>
                                    ${costHTML}
@@ -1678,7 +1684,7 @@ function exportConsumptionToCSV() {
         headers.join(','),
         costHeaders.join(','),
         ...members.map(member => [
-            `"${member.name}"`,
+            window.toolsCsvMemberCell({ name: member.name, id: member.id }),
             ...columns.map(col => member[col.id] || 0)
         ].join(',')),
         totalsRow.join(','),
@@ -1892,7 +1898,7 @@ function exportPlayersToCSV() {
     
     // Player rows
     members.forEach(member => {
-        csvContent += `"${member.name}",`;
+        csvContent += `${window.toolsCsvMemberCell({ name: member.name, id: member.id })},`;
         let playerTotal = 0;
         
         Object.values(itemsWithUsage).forEach(col => {
@@ -1959,3 +1965,21 @@ function exportPlayersToCSV() {
 window.exportConsumptionToCSV = exportConsumptionToCSV;
 window.exportGroupedToCSV = exportGroupedToCSV;
 window.exportPlayersToCSV = exportPlayersToCSV;
+
+if (!window._consumptionToolsMemberIdListener) {
+    window._consumptionToolsMemberIdListener = true;
+    window.addEventListener('toolsMemberIdDisplayChanged', () => {
+        const d = window.consumptionTrackerData;
+        if (!d || !Array.isArray(d.members) || !d.members.length) return;
+        updateConsumptionUI(
+            d.members,
+            d.totalTime,
+            d.cacheStats,
+            d.wasCached,
+            d.itemValues || {},
+            d.fromTimestamp,
+            d.toTimestamp,
+            d.itemTypes || {}
+        );
+    });
+}

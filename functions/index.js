@@ -330,6 +330,21 @@ exports.listMyActivityFactions = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) 
 // --- VIP service (migrated from Apps Script) ---
 const VIP_BALANCES_COLLECTION = 'vipBalances';
 const VIP_TRANSACTIONS_COLLECTION = 'vipTransactions';
+/** One doc per credited Torn event: doc id `${playerId}_${tornEventId}` — prevents double-count on VIP refresh. */
+const VIP_TORN_EVENT_CLAIMS_COLLECTION = 'vipTornEventClaims';
+
+function vipLevelFromBalance(balance) {
+  const b = Number(balance) || 0;
+  if (b >= 100) return 3;
+  if (b >= 50) return 2;
+  if (b >= 10) return 1;
+  return 0;
+}
+
+function vipTornEventClaimDocId(playerId, tornEventId) {
+  const safe = String(tornEventId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${String(playerId)}_${safe}`;
+}
 
 /** Get VIP balance by playerId or playerName. Returns same shape as Apps Script (playerId, playerName, totalXanaxSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) or null. */
 exports.getVipBalance = onCall(
@@ -395,20 +410,152 @@ exports.updateVipBalance = onCall(
 
 /** Log one VIP transaction. */
 exports.logVipTransaction = onCall(
-  { maxInstances: 10 },
+  callableOpts({ maxInstances: 10 }),
   async (request) => {
     const data = request.data || {};
-    await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
+    const row = {
       timestamp: data.timestamp || new Date().toISOString(),
       playerId: data.playerId != null ? String(data.playerId) : '',
       playerName: data.playerName != null ? String(data.playerName) : '',
       amount: data.amount ?? 0,
       transactionType: data.transactionType ?? 'Sent',
       balanceAfter: data.balanceAfter ?? 0,
-    });
+    };
+    if (data.tornEventId != null && String(data.tornEventId).trim() !== '') {
+      row.tornEventId = String(data.tornEventId);
+    }
+    if (data.tornEventTimestamp != null && Number.isFinite(Number(data.tornEventTimestamp))) {
+      row.tornEventTimestamp = Number(data.tornEventTimestamp);
+    }
+    await db.collection(VIP_TRANSACTIONS_COLLECTION).add(row);
     return { success: true };
   }
 );
+
+/**
+ * Apply Xanax credits from Torn event IDs idempotently (dedupe on refresh).
+ * Each credit: { tornEventId, tornEventTimestamp (unix sec), amount }.
+ */
+exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
+  const data = request.data || {};
+  const playerId = data.playerId != null ? String(data.playerId).trim() : '';
+  const playerName = data.playerName != null ? String(data.playerName) : '';
+  const credits = Array.isArray(data.credits) ? data.credits : [];
+  if (!playerId) throw new HttpsError('invalid-argument', 'playerId required');
+  if (credits.length === 0) return { appliedCount: 0, deltaXanax: 0, balance: null };
+
+  const normalized = [];
+  for (const c of credits) {
+    const id = c.tornEventId != null ? String(c.tornEventId).trim() : '';
+    const ts = Number(c.tornEventTimestamp);
+    const amt = Number(c.amount);
+    if (!id || !Number.isFinite(ts) || !Number.isFinite(amt) || amt <= 0) continue;
+    normalized.push({ tornEventId: id, tornEventTimestamp: Math.floor(ts), amount: Math.floor(amt) });
+  }
+  if (normalized.length === 0) return { appliedCount: 0, deltaXanax: 0, balance: null };
+
+  const balanceRef = db.collection(VIP_BALANCES_COLLECTION).doc(playerId);
+
+  const result = await db.runTransaction(async (transaction) => {
+    const balSnap = await transaction.get(balanceRef);
+    let d = balSnap.exists ? balSnap.data() : {};
+    const baseTotal = Number(d.totalXanaxSent) || 0;
+    const baseCurrent = Number(d.currentBalance) || 0;
+
+    const newCredits = [];
+    for (const c of normalized) {
+      const claimId = vipTornEventClaimDocId(playerId, c.tornEventId);
+      const claimRef = db.collection(VIP_TORN_EVENT_CLAIMS_COLLECTION).doc(claimId);
+      const claimSnap = await transaction.get(claimRef);
+      if (claimSnap.exists) continue;
+      newCredits.push(c);
+    }
+
+    if (newCredits.length === 0) {
+      return {
+        appliedCount: 0,
+        deltaXanax: 0,
+        balance: {
+          playerId: d.playerId != null ? d.playerId : Number(playerId),
+          playerName: d.playerName != null ? d.playerName : playerName,
+          totalXanaxSent: baseTotal,
+          currentBalance: baseCurrent,
+          lastDeductionDate: d.lastDeductionDate ?? null,
+          vipLevel: d.vipLevel ?? vipLevelFromBalance(baseCurrent),
+          lastLoginDate: d.lastLoginDate ?? null,
+        },
+      };
+    }
+
+    let delta = 0;
+    let runBalance = baseCurrent;
+    for (const c of newCredits) {
+      delta += c.amount;
+      runBalance += c.amount;
+      const claimId = vipTornEventClaimDocId(playerId, c.tornEventId);
+      const claimRef = db.collection(VIP_TORN_EVENT_CLAIMS_COLLECTION).doc(claimId);
+      transaction.set(claimRef, {
+        playerId,
+        tornEventId: c.tornEventId,
+        tornEventTimestamp: c.tornEventTimestamp,
+        amount: c.amount,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      const logRef = db.collection(VIP_TRANSACTIONS_COLLECTION).doc();
+      const eventIso =
+        c.tornEventTimestamp > 0
+          ? new Date(c.tornEventTimestamp * 1000).toISOString()
+          : new Date().toISOString();
+      transaction.set(logRef, {
+        timestamp: eventIso,
+        tornEventId: c.tornEventId,
+        tornEventTimestamp: c.tornEventTimestamp,
+        playerId,
+        playerName,
+        amount: c.amount,
+        transactionType: 'Sent',
+        balanceAfter: runBalance,
+      });
+    }
+
+    const newTotal = baseTotal + delta;
+    const newCurrent = baseCurrent + delta;
+    const vipLevel = vipLevelFromBalance(newCurrent);
+    const docUpdate = {
+      playerId: data.playerId,
+      playerName: playerName || d.playerName || '',
+      totalXanaxSent: newTotal,
+      currentBalance: newCurrent,
+      lastDeductionDate: d.lastDeductionDate ?? null,
+      vipLevel,
+      lastLoginDate: d.lastLoginDate ?? null,
+    };
+    if (data.factionName != null && String(data.factionName).trim() !== '') {
+      docUpdate.factionName = String(data.factionName);
+    }
+    if (data.factionId != null && String(data.factionId).trim() !== '') {
+      docUpdate.factionId = String(data.factionId);
+    }
+    transaction.set(balanceRef, docUpdate, { merge: true });
+
+    return {
+      appliedCount: newCredits.length,
+      deltaXanax: delta,
+      balance: {
+        playerId: docUpdate.playerId,
+        playerName: docUpdate.playerName,
+        totalXanaxSent: newTotal,
+        currentBalance: newCurrent,
+        lastDeductionDate: docUpdate.lastDeductionDate,
+        vipLevel,
+        lastLoginDate: docUpdate.lastLoginDate,
+      },
+    };
+  });
+
+  return result;
+});
 
 /** Admin-only: return all VIP balance documents. Caller must pass apiKey; we validate against Torn and allow only admin user IDs. */
 const ADMIN_USER_IDS = [2935825, 2093859];

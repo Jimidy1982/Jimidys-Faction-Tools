@@ -685,6 +685,19 @@
     }
 
     function initRecruitment() {
+        (function injectRecruitmentPlayerHeaders() {
+            const th1 = document.querySelector('#recruitment-table thead th[data-sort="name"]');
+            if (th1 && !th1.dataset.toolsMemberHeader) {
+                th1.dataset.toolsMemberHeader = '1';
+                th1.innerHTML = window.toolsMemberColumnHeaderWrap('<span>Player</span>', { align: 'flex-start' });
+            }
+            const th2 = document.querySelector('#recruitment-detailed-table thead th:first-child');
+            if (th2 && !th2.dataset.toolsMemberHeader) {
+                th2.dataset.toolsMemberHeader = '1';
+                th2.innerHTML = window.toolsMemberColumnHeaderWrap('<span>Player</span>', { align: 'flex-start' });
+            }
+        })();
+
         const fetchWarsBtn = document.getElementById('recruitment-fetch-wars');
         const buildListBtn = document.getElementById('recruitment-build-list');
 
@@ -1050,7 +1063,7 @@
                     const contacted = contactedMap[p.id] != null;
                     const lastContactedText = formatLastContactedShort(contactedMap[p.id]);
                     return `<tr>
-                        <td><input type="checkbox" class="recruitment-contacted-cb" data-player-id="${escapeHtml(p.id)}" disabled title="Checked when you have opened this player's profile" ${contacted ? ' checked' : ''}><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(p.id)}" target="_blank" rel="noopener" class="recruitment-player-link" data-player-id="${escapeHtml(p.id)}" style="color: var(--accent-color); margin-left: 6px;">${escapeHtml(p.name)} [${escapeHtml(p.id)}]</a></td>
+                        <td><input type="checkbox" class="recruitment-contacted-cb" data-player-id="${escapeHtml(p.id)}" disabled title="Checked when you have opened this player's profile" ${contacted ? ' checked' : ''}><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(p.id)}" target="_blank" rel="noopener" class="recruitment-player-link" data-player-id="${escapeHtml(p.id)}" style="color: var(--accent-color); margin-left: 6px;"${window.toolsMemberLinkAttrs(p.name, p.id)}>${escapeHtml(window.toolsFormatMemberDisplayLabel({ name: p.name, id: p.id }, window.toolsGetShowMemberIdInBrackets()))}</a></td>
                         <td>${escapeHtml(lastContactedText)}</td>
                         <td>${escapeHtml(String(p.level))}</td>
                         <td>${estStats}</td>
@@ -1083,7 +1096,7 @@
             const contacted = contactedMap[p.id] != null;
             const lastContactedText = formatLastContactedShort(contactedMap[p.id]);
             return `<tr>
-                <td><input type="checkbox" class="recruitment-contacted-cb" data-player-id="${escapeHtml(p.id)}" disabled title="Checked when you have opened this player's profile" ${contacted ? ' checked' : ''}><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(p.id)}" target="_blank" rel="noopener" class="recruitment-player-link" data-player-id="${escapeHtml(p.id)}" style="color: var(--accent-color); margin-left: 6px;">${escapeHtml(p.name)}</a></td>
+                <td><input type="checkbox" class="recruitment-contacted-cb" data-player-id="${escapeHtml(p.id)}" disabled title="Checked when you have opened this player's profile" ${contacted ? ' checked' : ''}><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(p.id)}" target="_blank" rel="noopener" class="recruitment-player-link" data-player-id="${escapeHtml(p.id)}" style="color: var(--accent-color); margin-left: 6px;"${window.toolsMemberLinkAttrs(p.name, p.id)}>${escapeHtml(window.toolsFormatMemberDisplayLabel({ name: p.name, id: p.id }, window.toolsGetShowMemberIdInBrackets()))}</a></td>
                 <td>${escapeHtml(lastContactedText)}</td>
                 <td>${escapeHtml(String(p.level))}</td>
                 <td>${escapeHtml(String(p.warHits))}</td>
@@ -1116,4 +1129,11 @@
     }
 
     window.initRecruitment = initRecruitment;
+
+    if (!window._recruitmentToolsMemberIdListener) {
+        window._recruitmentToolsMemberIdListener = true;
+        window.addEventListener('toolsMemberIdDisplayChanged', () => {
+            if (typeof renderTable === 'function') renderTable();
+        });
+    }
 })();

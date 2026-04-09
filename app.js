@@ -18,6 +18,103 @@
     };
 })();
 
+/** Shared "Name [ID]" toggle for member/player columns across tools (localStorage). */
+(function initToolsMemberDisplay() {
+    const STORAGE_KEY = 'war_report_payout_show_member_id';
+    function get() {
+        try {
+            return localStorage.getItem(STORAGE_KEY) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+    function set(on) {
+        try {
+            if (on) localStorage.setItem(STORAGE_KEY, '1');
+            else localStorage.removeItem(STORAGE_KEY);
+        } catch (e) { /* ignore */ }
+    }
+    window.toolsGetShowMemberIdInBrackets = get;
+    window.toolsSetShowMemberIdInBrackets = set;
+    window.toolsFormatMemberDisplayLabel = function (player, showId) {
+        if (showId == null) showId = get();
+        const name =
+            player && player.name && String(player.name).trim()
+                ? String(player.name).trim()
+                : 'Unknown';
+        if (!showId || player == null || player.id == null || player.id === '') return name;
+        return name + ' [' + player.id + ']';
+    };
+    window.toolsCsvMemberCell = function (player) {
+        const s = window.toolsFormatMemberDisplayLabel(player, get());
+        return '"' + String(s).replace(/"/g, '""') + '"';
+    };
+    /** For <a href=profile>: store base name + id so toolsRefreshDomMemberLabels can update text when toggling [ID]. */
+    window.toolsMemberLinkAttrs = function (name, id) {
+        const mid = id != null && id !== '' ? String(id).replace(/"/g, '&quot;') : '';
+        const mbn = encodeURIComponent(name == null || name === '' ? 'Unknown' : String(name));
+        return mid ? ' data-mid="' + mid + '" data-mbn="' + mbn + '"' : ' data-mbn="' + mbn + '"';
+    };
+    window.toolsRefreshDomMemberLabels = function () {
+        const show = get();
+        document.querySelectorAll('a[data-mbn][data-mid]').forEach((el) => {
+            let base;
+            try {
+                base = decodeURIComponent(el.getAttribute('data-mbn') || '') || 'Unknown';
+            } catch (e) {
+                base = 'Unknown';
+            }
+            const id = el.getAttribute('data-mid');
+            el.textContent = show && id ? base + ' [' + id + ']' : base;
+        });
+    };
+    /** @param {string} leftInnerHtml — e.g. `<span>Member <span class="sort-indicator"></span></span>` */
+    window.toolsMemberColumnHeaderWrap = function (leftInnerHtml, options) {
+        const o = options || {};
+        const align = o.align || 'center';
+        const color = o.labelColor || '#999';
+        const checked = get() ? 'checked' : '';
+        return (
+            '<div style="display:flex;flex-direction:row;align-items:center;justify-content:' +
+            align +
+            ';gap:8px;flex-wrap:wrap;">' +
+            leftInnerHtml +
+            '<label class="tools-member-id-cb-label" style="display:inline-flex;align-items:center;gap:4px;font-weight:normal;font-size:11px;color:' +
+            color +
+            ';cursor:pointer;margin:0;" title="Show Name [player ID] like in Torn (for spreadsheets)">' +
+            '<input type="checkbox" class="tools-show-member-id-cb" ' +
+            checked +
+            ' style="accent-color:#ffd700;flex-shrink:0;" />' +
+            '[ID]</label></div>'
+        );
+    };
+    if (!window._toolsMemberIdDelegationAttached) {
+        window._toolsMemberIdDelegationAttached = true;
+        document.addEventListener(
+            'click',
+            (e) => {
+                const el = e.target && e.target.closest && e.target.closest('.tools-member-id-cb-label');
+                if (el) e.stopPropagation();
+            },
+            true
+        );
+        document.addEventListener('change', (e) => {
+            const t = e.target;
+            if (!t || !t.classList || !t.classList.contains('tools-show-member-id-cb')) return;
+            set(!!t.checked);
+            try {
+                document.querySelectorAll('.tools-show-member-id-cb').forEach((cb) => {
+                    cb.checked = t.checked;
+                });
+            } catch (err) { /* ignore */ }
+            if (typeof window.toolsRefreshDomMemberLabels === 'function') {
+                window.toolsRefreshDomMemberLabels();
+            }
+            window.dispatchEvent(new CustomEvent('toolsMemberIdDisplayChanged'));
+        });
+    }
+})();
+
 document.addEventListener('DOMContentLoaded', () => {
     const appContent = document.getElementById('app-content');
 
@@ -770,6 +867,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     // Update VIP balance (Firebase Callable). Optional factionName, factionId to show faction in admin table.
+    /** Idempotent Xanax credits from Torn event IDs (dedupes refresh); logs each with Torn event time. */
+    async function applyVipTornXanaxCreditsDeduped(playerId, playerName, credits, factionName, factionId) {
+        if (!credits || credits.length === 0) return null;
+        try {
+            if (typeof firebase === 'undefined' || !firebase.functions) return null;
+            const fn = firebase.functions().httpsCallable('applyVipTornXanaxCredits');
+            const payload = {
+                playerId,
+                playerName,
+                credits
+            };
+            if (factionName != null && factionName !== '') payload.factionName = factionName;
+            if (factionId != null && factionId !== '') payload.factionId = String(factionId);
+            const res = await fn(payload);
+            return res && res.data ? res.data : null;
+        } catch (error) {
+            console.error('Error applyVipTornXanaxCredits:', error);
+            return null;
+        }
+    }
+
     async function updateVipBalance(playerId, playerName, totalSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate, factionName, factionId) {
         try {
             if (typeof firebase === 'undefined' || !firebase.functions) return;
@@ -873,32 +991,49 @@ document.addEventListener('DOMContentLoaded', () => {
                 return null;
             }
             
-            // Parse events for Xanax sent to admin
+            // Xanax sent to admin: one row per Torn event, deduped by event id (refresh-safe)
             const events = eventsData.events || {};
-            let newXanaxReceived = 0;
-            
-            Object.values(events).forEach(event => {
-                if (event.event && event.event.includes('You were sent') && event.event.includes('Xanax')) {
-                    const parsed = parseXanaxEvent(event.event);
-                    if (parsed && parsed.playerId === userData.playerId) {
-                        newXanaxReceived += parsed.amount;
-                    }
-                }
-            });
-            
-            // Update total sent and current balance
-            if (newXanaxReceived > 0) {
-                vipData.totalXanaxSent += newXanaxReceived;
-                vipData.currentBalance += newXanaxReceived;
-                
-                // Log transaction
-                await logVipTransaction(
+            const credits = [];
+            for (const [eventId, event] of Object.entries(events)) {
+                if (!event || !event.event) continue;
+                if (!event.event.includes('You were sent') || !event.event.includes('Xanax')) continue;
+                const parsed = parseXanaxEvent(event.event);
+                if (!parsed || parsed.playerId !== userData.playerId) continue;
+                const ts = typeof event.timestamp === 'number' ? event.timestamp : parseInt(event.timestamp, 10);
+                if (!Number.isFinite(ts)) continue;
+                credits.push({
+                    tornEventId: String(eventId),
+                    tornEventTimestamp: ts,
+                    amount: parsed.amount
+                });
+            }
+
+            if (credits.length > 0) {
+                const applyRes = await applyVipTornXanaxCreditsDeduped(
                     userData.playerId,
                     userData.name,
-                    newXanaxReceived,
-                    'Sent',
-                    vipData.currentBalance
+                    credits,
+                    userData.factionName,
+                    userData.factionId
                 );
+                if (applyRes == null) {
+                    console.error('[VIP] applyVipTornXanaxCredits failed or unavailable — continuing without new credits this run');
+                } else {
+                    const fresh = await getVipBalance(userData.playerId, false);
+                    if (fresh) {
+                        vipData = fresh;
+                    } else if (applyRes.balance) {
+                        vipData = {
+                            playerId: applyRes.balance.playerId,
+                            playerName: applyRes.balance.playerName,
+                            totalXanaxSent: applyRes.balance.totalXanaxSent,
+                            currentBalance: applyRes.balance.currentBalance,
+                            lastDeductionDate: applyRes.balance.lastDeductionDate,
+                            vipLevel: applyRes.balance.vipLevel,
+                            lastLoginDate: applyRes.balance.lastLoginDate
+                        };
+                    }
+                }
             }
             
             // Calculate deductions
@@ -1228,13 +1363,14 @@ document.addEventListener('DOMContentLoaded', () => {
         overlay.className = 'app-modal-overlay';
         overlay.setAttribute('role', 'presentation');
         overlay.innerHTML =
-            '<div class="app-modal" role="dialog" aria-modal="true" aria-labelledby="vip-program-info-title" style="max-width: 520px;">' +
-            '<div class="app-modal-header">' +
+            '<div class="app-modal app-modal-vip-program" role="dialog" aria-modal="true" aria-labelledby="vip-program-info-title">' +
+            '<div class="app-modal-header app-modal-vip-program__header">' +
             '<h2 id="vip-program-info-title">VIP program</h2>' +
             '<button type="button" class="app-modal-close" id="vip-program-info-close" aria-label="Close">×</button>' +
             '</div>' +
-            '<div class="app-modal-body vip-info-modal-body">' +
+            '<div class="app-modal-body vip-info-modal-body vip-info-modal-body--scroll">' +
             '<p>Support the tools by sending <strong>Xanax</strong> to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" rel="noopener">Jimidy</a> in Torn. Your <strong>current balance</strong> (tracked here when you use your API key) sets your VIP tier.</p>' +
+            '<p><strong>After you send Xanax,</strong> press the <strong>Refresh</strong> button (↻ in the sidebar next to your welcome message) so we can read your Torn events and credit your balance. If you don’t refresh, your tier may not update until the next automatic check.</p>' +
             '<h3>Levels (by current balance)</h3>' +
             '<ul>' +
             '<li><strong>VIP 1</strong> — ' + v1 + '+ Xanax balance</li>' +
@@ -1248,18 +1384,22 @@ document.addEventListener('DOMContentLoaded', () => {
             '<ul>' +
             '<li><strong>War Report</strong> — custom payout end (set your own end date/time in TCT).</li>' +
             '<li><strong>Faction Battle Stats</strong> — <strong>Check Activity</strong> (compare member activity over 1 month, 3 months, or a custom number of days).</li>' +
+            '<li><strong>Consumption Tracker</strong> — <strong>Exact war &amp; chain times</strong> for the war→war preset (bounds to the second, plus the ranked-war date shortcut). Without VIP 1, that range uses full TCT calendar days only.</li>' +
             '</ul>' +
             '<h4>VIP 2</h4>' +
             '<ul>' +
             '<li><strong>War Dashboard</strong> — full access from <strong>April 15th</strong> (currently in beta and free to try until then).</li>' +
+            '<li><strong>Chain watch</strong> (in War Dashboard) — <strong>VIP 2+</strong> can create or edit the faction schedule and use editor-only tools (extra backup watcher columns, extend visible days, watch attendance review). Anyone in the faction can still <strong>view</strong> the grid and <strong>sign up</strong> for slots once a schedule exists.</li>' +
             '</ul>' +
             '<h4>VIP 3</h4>' +
             '<ul>' +
             '<li><strong>Recruitment</strong> — full access to the Recruitment tool.</li>' +
             '</ul>' +
-            '<p>Other tools may show VIP badges as features are added.</p>' +
+            '<p>Other tools may show VIP badges as smaller options are added.</p>' +
             '<p class="vip-info-special-offer"><strong>Special offer:</strong> All Xanax sent before the end of <strong>April</strong> will be <strong>doubled</strong> in your balance.</p>' +
-            '<div class="app-modal-actions" style="margin-top: 14px;">' +
+            '</div>' +
+            '<div class="app-modal-footer app-modal-vip-program__footer">' +
+            '<div class="app-modal-actions">' +
             '<button type="button" class="fetch-button" id="vip-program-info-dismiss">Close</button>' +
             '</div></div></div>';
 
@@ -4624,7 +4764,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <table id="membersTable" style="min-width: 760px; font-size: 13px;">
                         <thead>
                             <tr>
-                                <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left; user-select: text;">Member <span class="sort-indicator"></span></th>
+                                <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left; user-select: text;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                                 <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left; user-select: text;">Level <span class="sort-indicator"></span></th>
                                 <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">Estimated Stats <span class="sort-indicator"></span></th>
                                 <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left; user-select: text;">FF Score <span class="sort-indicator"></span></th>
@@ -4655,7 +4795,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 tableHtml += `
                     <tr>
-                        <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${id}]</a></td>
+                        <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" style="color: #FFD700; text-decoration: none;"${window.toolsMemberLinkAttrs(member.name, id)}>${window.toolsFormatMemberDisplayLabel({ name: member.name, id }, window.toolsGetShowMemberIdInBrackets())}</a></td>
                         <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
                         <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
                         <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
@@ -4823,8 +4963,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 memberExportData.forEach(data => {
                     const displayEstimatedStat = (data.rawEstimatedStat !== 'N/A') ? data.rawEstimatedStat.toLocaleString() : 'N/A';
-                    const escapedMemberName = data.name.replace(/"/g, '""');
-                    const memberLinkFormula = `=HYPERLINK("https://www.torn.com/profiles.php?XID=${data.memberID}", "${escapedMemberName} [${data.memberID}]")`;
+                    const linkLabel = window.toolsFormatMemberDisplayLabel({ name: data.name, id: data.memberID }, window.toolsGetShowMemberIdInBrackets()).replace(/"/g, '""');
+                    const memberLinkFormula = `=HYPERLINK("https://www.torn.com/profiles.php?XID=${data.memberID}", "${linkLabel}")`;
 
                     csvData.push([
                         memberLinkFormula,
@@ -5198,7 +5338,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <table id="membersTable" style="min-width: 860px; font-size: 13px;">
                     <thead>
                         <tr>
-                            <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                             <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
                             <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator"></span></th>
                             <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left;">FF Score <span class="sort-indicator"></span></th>
@@ -5233,7 +5373,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             tableHtml += `
                 <tr data-player-id="${id}">
-                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" style="color: #FFD700; text-decoration: none;">${member.name} [${id}]</a></td>
+                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" style="color: #FFD700; text-decoration: none;"${window.toolsMemberLinkAttrs(member.name, id)}>${window.toolsFormatMemberDisplayLabel({ name: member.name, id }, window.toolsGetShowMemberIdInBrackets())}</a></td>
                     <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
                     <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
                     <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
@@ -5363,7 +5503,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const activity = typeof act === 'number' ? formatHoursMinutes(act) : '-';
                 const lastOnlineCsv = formatMemberLastOnlineDisplay(member);
                 
-                csvContent += `"${member.name} [${id}]",${member.level},"${displayEstimatedStat}",${fairFightScore},${activity},"${String(lastOnlineCsv).replace(/"/g, '""')}","${lastUpdatedDate}"\r\n`;
+                csvContent += `${window.toolsCsvMemberCell({ name: member.name, id })},${member.level},"${displayEstimatedStat}",${fairFightScore},${activity},"${String(lastOnlineCsv).replace(/"/g, '""')}","${lastUpdatedDate}"\r\n`;
             });
             
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -5958,11 +6098,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             </th>
                         </tr>
                         <tr>
-                            <th data-column="member1" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="member1" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                             <th data-column="level1" style="min-width: 60px; cursor: pointer; text-align: left; padding: 8px 6px;">Level <span class="sort-indicator"></span></th>
                             <th data-column="stats1" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Estimated Stats <span class="sort-indicator"></span></th>
                             <th data-column="activity1" style="min-width: 60px; cursor: pointer; text-align: left; border-right: 2px solid var(--accent-color); padding: 8px 6px; white-space: normal; line-height: 1.2;">Activity<br>(Hours) <span class="sort-indicator">↓</span></th>
-                            <th data-column="member2" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="member2" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                             <th data-column="level2" style="min-width: 60px; cursor: pointer; text-align: left; padding: 8px 6px;">Level <span class="sort-indicator"></span></th>
                             <th data-column="stats2" style="min-width: 120px; cursor: pointer; text-align: left; padding: 8px 6px;">Estimated Stats <span class="sort-indicator"></span></th>
                             <th data-column="activity2" style="min-width: 60px; cursor: pointer; text-align: left; padding: 8px 6px; white-space: normal; line-height: 1.2;">Activity<br>(Hours) <span class="sort-indicator">↓</span></th>
@@ -5995,13 +6135,13 @@ document.addEventListener('DOMContentLoaded', () => {
             tableHtml += `
                 <tr>
                     <td data-column="member1" data-value="${currentName ? currentName.toLowerCase() : ''}">
-                        ${currentPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${currentPlayerID}" target="_blank" style="color: #FFD700; text-decoration: none;">${currentName}</a>` : '-'}
+                        ${currentPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${currentPlayerID}" target="_blank" style="color: #FFD700; text-decoration: none;"${window.toolsMemberLinkAttrs(currentName, currentPlayerID)}>${window.toolsFormatMemberDisplayLabel({ name: currentName, id: currentPlayerID }, window.toolsGetShowMemberIdInBrackets())}</a>` : '-'}
                     </td>
                     <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}">${currentLevel || '-'}</td>
                     <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}">${displayCurrentEstimatedStat}</td>
                     <td data-column="activity1" data-value="${typeof currentActivity === 'number' ? currentActivity : -1e9}" style="border-right: 2px solid var(--accent-color); padding-right: 10px;">${typeof currentActivity === 'number' ? formatHoursMinutes(currentActivity) : '-'}</td>
                     <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}">
-                        ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
+                        ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;"${window.toolsMemberLinkAttrs(ownName, ownPlayerID)}>${window.toolsFormatMemberDisplayLabel({ name: ownName, id: ownPlayerID }, window.toolsGetShowMemberIdInBrackets())}</a>` : '-'}
                     </td>
                     <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}">${ownLevel || '-'}</td>
                     <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}">${displayOwnEstimatedStat}</td>
@@ -6290,13 +6430,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td data-column="member1" data-value="${currentName ? currentName.toLowerCase() : ''}" style="padding: 8px 6px;">
-                        ${currentPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${currentPlayerID}" target="_blank" style="color: #FFD700; text-decoration: none;">${currentName}</a>` : '-'}
+                        ${currentPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${currentPlayerID}" target="_blank" style="color: #FFD700; text-decoration: none;"${window.toolsMemberLinkAttrs(currentName, currentPlayerID)}>${window.toolsFormatMemberDisplayLabel({ name: currentName, id: currentPlayerID }, window.toolsGetShowMemberIdInBrackets())}</a>` : '-'}
                     </td>
                     <td data-column="level1" data-value="${currentLevel === 'Unknown' || !currentLevel ? -1 : currentLevel}" style="padding: 8px 6px;">${currentLevel || '-'}</td>
                     <td data-column="stats1" data-value="${currentEstimatedStat === 'N/A' || !currentEstimatedStat ? -1 : currentEstimatedStat}" style="padding: 8px 6px;">${displayCurrentEstimatedStat}</td>
                     <td data-column="activity1" data-value="${typeof currentActivity === 'number' ? currentActivity : -1e9}" style="border-right: 2px solid var(--accent-color); padding: 8px 6px;">${typeof currentActivity === 'number' ? formatHoursMinutes(currentActivity) : '-'}</td>
                     <td data-column="member2" data-value="${ownName ? ownName.toLowerCase() : ''}" style="padding: 8px 6px;">
-                        ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;">${ownName}</a>` : '-'}
+                        ${ownPlayerID ? `<a href="https://www.torn.com/profiles.php?XID=${ownPlayerID}" target="_blank" style="color: #9C27B0; text-decoration: none;"${window.toolsMemberLinkAttrs(ownName, ownPlayerID)}>${window.toolsFormatMemberDisplayLabel({ name: ownName, id: ownPlayerID }, window.toolsGetShowMemberIdInBrackets())}</a>` : '-'}
                     </td>
                     <td data-column="level2" data-value="${ownLevel === 'Unknown' || !ownLevel ? -1 : ownLevel}" style="padding: 8px 6px;">${ownLevel || '-'}</td>
                     <td data-column="stats2" data-value="${ownEstimatedStat === 'N/A' || !ownEstimatedStat ? -1 : ownEstimatedStat}" style="padding: 8px 6px;">${displayOwnEstimatedStat}</td>
@@ -6926,7 +7066,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <table id="detailedStatsTable" style="min-width: 900px;">
                     <thead>
                         <tr>
-                            <th data-column="member" style="min-width: 220px; cursor: pointer; text-align: left;">Member <span class="sort-indicator"></span></th>
+                            <th data-column="member" style="min-width: 220px; cursor: pointer; text-align: left;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                             <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left;">Level <span class="sort-indicator"></span></th>
                             <th data-column="estimatedStats" style="min-width: 140px; cursor: pointer; text-align: left;">Estimated Stats <span class="sort-indicator">↓</span></th>
                             <th data-column="warHits" style="min-width: 110px; cursor: pointer; text-align: left;">War Hits <span class="sort-indicator"></span></th>
@@ -6946,7 +7086,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             tableHtml += `
                 <tr>
-                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${stats.memberID}" target="_blank" style="color: #FFD700; text-decoration: none;">${stats.name} [${stats.memberID}]</a></td>
+                    <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${stats.memberID}" target="_blank" style="color: #FFD700; text-decoration: none;"${window.toolsMemberLinkAttrs(stats.name, stats.memberID)}>${window.toolsFormatMemberDisplayLabel({ name: stats.name, id: stats.memberID }, window.toolsGetShowMemberIdInBrackets())}</a></td>
                     <td data-column="level" data-value="${stats.level === 'Unknown' ? -1 : stats.level}">${stats.level}</td>
                     <td data-column="estimatedStats" data-value="${stats.estimatedStats === 'N/A' ? -1 : stats.estimatedStats}">${displayEstimatedStat}</td>
                     <td data-column="warHits" data-value="${stats.warHits}">${stats.warHits.toLocaleString()}</td>

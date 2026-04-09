@@ -2095,6 +2095,29 @@ nav a:hover::after {
     color: #e8e0c8;
 }
 
+/* VIP program modal: scroll area + footer (width set after .app-modal — base .app-modal max-width: 420px would otherwise win) */
+.app-modal-vip-program .app-modal-vip-program__header {
+    flex-shrink: 0;
+    background: var(--secondary-color, #1e1e1e);
+}
+.app-modal-vip-program .vip-info-modal-body--scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+}
+.app-modal-vip-program .app-modal-vip-program__footer {
+    flex-shrink: 0;
+    padding: 12px 16px 16px;
+    border-top: 1px solid var(--border-color, #444);
+    background: var(--secondary-color, #1e1e1e);
+}
+.app-modal-vip-program .app-modal-vip-program__footer .app-modal-actions {
+    margin-top: 0;
+}
+
 /* Page footer styles */
 .page-footer {
     background-color: var(--secondary-color);
@@ -3641,6 +3664,19 @@ th small {
     max-width: 420px;
     width: 100%;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+/* VIP info dialog: must follow .app-modal so max-width beats 420px (element has both classes) */
+.app-modal.app-modal-vip-program {
+    max-width: min(100%, 640px);
+    max-height: min(90vh, 900px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+@media (min-width: 900px) {
+    .app-modal.app-modal-vip-program {
+        max-width: min(calc(100vw - 48px), 960px);
+    }
 }
 .app-modal-header {
     display: flex;

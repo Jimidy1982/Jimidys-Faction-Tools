@@ -5,6 +5,11 @@
 (function () {
     'use strict';
 
+    var vaultLastByPlayer = null;
+    var vaultLastNameMap = null;
+    var vaultLastWeaponsList = null;
+    var vaultLastArmorList = null;
+
     function getApiKey() {
         return (localStorage.getItem('tornApiKey') || '').trim().replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
     }
@@ -299,6 +304,8 @@
     function renderByPlayer(playerStats, nameMap) {
         const panel = document.getElementById('vault-checker-panel-by-player');
         if (!panel) return;
+        vaultLastByPlayer = playerStats;
+        vaultLastNameMap = nameMap;
         const entries = Object.entries(playerStats).sort((a, b) => {
             const aFlag = a[1].flagReason ? 1 : 0;
             const bFlag = b[1].flagReason ? 1 : 0;
@@ -324,8 +331,9 @@
             });
             const armorStr = armorSpans.length ? armorSpans.join(' ') : '—';
             const flagCell = p.flagReason ? `<span style="color: #f44;">⚠️ ${escapeHtml(p.flagReason)}</span>` : '—';
+            const memLabel = window.toolsFormatMemberDisplayLabel({ name: displayName, id: playerId }, window.toolsGetShowMemberIdInBrackets());
             return `<tr class="${p.flagReason ? 'vault-checker-flagged-row' : ''}">
-                <td><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(playerId)}" target="_blank" rel="noopener" style="color: var(--accent-color);">${escapeHtml(displayName)}</a></td>
+                <td><a href="https://www.torn.com/profiles.php?XID=${escapeHtml(playerId)}" target="_blank" rel="noopener" style="color: var(--accent-color);"${window.toolsMemberLinkAttrs(displayName, playerId)}>${escapeHtml(memLabel)}</a></td>
                 <td class="vault-cell-chips">${weaponStr}</td>
                 <td class="vault-cell-chips">${armorStr}</td>
                 <td>${flagCell}</td>
@@ -351,7 +359,7 @@
             <table class="vault-checker-table">
                 <thead>
                     <tr>
-                        <th>Player</th>
+                        <th>${window.toolsMemberColumnHeaderWrap('<span>Player</span>', { align: 'flex-start' })}</th>
                         <th>Weapons</th>
                         <th>Armour</th>
                         <th>Flagged</th>
@@ -373,7 +381,13 @@
             let loanedSummary = Object.entries(byPlayer)
                 .map(([pid, n]) => {
                     const displayName = (nameMap && nameMap[pid]) ? nameMap[pid] : pid;
-                    return n > 1 ? `<a href="https://www.torn.com/profiles.php?XID=${escapeHtml(pid)}" target="_blank" rel="noopener">${escapeHtml(displayName)}</a> (×${n})` : `<a href="https://www.torn.com/profiles.php?XID=${escapeHtml(pid)}" target="_blank" rel="noopener">${escapeHtml(displayName)}</a>`;
+                    const memLabel = window.toolsFormatMemberDisplayLabel(
+                        { name: displayName, id: pid },
+                        window.toolsGetShowMemberIdInBrackets()
+                    );
+                    const link =
+                        `<a href="https://www.torn.com/profiles.php?XID=${escapeHtml(pid)}" target="_blank" rel="noopener"${window.toolsMemberLinkAttrs(displayName, pid)}>${escapeHtml(memLabel)}</a>`;
+                    return n > 1 ? `${link} (×${n})` : link;
                 })
                 .join(', ');
             if (unknown > 0) {
@@ -400,7 +414,7 @@
                         <th>Quantity</th>
                         <th>Available</th>
                         <th>Loaned</th>
-                        <th>Loaned to</th>
+                        <th>${window.toolsMemberColumnHeaderWrap('<span>Loaned to</span>', { align: 'flex-start' })}</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -452,6 +466,9 @@
 
             const playerStats = buildPlayerStats(weaponsList, armorList);
 
+            vaultLastWeaponsList = weaponsList;
+            vaultLastArmorList = armorList;
+
             renderByPlayer(playerStats, nameMap);
             const panelWeapon = document.getElementById('vault-checker-panel-by-weapon');
             const panelArmour = document.getElementById('vault-checker-panel-by-armour');
@@ -487,4 +504,19 @@
     }
 
     window.initVaultChecker = initVaultChecker;
+
+    if (!window._vaultToolsMemberIdListener) {
+        window._vaultToolsMemberIdListener = true;
+        window.addEventListener('toolsMemberIdDisplayChanged', () => {
+            if (vaultLastByPlayer) renderByPlayer(vaultLastByPlayer, vaultLastNameMap);
+            const panelWeapon = document.getElementById('vault-checker-panel-by-weapon');
+            const panelArmour = document.getElementById('vault-checker-panel-by-armour');
+            if (vaultLastWeaponsList && panelWeapon) {
+                panelWeapon.innerHTML = renderItemsTable(vaultLastWeaponsList, vaultLastNameMap, true);
+            }
+            if (vaultLastArmorList && panelArmour) {
+                panelArmour.innerHTML = renderItemsTable(vaultLastArmorList, vaultLastNameMap, false);
+            }
+        });
+    }
 })();

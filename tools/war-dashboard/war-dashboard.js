@@ -1213,8 +1213,9 @@
             const locationColor = getLocationStateColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
+            const memLabelOur = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
             return `<tr>
-                <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;">${escapeHtml(m.name || id)}</a></td>
+                <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelOur)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
@@ -2477,8 +2478,9 @@
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             const attackUrl = `https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
             const noteValue = escapeHtml(getNote(id));
+            const memLabelEnemy = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
             return `<tr>
-                <td><a href="${attackUrl}" target="_blank" rel="noopener" title="Attack">🎯</a> <a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;">${escapeHtml(m.name || id)}</a></td>
+                <td><a href="${attackUrl}" target="_blank" rel="noopener" title="Attack">🎯</a> <a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelEnemy)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
@@ -3401,9 +3403,10 @@
     }
 
     function renderActivityHourModalBody(tbody, rows) {
-        tbody.innerHTML = rows.map(row =>
-            '<tr><td><a href="https://www.torn.com/profiles.php?XID=' + row.id + '" target="_blank" rel="noopener" style="color: #FFD700;">' + escapeHtml(row.name) + ' [' + escapeHtml(row.id) + ']</a></td><td>' + escapeHtml(String(row.statsDisplay)) + '</td><td>' + row.minutesActive + ' min</td></tr>'
-        ).join('');
+        tbody.innerHTML = rows.map(function (row) {
+            const lab = window.toolsFormatMemberDisplayLabel({ name: row.name, id: row.id }, window.toolsGetShowMemberIdInBrackets());
+            return '<tr><td><a href="https://www.torn.com/profiles.php?XID=' + escapeHtml(row.id) + '" target="_blank" rel="noopener" style="color: #FFD700;"' + window.toolsMemberLinkAttrs(row.name, row.id) + '>' + escapeHtml(lab) + '</a></td><td>' + escapeHtml(String(row.statsDisplay)) + '</td><td>' + row.minutesActive + ' min</td></tr>';
+        }).join('');
     }
 
     function updateActivityHourModalSortHeaders(overlay) {
@@ -3599,8 +3602,9 @@
             const activeBetween = formatPlayerPeakHoursFromByHour(byHourCounts, id);
             const count = sampleCounts[id] || 0;
             const hoursActive = count > 0 ? formatHoursMinutes(count * sampleHours) : '—';
+            const memLabelAct = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
             return `<tr>
-                <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;">${escapeHtml(m.name || id)}</a></td>
+                <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelAct)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td>${bsText}</td>
                 <td>${hoursActive}</td>
@@ -3681,7 +3685,7 @@
                         <h3 style="color: var(--accent-color); font-size: 14px; margin: 0 0 8px 0;">Players and active times (TCT)</h3>
                         <div class="table-scroll-wrapper" style="overflow-x: auto;">
                             <table id="war-dashboard-activity-tracker-table-${escapeHtml(fid)}" class="war-dashboard-table war-dashboard-activity-tracker-sortable-table">
-                                <thead><tr><th class="war-dashboard-activity-tracker-sortable" data-column="member" scope="col">Member<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="level" scope="col">Level<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="stats" scope="col">Est. stats<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="hoursActive" scope="col">Hours active (<span class="war-dashboard-activity-hours-tracked" data-faction-id="${escapeHtml(fid)}">—</span> tracked)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="activeBetween" scope="col">Peak hours (TCT, top 3)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th></tr></thead>
+                                <thead><tr><th class="war-dashboard-activity-tracker-sortable" data-column="member" scope="col">${window.toolsMemberColumnHeaderWrap('<span>Member<span class="war-dashboard-activity-tracker-sort-arrow"></span></span>', { align: 'flex-start' })}</th><th class="war-dashboard-activity-tracker-sortable" data-column="level" scope="col">Level<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="stats" scope="col">Est. stats<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="hoursActive" scope="col">Hours active (<span class="war-dashboard-activity-hours-tracked" data-faction-id="${escapeHtml(fid)}">—</span> tracked)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="activeBetween" scope="col">Peak hours (TCT, top 3)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th></tr></thead>
                                 <tbody></tbody>
                             </table>
                         </div>
@@ -3965,8 +3969,21 @@
         }
     }
 
+    function warDashboardInjectMemberColumnHeaders() {
+        ['war-dashboard-enemy-table', 'war-dashboard-our-table'].forEach(function (tid) {
+            const th = document.querySelector('#' + tid + ' thead th[data-column="member"]');
+            if (!th || th.getAttribute('data-tools-member-header') === '1') return;
+            th.setAttribute('data-tools-member-header', '1');
+            const sortEl = th.querySelector('.war-dashboard-sort');
+            const sortHtml = sortEl ? sortEl.outerHTML : '<span class="war-dashboard-sort"></span>';
+            th.innerHTML = window.toolsMemberColumnHeaderWrap('<span>Member ' + sortHtml + '</span>', { align: 'flex-start' });
+        });
+    }
+
     function initWarDashboard() {
         if (window.logToolUsage) window.logToolUsage('war-dashboard');
+
+        warDashboardInjectMemberColumnHeaders();
 
         loadSettings();
         Promise.all(getActivityConfig().tracked.map(function (t) {
@@ -4295,4 +4312,17 @@
     }
 
     window.initWarDashboard = initWarDashboard;
+
+    if (!window._warDashToolsMemberIdListener) {
+        window._warDashToolsMemberIdListener = true;
+        window.addEventListener('toolsMemberIdDisplayChanged', function () {
+            if (lastOurMembers && lastOurMembers.length) renderOurTeam(lastOurMembers, lastOurFF, lastOurBS, null);
+            if (lastEnemyMembers && lastEnemyMembers.length) renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
+            try {
+                getActivityConfig().tracked.forEach(function (t) {
+                    renderActivityTrackerTable(t.factionId);
+                });
+            } catch (e) { /* ignore */ }
+        });
+    }
 })();
