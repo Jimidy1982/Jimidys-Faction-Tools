@@ -5361,3 +5361,27 @@ button.consumption-war-preset-btn:disabled {
     cursor: pointer;
     vertical-align: middle;
 }
+
+/* Faction Battle Stats — comparison graph Activity | Stats (brand gold, not default link blue) */
+button.comparison-graph-mode-btn {
+    padding: 8px 14px;
+    border-radius: 5px;
+    cursor: pointer;
+    font: inherit;
+}
+button.comparison-graph-mode-btn.comparison-graph-mode-btn--active {
+    background-color: var(--accent-color, #ffd700);
+    color: #333;
+    border: none;
+    font-weight: bold;
+}
+button.comparison-graph-mode-btn.comparison-graph-mode-btn--inactive {
+    background-color: transparent;
+    color: #bbb;
+    border: 1px solid rgba(255, 215, 0, 0.35);
+    font-weight: normal;
+}
+button.comparison-graph-mode-btn:focus-visible {
+    outline: 2px solid var(--accent-color, #ffd700);
+    outline-offset: 2px;
+}

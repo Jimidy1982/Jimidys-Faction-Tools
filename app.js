@@ -366,6 +366,9 @@ document.addEventListener('DOMContentLoaded', () => {
      * @param {boolean} options.useCache - Whether to use caching (default: false). If true, requests should have `cacheKey` property.
      * @param {Function} options.getCache - Optional custom cache getter function: (cacheKey) => cachedData
      * @param {Function} options.setCache - Optional custom cache setter function: (cacheKey, data) => void
+     * @param {number} options.progressSegmentStart - Fraction 0–1 where this batch’s progress bar starts (default 0).
+     * @param {number} options.progressSegmentWidth - Fraction 0–1 for this batch’s span on the bar (default 1). Use 0.5 + 0.5 for two-phase timeplayed (now → past).
+     * @param {string} options.progressDetailsPrefix - Prepended to “Processing request i/n …” (e.g. “Today: ”).
      * @returns {Promise<Array>} Array of results in the same order as requests
      */
     window.batchApiCallsWithRateLimit = async (requests, options = {}) => {
@@ -381,7 +384,10 @@ document.addEventListener('DOMContentLoaded', () => {
             retryDelay = 30000,
             useCache = false,
             getCache = null,
-            setCache = null
+            setCache = null,
+            progressSegmentStart = 0,
+            progressSegmentWidth = 1,
+            progressDetailsPrefix = ''
         } = options;
         
         // Use provided cache functions or default to global cache
@@ -421,16 +427,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const url = typeof request === 'string' ? request : request.url;
             const requestId = request.id || request.playerId || originalIndex;
             
-            // Update progress (based on total requests, not just uncached)
-            const progress = ((originalIndex + 1) / requests.length) * 100;
+            // Update progress (optionally a segment of the bar, e.g. first half = “now” timeplayed, second half = “past”)
+            const segStart = Math.max(0, Math.min(1, Number(progressSegmentStart) || 0));
+            const segW = Math.max(0, Math.min(1, Number(progressSegmentWidth) || 1));
+            const fracWithin = requests.length > 0 ? (originalIndex + 1) / requests.length : 1;
+            const progress = (segStart + fracWithin * segW) * 100;
             if (progressPercentage) {
-                progressPercentage.textContent = `${Math.round(progress)}%`;
+                progressPercentage.textContent = `${Math.round(Math.min(100, progress))}%`;
             }
             if (progressFill) {
-                progressFill.style.width = `${progress}%`;
+                progressFill.style.width = `${Math.min(100, progress)}%`;
             }
             if (progressDetails) {
-                progressDetails.textContent = `Processing request ${originalIndex + 1}/${requests.length} (${successfulCount + cachedResults.length} successful)`;
+                const pre = progressDetailsPrefix ? String(progressDetailsPrefix) : '';
+                progressDetails.textContent = `${pre}Request ${originalIndex + 1}/${requests.length} (${successfulCount + cachedResults.length} ok)`;
             }
             if (onProgress) {
                 onProgress(originalIndex + 1, requests.length, successfulCount + cachedResults.length);
@@ -3999,6 +4009,98 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- BATTLE STATS TOOL ---
+    /**
+     * Enemy faction in your ongoing ranked war, else the next upcoming war (aligned with War Dashboard / War Payout ranked wars).
+     * @returns {Promise<{ enemyFactionId: string, enemyName: string, kind: 'ongoing'|'upcoming' }|null>}
+     */
+    async function getCurrentWarEnemyFactionForBattleStats(apiKey, ourFactionId) {
+        const ourId = String(ourFactionId == null ? '' : ourFactionId).trim();
+        const key = (apiKey || '').trim();
+        if (!ourId || !key) return null;
+        const url = `https://api.torn.com/v2/faction/${encodeURIComponent(ourId)}/rankedwars?key=${encodeURIComponent(key)}`;
+        const tornUrl = typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
+        const response = await fetch(tornUrl);
+        const data = await response.json();
+        if (data.error) {
+            const msg = typeof data.error === 'string' ? data.error : data.error?.error || 'API error';
+            throw new Error(msg);
+        }
+        const raw = data.rankedwars || [];
+        const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : [];
+        const now = Math.floor(Date.now() / 1000);
+
+        const ongoing = list.find((w) => w.start <= now && (!w.end || w.end >= now));
+        if (ongoing && ongoing.factions && ongoing.factions.length >= 2) {
+            const enemy = ongoing.factions.find((f) => String(f.id) !== ourId);
+            if (enemy) {
+                return {
+                    enemyFactionId: String(enemy.id),
+                    enemyName: enemy.name || `Faction ${enemy.id}`,
+                    kind: 'ongoing'
+                };
+            }
+        }
+
+        const upcomingCandidates = list.filter((w) => w.start > now && w.factions && w.factions.length >= 2);
+        upcomingCandidates.sort((a, b) => a.start - b.start);
+        const upcoming = upcomingCandidates[0];
+        if (upcoming) {
+            const enemy = upcoming.factions.find((f) => String(f.id) !== ourId);
+            if (enemy) {
+                return {
+                    enemyFactionId: String(enemy.id),
+                    enemyName: enemy.name || `Faction ${enemy.id}`,
+                    kind: 'upcoming'
+                };
+            }
+        }
+        return null;
+    }
+
+    /** Prefetched current ranked-war enemy; skips a second rankedwars API call when pressing "Current war". */
+    let battleStatsCurrentWarCache = null;
+
+    const BATTLE_STATS_CURRENT_WAR_BTN_DEFAULT_TITLE =
+        'Uses your faction from the API key: fills the enemy faction ID for your ongoing ranked war, or the next upcoming war if none is live (same idea as War Payout ranked war list).';
+
+    /** One getUserData + optional rankedwars: updates My Faction + Current war labels (call on load and after My Faction). */
+    async function syncBattleStatsFactionButtons(apiKey) {
+        const myFactionBtn = document.getElementById('myFactionBtn');
+        const currentWarBtn = document.getElementById('currentWarFactionBtn');
+        if (!apiKey || (!myFactionBtn && !currentWarBtn)) return;
+        let ud;
+        try {
+            ud = await getUserData(apiKey);
+        } catch (e) {
+            console.warn('Battle stats: getUserData (faction buttons)', e);
+            return;
+        }
+        if (myFactionBtn && ud && ud.factionId != null && ud.factionId !== '') {
+            myFactionBtn.textContent = ud.factionName ? `My Faction [${ud.factionName}]` : 'My Faction';
+        }
+        battleStatsCurrentWarCache = null;
+        if (!currentWarBtn || !ud || ud.factionId == null || ud.factionId === '') return;
+        try {
+            const info = await getCurrentWarEnemyFactionForBattleStats(apiKey, ud.factionId);
+            if (!info) {
+                currentWarBtn.textContent = 'Current war';
+                currentWarBtn.setAttribute('title', BATTLE_STATS_CURRENT_WAR_BTN_DEFAULT_TITLE);
+                return;
+            }
+            battleStatsCurrentWarCache = info;
+            currentWarBtn.textContent = `Current war [${info.enemyName}]`;
+            const kindWord = info.kind === 'ongoing' ? 'Ongoing ranked war' : 'Next ranked war';
+            currentWarBtn.setAttribute(
+                'title',
+                `${kindWord} vs ${info.enemyName} (faction ID ${info.enemyFactionId}).`
+            );
+        } catch (e) {
+            console.warn('Battle stats: current war prefetch', e);
+            currentWarBtn.textContent = 'Current war';
+            currentWarBtn.setAttribute('title', BATTLE_STATS_CURRENT_WAR_BTN_DEFAULT_TITLE);
+        }
+    }
+
     function initBattleStats() {
         // Log tool usage
         if (window.logToolUsage) {
@@ -4028,15 +4130,68 @@ document.addEventListener('DOMContentLoaded', () => {
                 const label = userData.factionName ? `My Faction [${userData.factionName}]` : 'My Faction';
                 myFactionBtn.textContent = label;
                 handleBattleStatsFetch();
+                void syncBattleStatsFactionButtons(apiKey);
             });
             const apiKey = localStorage.getItem('tornApiKey');
             if (apiKey) {
-                getUserData(apiKey).then(ud => {
-                    if (ud && ud.factionId != null && ud.factionId !== '' && myFactionBtn) {
-                        myFactionBtn.textContent = ud.factionName ? `My Faction [${ud.factionName}]` : 'My Faction';
-                    }
-                });
+                void syncBattleStatsFactionButtons(apiKey);
             }
+        }
+
+        const currentWarFactionBtn = document.getElementById('currentWarFactionBtn');
+        if (currentWarFactionBtn && factionIdInput) {
+            currentWarFactionBtn.addEventListener('click', async () => {
+                const apiKey = localStorage.getItem('tornApiKey');
+                if (!apiKey) {
+                    alert('Please enter your API key in the sidebar first.');
+                    return;
+                }
+                if (battleStatsCurrentWarCache) {
+                    const info = battleStatsCurrentWarCache;
+                    factionIdInput.value = info.enemyFactionId;
+                    const kindWord = info.kind === 'ongoing' ? 'Ongoing ranked war' : 'Next ranked war';
+                    currentWarFactionBtn.setAttribute(
+                        'title',
+                        `${kindWord} vs ${info.enemyName} (faction ID ${info.enemyFactionId}).`
+                    );
+                    currentWarFactionBtn.textContent = `Current war [${info.enemyName}]`;
+                    handleBattleStatsFetch();
+                    return;
+                }
+                const prevTitle = currentWarFactionBtn.getAttribute('title') || BATTLE_STATS_CURRENT_WAR_BTN_DEFAULT_TITLE;
+                const prevText = currentWarFactionBtn.textContent;
+                currentWarFactionBtn.disabled = true;
+                currentWarFactionBtn.textContent = '…';
+                try {
+                    const userData = await getUserData(apiKey);
+                    if (!userData || userData.factionId == null || userData.factionId === '') {
+                        alert('Could not load your faction (you may not be in a faction).');
+                        return;
+                    }
+                    const info = await getCurrentWarEnemyFactionForBattleStats(apiKey, userData.factionId);
+                    if (!info) {
+                        alert('No ongoing or upcoming ranked war found for your faction.');
+                        return;
+                    }
+                    battleStatsCurrentWarCache = info;
+                    factionIdInput.value = info.enemyFactionId;
+                    const kindWord = info.kind === 'ongoing' ? 'Ongoing ranked war' : 'Next ranked war';
+                    currentWarFactionBtn.setAttribute(
+                        'title',
+                        `${kindWord} vs ${info.enemyName} (faction ID ${info.enemyFactionId}).`
+                    );
+                    currentWarFactionBtn.textContent = `Current war [${info.enemyName}]`;
+                    handleBattleStatsFetch();
+                } catch (e) {
+                    alert(e && e.message ? e.message : String(e));
+                    currentWarFactionBtn.setAttribute('title', prevTitle);
+                } finally {
+                    currentWarFactionBtn.disabled = false;
+                    if (currentWarFactionBtn.textContent === '…') {
+                        currentWarFactionBtn.textContent = prevText;
+                    }
+                }
+            });
         }
     }
 
@@ -4051,10 +4206,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const BATTLE_STATS_ACTIVITY_PAST_PREFIX = 'battle_stats_activity_past_';
     const BATTLE_STATS_ACTIVITY_NOW_PREFIX = 'battle_stats_activity_now_';
     const BATTLE_STATS_MAIN_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
-    const BATTLE_STATS_ACTIVITY_PAST_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
-    const BATTLE_STATS_ACTIVITY_NOW_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
-    /** Extra passes after the main batch: re-fetch only snapshots still missing (errors / parse fails / rate limits). */
-    const BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS = 2;
+    /** Past + “today” timeplayed snapshot blobs: max age in localStorage (both use the same cap). */
+    const BATTLE_STATS_ACTIVITY_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    const BATTLE_STATS_ACTIVITY_PAST_TTL_MS = BATTLE_STATS_ACTIVITY_MAX_TTL_MS;
+    const BATTLE_STATS_ACTIVITY_NOW_TTL_MS = BATTLE_STATS_ACTIVITY_MAX_TTL_MS;
+    /** Extra passes after the main timeplayed batch: re-fetch only snapshots still missing (errors / parse fails / rate limits). One pass is enough for most flakiness; avoids a third full-looking sweep. */
+    const BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS = 1;
     const BATTLE_STATS_ACTIVITY_RETRY_BASE_DELAY_MS = 2000;
 
     function normalizeBattleStatsFactionId(factionID) {
@@ -4089,6 +4246,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isNaN(n)) return n;
         }
         return null;
+    }
+
+    /** Numeric FF Scouter / bs_estimate for sorting and comparison graph (NaN if missing). */
+    function getEstimatedBattleStatNumber(estimates, memberID) {
+        if (!estimates || memberID == null || memberID === '') return NaN;
+        const id = String(memberID);
+        const raw = estimates[id] ?? estimates[Number(id)];
+        if (raw == null || raw === '' || raw === 'N/A') return NaN;
+        if (typeof raw === 'number' && !isNaN(raw)) return raw;
+        const n = parseFloat(String(raw).replace(/,/g, ''));
+        return typeof n === 'number' && !isNaN(n) ? n : NaN;
     }
 
     function hasActivityTimeplayedSnapshot(store, playerId, timestamp) {
@@ -4229,7 +4397,7 @@ document.addEventListener('DOMContentLoaded', () => {
      * Faction v2 /members often omits signup; fetch v1 profile for members missing accountStartTimestamp
      * so effective past = account creation (players newer than the activity window).
      */
-    async function enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, textProgress = null) {
+    async function enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, _textProgressIgnored = null) {
         const need = memberIDs
             .map(id => String(id))
             .filter(id => {
@@ -4237,14 +4405,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 return m && (m.accountStartTimestamp == null || m.accountStartTimestamp === '' || isNaN(Number(m.accountStartTimestamp)));
             });
         if (need.length === 0) return;
-        // Text-only progress (call counts) — do NOT pass progressPercentage / progressFill so the bar only fills once (activity phase).
+        // Profile pulls only (no progress bar): avoids an extra “N players” pass on the same bar as timeplayed.
         const requests = need.map(id => ({
             playerId: id,
             url: `https://api.torn.com/user/${encodeURIComponent(id)}?selections=profile&key=${encodeURIComponent(apiKey)}`
         }));
         await window.batchApiCallsWithRateLimit(requests, {
-            progressMessage: textProgress?.progressMessage,
-            progressDetails: textProgress?.progressDetails,
             onSuccess: (data, request) => {
                 const id = String(request.playerId);
                 const ts = extractAccountStartFromUserProfilePayload(data);
@@ -5016,6 +5182,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Helper function for rate limiting delays
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    /** When a timeplayed phase has zero API calls (cached), still advance the bar to the end of that half (0–50% / 50–100%). */
+    function advanceBattleStatsActivityProgressSegmentEnd(progressPercentage, progressFill, segStart, segWidth) {
+        const s = Math.max(0, Math.min(1, Number(segStart) || 0));
+        const w = Math.max(0, Math.min(1, Number(segWidth) || 0));
+        const pct = Math.min(100, Math.round((s + w) * 100));
+        if (progressPercentage) progressPercentage.textContent = `${pct}%`;
+        if (progressFill) progressFill.style.width = `${pct}%`;
+    }
     
     // Function to fetch and compare activity data
     const handleActivityComparison = async (memberIDs, membersObject, apiKey, factionName, factionID, periodConfigIn) => {
@@ -5055,11 +5230,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         try {
-            // v2 faction /members often omits signup — resolve so "younger than period" uses real account start
-            await enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, {
-                progressMessage,
-                progressDetails
-            });
+            // v2 faction /members often omits signup — resolve in background (no main progress bar; not counted as timeplayed pulls)
+            if (progressDetails) {
+                progressDetails.textContent = 'Preparing (optional profile lookups for join dates)…';
+            }
+            await enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, null);
 
             // Calculate timestamps based on selected period (exact days for custom)
             const periodDays = periodConfig.periodDays;
@@ -5070,7 +5245,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const pastTimestampDay = Math.floor(pastTimestamp / 86400) * 86400; // same day = same cache key
             const dateKey = new Date().toISOString().split('T')[0]; // YYYY-MM-DD for "now" cache
 
-            // Load from local cache (1 week for past, 1 day for now)
+            // Load from local cache (past + now blobs expire after BATTLE_STATS_ACTIVITY_MAX_TTL_MS)
             const pastCache = getBattleStatsActivityCache(
                 BATTLE_STATS_ACTIVITY_PAST_PREFIX,
                 `${fid}_${cacheKeySegment}_${pastTimestampDay}`,
@@ -5101,21 +5276,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // Only request (playerId, timestamp) pairs we don't have (past uses per-member effective time if account is younger than the period)
-            const activityRequests = [];
-            memberIDs.forEach(memberID => {
+            // Two timeplayed phases only on the bar: “now” → 0–50%, window start → 50–100% (same total work as before, split for UX).
+            const nowRequests = [];
+            const pastRequests = [];
+            memberIDs.forEach((memberID) => {
                 const id = String(memberID);
                 const member = membersObject[id] || membersObject[memberID];
                 const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
                 if (!hasActivityTimeplayedSnapshot(activityData, id, nowTimestamp)) {
-                    activityRequests.push({
+                    nowRequests.push({
                         playerId: id,
                         timestamp: nowTimestamp,
                         url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
                     });
                 }
                 if (!hasActivityTimeplayedSnapshot(activityData, id, pastEff)) {
-                    activityRequests.push({
+                    pastRequests.push({
                         playerId: id,
                         timestamp: pastEff,
                         url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${pastEff}&key=${apiKey}`
@@ -5123,45 +5299,82 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            const activityFetchBatchOptions = {
-                progressMessage,
-                progressDetails,
-                progressPercentage,
-                progressFill,
-                onSuccess: (data, request) => {
-                    const timeplayed = extractTimeplayedFromPersonalstatsResponse(data);
-                    const pid = String(request.playerId);
-                    if (timeplayed === null) {
-                        console.warn(`Activity: could not parse timeplayed for player ${pid} at ts ${request.timestamp}`, data);
-                        return;
-                    }
-                    if (!activityData[pid]) {
-                        activityData[pid] = {};
-                    }
-                    activityData[pid][request.timestamp] = timeplayed;
-                },
-                onError: (error, request) => {
-                    console.error(`Error fetching activity for player ${request.playerId} at timestamp ${request.timestamp}:`, error);
+            const activityOnSuccess = (data, request) => {
+                const timeplayed = extractTimeplayedFromPersonalstatsResponse(data);
+                const pid = String(request.playerId);
+                if (timeplayed === null) {
+                    console.warn(`Activity: could not parse timeplayed for player ${pid} at ts ${request.timestamp}`, data);
+                    return;
                 }
+                if (!activityData[pid]) {
+                    activityData[pid] = {};
+                }
+                activityData[pid][request.timestamp] = timeplayed;
+            };
+            const activityOnError = (error, request) => {
+                console.error(`Error fetching activity for player ${request.playerId} at timestamp ${request.timestamp}:`, error);
             };
 
-            if (activityRequests.length > 0) {
-                if (progressDetails) progressDetails.textContent = activityRequests.length < memberIDs.length * 2
-                    ? `Fetching activity... (${activityRequests.length} of ${memberIDs.length * 2} from API, rest from cache)`
-                    : `Fetching activity data for ${memberIDs.length} members...`;
-                await window.batchApiCallsWithRateLimit(activityRequests, activityFetchBatchOptions);
+            const totalNeeded = nowRequests.length + pastRequests.length;
+            if (progressMessage) progressMessage.textContent = 'Fetching activity (timeplayed)…';
+            if (progressDetails && totalNeeded > 0) {
+                progressDetails.textContent = `Timeplayed: ${totalNeeded} API call(s) from network (${memberIDs.length * 2 - totalNeeded} snapshot(s) from cache). Bar: today 0–50%, then window start 50–100%.`;
+            } else if (progressDetails) {
+                progressDetails.textContent = 'Timeplayed: all snapshots already in cache.';
             }
 
-            // Re-fetch only missing snapshots (failed API calls, parse errors, etc.) — a few extra passes with backoff.
+            if (nowRequests.length > 0) {
+                await window.batchApiCallsWithRateLimit(nowRequests, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    progressSegmentStart: 0,
+                    progressSegmentWidth: 0.5,
+                    progressDetailsPrefix: 'Today (timeplayed): ',
+                    onSuccess: activityOnSuccess,
+                    onError: activityOnError
+                });
+            } else {
+                advanceBattleStatsActivityProgressSegmentEnd(progressPercentage, progressFill, 0, 0.5);
+            }
+
+            if (pastRequests.length > 0) {
+                await window.batchApiCallsWithRateLimit(pastRequests, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    progressSegmentStart: 0.5,
+                    progressSegmentWidth: 0.5,
+                    progressDetailsPrefix: 'Window start (timeplayed): ',
+                    onSuccess: activityOnSuccess,
+                    onError: activityOnError
+                });
+            } else {
+                advanceBattleStatsActivityProgressSegmentEnd(progressPercentage, progressFill, 0.5, 0.5);
+            }
+
+            // Re-fetch only missing snapshots (small tail on the bar so it does not look like a third full pass).
             const totalActivityPasses = 1 + BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS;
             for (let retryRound = 0; retryRound < BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS; retryRound++) {
                 const retryRequests = buildMissingTimeplayedRequests(memberIDs, activityData, nowTimestamp, pastTimestamp, apiKey, membersObject);
                 if (retryRequests.length === 0) break;
                 if (progressDetails) {
-                    progressDetails.textContent = `Retrying ${retryRequests.length} missing snapshot(s) (pass ${retryRound + 2} of ${totalActivityPasses})...`;
+                    progressDetails.textContent = `Retrying ${retryRequests.length} missing snapshot(s) (pass ${retryRound + 2} of ${totalActivityPasses})…`;
                 }
                 await sleep(BATTLE_STATS_ACTIVITY_RETRY_BASE_DELAY_MS + retryRound * 1500);
-                await window.batchApiCallsWithRateLimit(retryRequests, activityFetchBatchOptions);
+                await window.batchApiCallsWithRateLimit(retryRequests, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    progressSegmentStart: 0.92,
+                    progressSegmentWidth: 0.08,
+                    progressDetailsPrefix: 'Retry: ',
+                    onSuccess: activityOnSuccess,
+                    onError: activityOnError
+                });
             }
 
             const stillMissingCount = buildMissingTimeplayedRequests(memberIDs, activityData, nowTimestamp, pastTimestamp, apiKey, membersObject).length;
@@ -5202,7 +5415,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             window.lastActivityFetchTime = Date.now();
 
-            if (activityRequests.length === 0 && progressContainer) {
+            if (totalNeeded === 0 && progressContainer) {
                 if (progressPercentage) progressPercentage.textContent = '100%';
                 if (progressFill) progressFill.style.width = '100%';
                 if (progressDetails) progressDetails.textContent = 'Activity data loaded from cache.';
@@ -5312,7 +5525,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     Check Activity (Loaded)
                 </button>
             </div>
-            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName} - Activity Comparison (${periodConfig.labelTitle})</h2>
+            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">${factionName} - Activity & Stat Comparison (${periodConfig.labelTitle})</h2>
             ${incompleteActivityNotice}
             
             <!-- Activity Graph -->
@@ -5561,6 +5774,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const progressPercentage = document.getElementById('progressPercentage');
         const progressFill = document.getElementById('progressFill');
         const progressDetails = document.getElementById('progressDetails');
+        const resultsContainer = document.getElementById('battle-stats-results');
+        const spinner = document.getElementById('loading-spinner');
+        const loadingTextEl = spinner && spinner.querySelector('.loading-text');
         
         if (!compareBtn || !progressContainer) {
             console.error("Required elements missing for comparison");
@@ -5577,14 +5793,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const cacheKeySegment = periodConfig.cacheKeySegment;
         const periodDays = periodConfig.periodDays;
         
-        // Disable button and show progress
+        // Same UX as Check Activity: spinner for roster + profile prep; progress bar only for timeplayed (0–50% today, 50–100% window).
         compareBtn.disabled = true;
         compareBtn.textContent = 'Fetching Own Faction...';
-        progressContainer.style.display = 'block';
-        if (progressMessage) progressMessage.textContent = 'Fetching your faction data...';
-        if (progressPercentage) progressPercentage.textContent = '0%';
-        if (progressFill) progressFill.style.width = '0%';
-        if (progressDetails) progressDetails.textContent = 'Getting your faction information...';
+        progressContainer.style.display = 'none';
+        if (resultsContainer) resultsContainer.style.display = 'none';
+        if (spinner) {
+            spinner.style.display = 'block';
+            if (loadingTextEl) loadingTextEl.textContent = 'Loading your faction roster';
+        }
         
         try {
             // Get user's faction ID
@@ -5593,14 +5810,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert('Unable to get your faction ID. Please ensure your API key has access to faction information.');
                 compareBtn.disabled = false;
                 compareBtn.textContent = 'Compare to Own Faction';
-                progressContainer.style.display = 'none';
+                if (spinner) spinner.style.display = 'none';
+                if (loadingTextEl) loadingTextEl.textContent = 'Fetching data';
                 return;
             }
             
             const ownFactionId = userData.factionId;
             const ownFactionName = userData.factionName || `Faction ${ownFactionId}`;
             
-            if (progressDetails) progressDetails.textContent = `Fetching members from ${ownFactionName}...`;
+            if (loadingTextEl) loadingTextEl.textContent = `Fetching members — ${ownFactionName}`;
             
             // Fetch own faction members
             const factionMembersUrl = `https://api.torn.com/v2/faction/${ownFactionId}/members?striptags=true&key=${apiKey}`;
@@ -5617,10 +5835,14 @@ document.addEventListener('DOMContentLoaded', () => {
             
             console.log(`Fetched ${ownMemberIDs.length} members from own faction`);
             
-            await enrichBattleStatsMembersAccountStart(ownMemberIDs, ownMembersObject, apiKey, {
-                progressMessage,
-                progressDetails
-            });
+            // Same path as Check Activity after roster: no extra v1 profile pass — v2 /members already fills
+            // accountStartTimestamp where available; go straight to cache + timeplayed (avoids a long 0% stall).
+            if (spinner) spinner.style.display = 'none';
+            progressContainer.style.display = 'block';
+            if (progressMessage) progressMessage.textContent = 'Fetching activity data...';
+            if (progressPercentage) progressPercentage.textContent = '0%';
+            if (progressFill) progressFill.style.width = '0%';
+            if (progressDetails) progressDetails.textContent = 'Preparing…';
             
             // Fetch activity data for own faction (same window + cache key segment as viewed faction)
             const ownFid = normalizeBattleStatsFactionId(ownFactionId);
@@ -5659,20 +5881,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            const ownActivityRequests = [];
-            ownMemberIDs.forEach(memberID => {
+            const ownNowRequests = [];
+            const ownPastRequests = [];
+            ownMemberIDs.forEach((memberID) => {
                 const id = String(memberID);
                 const member = ownMembersObject[id] || ownMembersObject[memberID];
                 const pastEff = getEffectiveActivityPastTimestamp(pastTimestamp, member);
                 if (!hasActivityTimeplayedSnapshot(ownActivityData, id, nowTimestamp)) {
-                    ownActivityRequests.push({
+                    ownNowRequests.push({
                         playerId: id,
                         timestamp: nowTimestamp,
                         url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${nowTimestamp}&key=${apiKey}`
                     });
                 }
                 if (!hasActivityTimeplayedSnapshot(ownActivityData, id, pastEff)) {
-                    ownActivityRequests.push({
+                    ownPastRequests.push({
                         playerId: id,
                         timestamp: pastEff,
                         url: `https://api.torn.com/v2/user/${id}/personalstats?stat=timeplayed&timestamp=${pastEff}&key=${apiKey}`
@@ -5680,35 +5903,60 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            const ownActivityFetchBatchOptions = {
-                progressMessage,
-                progressDetails,
-                progressPercentage,
-                progressFill,
-                onSuccess: (data, request) => {
-                    const timeplayed = extractTimeplayedFromPersonalstatsResponse(data);
-                    const pid = String(request.playerId);
-                    if (timeplayed === null) {
-                        console.warn(`Activity (own faction): could not parse timeplayed for ${pid} at ts ${request.timestamp}`, data);
-                        return;
-                    }
-                    if (!ownActivityData[pid]) {
-                        ownActivityData[pid] = {};
-                    }
-                    ownActivityData[pid][request.timestamp] = timeplayed;
-                },
-                onError: (error, request) => {
-                    console.error(`Error fetching activity for own faction member ${request.playerId}:`, error);
+            const ownOnSuccess = (data, request) => {
+                const timeplayed = extractTimeplayedFromPersonalstatsResponse(data);
+                const pid = String(request.playerId);
+                if (timeplayed === null) {
+                    console.warn(`Activity (own faction): could not parse timeplayed for ${pid} at ts ${request.timestamp}`, data);
+                    return;
                 }
+                if (!ownActivityData[pid]) {
+                    ownActivityData[pid] = {};
+                }
+                ownActivityData[pid][request.timestamp] = timeplayed;
+            };
+            const ownOnError = (error, request) => {
+                console.error(`Error fetching activity for own faction member ${request.playerId}:`, error);
             };
 
-            if (ownActivityRequests.length > 0) {
-                if (progressDetails) progressDetails.textContent = ownActivityRequests.length < ownMemberIDs.length * 2
-                    ? `Fetching activity for your faction... (${ownActivityRequests.length} of ${ownMemberIDs.length * 2} from API, rest from cache)`
-                    : `Fetching activity data for ${ownMemberIDs.length} members...`;
-                await window.batchApiCallsWithRateLimit(ownActivityRequests, ownActivityFetchBatchOptions);
+            const ownTotalNeeded = ownNowRequests.length + ownPastRequests.length;
+            if (progressMessage) progressMessage.textContent = 'Fetching activity (timeplayed)…';
+            if (progressDetails && ownTotalNeeded > 0) {
+                progressDetails.textContent = `Timeplayed: ${ownTotalNeeded} API call(s) from network (${ownMemberIDs.length * 2 - ownTotalNeeded} snapshot(s) from cache). Bar: today 0–50%, then window start 50–100%.`;
             } else if (progressDetails) {
-                progressDetails.textContent = 'Activity data loaded from cache.';
+                progressDetails.textContent = 'Timeplayed: all snapshots already in cache.';
+            }
+
+            if (ownNowRequests.length > 0) {
+                await window.batchApiCallsWithRateLimit(ownNowRequests, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    progressSegmentStart: 0,
+                    progressSegmentWidth: 0.5,
+                    progressDetailsPrefix: 'Today (timeplayed): ',
+                    onSuccess: ownOnSuccess,
+                    onError: ownOnError
+                });
+            } else {
+                advanceBattleStatsActivityProgressSegmentEnd(progressPercentage, progressFill, 0, 0.5);
+            }
+
+            if (ownPastRequests.length > 0) {
+                await window.batchApiCallsWithRateLimit(ownPastRequests, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    progressSegmentStart: 0.5,
+                    progressSegmentWidth: 0.5,
+                    progressDetailsPrefix: 'Window start (timeplayed): ',
+                    onSuccess: ownOnSuccess,
+                    onError: ownOnError
+                });
+            } else {
+                advanceBattleStatsActivityProgressSegmentEnd(progressPercentage, progressFill, 0.5, 0.5);
             }
 
             const totalOwnPasses = 1 + BATTLE_STATS_ACTIVITY_EXTRA_RETRY_ROUNDS;
@@ -5716,10 +5964,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 const retryOwn = buildMissingTimeplayedRequests(ownMemberIDs, ownActivityData, nowTimestamp, pastTimestamp, apiKey, ownMembersObject);
                 if (retryOwn.length === 0) break;
                 if (progressDetails) {
-                    progressDetails.textContent = `Retrying ${retryOwn.length} missing snapshot(s) for your faction (pass ${retryRound + 2} of ${totalOwnPasses})...`;
+                    progressDetails.textContent = `Retrying ${retryOwn.length} missing snapshot(s) (pass ${retryRound + 2} of ${totalOwnPasses})…`;
                 }
                 await sleep(BATTLE_STATS_ACTIVITY_RETRY_BASE_DELAY_MS + retryRound * 1500);
-                await window.batchApiCallsWithRateLimit(retryOwn, ownActivityFetchBatchOptions);
+                await window.batchApiCallsWithRateLimit(retryOwn, {
+                    progressMessage,
+                    progressDetails,
+                    progressPercentage,
+                    progressFill,
+                    progressSegmentStart: 0.92,
+                    progressSegmentWidth: 0.08,
+                    progressDetailsPrefix: 'Retry: ',
+                    onSuccess: ownOnSuccess,
+                    onError: ownOnError
+                });
+            }
+
+            if (ownTotalNeeded === 0) {
+                if (progressPercentage) progressPercentage.textContent = '100%';
+                if (progressFill) progressFill.style.width = '100%';
             }
 
             // Persist to cache for next time
@@ -5783,8 +6046,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 return activityB - activityA;
             });
             
+            progressContainer.style.display = 'none';
+            if (spinner) {
+                spinner.style.display = 'block';
+                if (loadingTextEl) loadingTextEl.textContent = 'Fetching estimated stats (FF Scouter) for your faction';
+            }
+            
             // Fetch FF Scouter data for own faction members to get estimated stats
-            if (progressDetails) progressDetails.textContent = 'Fetching estimated stats for own faction members...';
             const ownFactionMemberIDs = ownSortedMemberIDs.map(id => String(id));
             const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
             console.log(`Fetching FF Scouter data for ${ownFactionMemberIDs.length} own faction members...`);
@@ -5801,6 +6069,11 @@ document.addEventListener('DOMContentLoaded', () => {
             
             console.log('Fetched estimated stats for own faction:', ownBattleStatsEstimates);
             
+            if (spinner) {
+                spinner.style.display = 'none';
+                if (loadingTextEl) loadingTextEl.textContent = 'Fetching data';
+            }
+            
             // Get current activity data
             if (!currentData) {
                 throw new Error('Current activity data not found');
@@ -5809,7 +6082,6 @@ document.addEventListener('DOMContentLoaded', () => {
             // Update graph and table with both datasets
             updateGraphWithComparison(currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, periodConfig, ownBattleStatsEstimates);
             
-            // Hide progress
             progressContainer.style.display = 'none';
             compareBtn.disabled = false;
             compareBtn.textContent = 'Comparison Loaded';
@@ -5821,52 +6093,239 @@ document.addEventListener('DOMContentLoaded', () => {
             compareBtn.disabled = false;
             compareBtn.textContent = 'Compare to Own Faction';
             progressContainer.style.display = 'none';
+            if (spinner) {
+                spinner.style.display = 'none';
+                if (loadingTextEl) loadingTextEl.textContent = 'Fetching data';
+            }
         }
     };
     
+    const syncComparisonGraphModeButtons = () => {
+        const mode = window.comparisonGraphContext?.mode || 'activity';
+        const a = document.getElementById('comparison-graph-mode-activity');
+        const s = document.getElementById('comparison-graph-mode-stats');
+        const cls = 'comparison-graph-mode-btn';
+        const on = `${cls} ${cls}--active`;
+        const off = `${cls} ${cls}--inactive`;
+        if (a && s) {
+            if (mode === 'activity') {
+                a.className = on;
+                s.className = off;
+            } else {
+                s.className = on;
+                a.className = off;
+            }
+        }
+        const sub = document.getElementById('comparison-graph-x-subtitle');
+        if (sub) {
+            sub.textContent = mode === 'stats'
+                ? 'Each faction ranked by estimated stats (highest → lowest); paired by rank.'
+                : 'Each faction ranked by activity (most → least); paired by rank.';
+        }
+    };
+
+    /** Line chart for Compare to Own Faction: Activity (hours) vs Stats (FF Scouter estimates). */
+    const renderComparisonChartFromContext = (mode) => {
+        const g = window.comparisonGraphContext;
+        if (!g) return;
+        const canvas = document.getElementById('activityGraph');
+        if (!canvas) {
+            console.error('Canvas element not found');
+            return;
+        }
+        const ctx = canvas.getContext('2d');
+        if (window.activityChart) window.activityChart.destroy();
+
+        const isStats = mode === 'stats';
+        const labels = isStats ? g.labelsStats : g.labelsActivity;
+        const currentFactionData = isStats ? g.currentFactionDataStats : g.currentFactionDataActivity;
+        const ownFactionData = isStats ? g.ownFactionDataStats : g.ownFactionDataActivity;
+        const { currentFactionName, ownFactionName, labelTitle } = g;
+
+        const currentLabel = isStats ? `${currentFactionName} (est. stats)` : `${currentFactionName} (${labelTitle})`;
+        const ownLabel = isStats ? `${ownFactionName} (est. stats)` : `${ownFactionName} (${labelTitle})`;
+
+        window.activityChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: currentLabel,
+                        data: currentFactionData,
+                        borderColor: '#ffd700',
+                        backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                        borderWidth: 2,
+                        fill: false,
+                        tension: 0.4,
+                        pointRadius: 3,
+                        pointHoverRadius: 5,
+                        pointBackgroundColor: '#ffd700',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 1
+                    },
+                    {
+                        label: ownLabel,
+                        data: ownFactionData,
+                        borderColor: '#9C27B0',
+                        backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                        borderWidth: 2,
+                        fill: false,
+                        tension: 0.4,
+                        pointRadius: 3,
+                        pointHoverRadius: 5,
+                        pointBackgroundColor: '#9C27B0',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            color: '#fff',
+                            font: { size: 12, weight: 'bold' },
+                            usePointStyle: true,
+                            padding: 10
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleColor: '#ffd700',
+                        bodyColor: '#fff',
+                        borderColor: '#ffd700',
+                        borderWidth: 1,
+                        callbacks: {
+                            label: function(context) {
+                                const y = context.parsed.y;
+                                if (y == null || (typeof y === 'number' && isNaN(y))) {
+                                    return `${context.dataset.label}: incomplete`;
+                                }
+                                if (isStats) {
+                                    return `${context.dataset.label}: ${Math.round(y).toLocaleString()}`;
+                                }
+                                return `${context.dataset.label}: ${formatHoursMinutes(y)}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: isStats ? 'Players (Highest stats → Lowest)' : 'Players (Most Active → Least Active)',
+                            color: '#fff',
+                            font: { size: 14, weight: 'bold' }
+                        },
+                        ticks: {
+                            color: '#fff',
+                            font: { size: 10 },
+                            maxRotation: 45,
+                            minRotation: 45
+                        },
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: isStats ? 'Estimated stats' : 'Activity (Hours)',
+                            color: '#fff',
+                            font: { size: 14, weight: 'bold' }
+                        },
+                        ticks: isStats
+                            ? { color: '#fff' }
+                            : { color: '#fff', stepSize: 50 },
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                    }
+                }
+            }
+        });
+    };
+
+    window.setComparisonGraphMode = (mode) => {
+        if (!window.comparisonGraphContext) return;
+        if (mode !== 'activity' && mode !== 'stats') return;
+        window.comparisonGraphContext.mode = mode;
+        renderComparisonChartFromContext(mode);
+        syncComparisonGraphModeButtons();
+    };
+
     // Function to update graph and table with comparison data
     const updateGraphWithComparison = (currentData, ownMembersObject, ownActivityHours, ownFactionName, apiKey, periodConfigIn = null, ownBattleStatsEstimates = {}) => {
         const periodConfig = periodConfigIn && periodConfigIn.labelTitle
             ? periodConfigIn
             : resolvePeriodConfigFromActivityContext(currentData);
         const labelTitle = periodConfig.labelTitle;
-        // Graph will be created after table HTML is inserted (in setTimeout below)
-        
+
+        const battleStatsDataForTable = window.battleStatsData || {};
+        const currentBattleStatsEstimates = battleStatsDataForTable.battleStatsEstimates || {};
+
         // Sort each faction's players separately by activity (most active to least active)
-        // Selected faction is already sorted in currentData.sortedMemberIDs
-        // Sort own faction's players by activity
         const ownSortedMemberIDs = Object.keys(ownActivityHours).sort((a, b) => {
             const activityA = activityHoursSortValue(ownActivityHours[a]);
             const activityB = activityHoursSortValue(ownActivityHours[b]);
             return activityB - activityA;
         });
-        
-        // Determine the maximum number of positions (use the larger of the two factions)
-        const maxPositions = Math.max(currentData.sortedMemberIDs.length, ownSortedMemberIDs.length);
-        
-        // Create position-based labels (1st, 2nd, 3rd, etc.)
-        const labels = Array.from({ length: maxPositions }, (_, i) => {
+
+        // Rank by estimated stats (highest first) for the stats comparison view
+        const currentSortedByStats = [...currentData.sortedMemberIDs].sort((a, b) => {
+            const sa = getEstimatedBattleStatNumber(currentBattleStatsEstimates, a);
+            const sb = getEstimatedBattleStatNumber(currentBattleStatsEstimates, b);
+            if (isNaN(sa) && isNaN(sb)) return 0;
+            if (isNaN(sa)) return 1;
+            if (isNaN(sb)) return -1;
+            return sb - sa;
+        });
+        const ownSortedByStats = Object.keys(ownActivityHours).sort((a, b) => {
+            const sa = getEstimatedBattleStatNumber(ownBattleStatsEstimates, a);
+            const sb = getEstimatedBattleStatNumber(ownBattleStatsEstimates, b);
+            if (isNaN(sa) && isNaN(sb)) return 0;
+            if (isNaN(sa)) return 1;
+            if (isNaN(sb)) return -1;
+            return sb - sa;
+        });
+
+        const maxPositionsActivity = Math.max(currentData.sortedMemberIDs.length, ownSortedMemberIDs.length);
+        const labelsActivity = Array.from({ length: maxPositionsActivity }, (_, i) => {
             const position = i + 1;
-            // Get names for both factions at this position for the label
-            const selectedFactionName = currentData.sortedMemberIDs[i] 
+            const selectedFactionName = currentData.sortedMemberIDs[i]
                 ? (currentData.membersObject[currentData.sortedMemberIDs[i]]?.name || `Player ${currentData.sortedMemberIDs[i]}`)
                 : null;
             const ownFactionNameAtPos = ownSortedMemberIDs[i]
-                ? (ownMembersObject[ownSortedMemberIDs[i]]?.name || ownMembersObject[parseInt(ownSortedMemberIDs[i])]?.name || `Player ${ownSortedMemberIDs[i]}`)
+                ? (ownMembersObject[ownSortedMemberIDs[i]]?.name || ownMembersObject[parseInt(ownSortedMemberIDs[i], 10)]?.name || `Player ${ownSortedMemberIDs[i]}`)
                 : null;
-            
             if (selectedFactionName && ownFactionNameAtPos) {
                 return `${position} (${selectedFactionName} vs ${ownFactionNameAtPos})`;
-            } else if (selectedFactionName) {
-                return `${position} (${selectedFactionName})`;
-            } else if (ownFactionNameAtPos) {
-                return `${position} (${ownFactionNameAtPos})`;
             }
+            if (selectedFactionName) return `${position} (${selectedFactionName})`;
+            if (ownFactionNameAtPos) return `${position} (${ownFactionNameAtPos})`;
             return `Position ${position}`;
         });
-        
-        // Create data arrays based on position (1st most active, 2nd most active, etc.)
-        const currentFactionData = Array.from({ length: maxPositions }, (_, i) => {
+
+        const maxPositionsStats = Math.max(currentSortedByStats.length, ownSortedByStats.length);
+        const labelsStats = Array.from({ length: maxPositionsStats }, (_, i) => {
+            const position = i + 1;
+            const selectedFactionName = currentSortedByStats[i]
+                ? (currentData.membersObject[currentSortedByStats[i]]?.name || `Player ${currentSortedByStats[i]}`)
+                : null;
+            const ownFactionNameAtPos = ownSortedByStats[i]
+                ? (ownMembersObject[ownSortedByStats[i]]?.name || ownMembersObject[parseInt(ownSortedByStats[i], 10)]?.name || `Player ${ownSortedByStats[i]}`)
+                : null;
+            if (selectedFactionName && ownFactionNameAtPos) {
+                return `${position} (${selectedFactionName} vs ${ownFactionNameAtPos})`;
+            }
+            if (selectedFactionName) return `${position} (${selectedFactionName})`;
+            if (ownFactionNameAtPos) return `${position} (${ownFactionNameAtPos})`;
+            return `Position ${position}`;
+        });
+
+        const currentFactionDataActivity = Array.from({ length: maxPositionsActivity }, (_, i) => {
             if (i < currentData.sortedMemberIDs.length) {
                 const memberID = currentData.sortedMemberIDs[i];
                 const v = getActivityHoursForMember(currentData.activityHours, memberID);
@@ -5874,8 +6333,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return null;
         });
-        
-        const ownFactionData = Array.from({ length: maxPositions }, (_, i) => {
+        const ownFactionDataActivity = Array.from({ length: maxPositionsActivity }, (_, i) => {
             if (i < ownSortedMemberIDs.length) {
                 const memberID = ownSortedMemberIDs[i];
                 const v = getActivityHoursForMember(ownActivityHours, memberID);
@@ -5883,153 +6341,50 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return null;
         });
-        
+
+        const currentFactionDataStats = Array.from({ length: maxPositionsStats }, (_, i) => {
+            if (i < currentSortedByStats.length) {
+                const memberID = currentSortedByStats[i];
+                const n = getEstimatedBattleStatNumber(currentBattleStatsEstimates, memberID);
+                return isNaN(n) ? NaN : n;
+            }
+            return null;
+        });
+        const ownFactionDataStats = Array.from({ length: maxPositionsStats }, (_, i) => {
+            if (i < ownSortedByStats.length) {
+                const memberID = ownSortedByStats[i];
+                const n = getEstimatedBattleStatNumber(ownBattleStatsEstimates, memberID);
+                return isNaN(n) ? NaN : n;
+            }
+            return null;
+        });
+
         console.log('Comparison data:', {
             selectedFactionCount: currentData.sortedMemberIDs.length,
             ownFactionCount: ownSortedMemberIDs.length,
-            maxPositions: maxPositions,
-            labels: labels.length,
-            currentFactionDataPoints: currentFactionData.filter(v => v !== null).length,
-            ownFactionDataPoints: ownFactionData.filter(v => v !== null).length
+            maxPositionsActivity,
+            labelsActivity: labelsActivity.length
         });
-        
-        // Get existing data for the table
-        const battleStatsDataForTable = window.battleStatsData || {};
+
         const currentFfScores = battleStatsDataForTable.ffScores || {};
-        const currentBattleStatsEstimates = battleStatsDataForTable.battleStatsEstimates || {};
-        
-        // Update the table to show side-by-side comparison (this creates the canvas element)
-        // Pass the sorted member IDs from both factions for the table
+        window.comparisonGraphContext = {
+            mode: 'activity',
+            labelTitle,
+            currentFactionName: currentData.factionName,
+            ownFactionName,
+            labelsActivity,
+            currentFactionDataActivity,
+            ownFactionDataActivity,
+            labelsStats,
+            currentFactionDataStats,
+            ownFactionDataStats
+        };
+
         updateComparisonTable(currentData.sortedMemberIDs, ownSortedMemberIDs, currentData, ownMembersObject, ownActivityHours, ownFactionName, currentFfScores, currentBattleStatsEstimates, periodConfig, ownBattleStatsEstimates);
-        
-        // Create line chart with two datasets (similar to admin dashboard) - wait for DOM to update
+
         setTimeout(() => {
-            const canvas = document.getElementById('activityGraph');
-            if (!canvas) {
-                console.error('Canvas element not found');
-                return;
-            }
-            const ctx = canvas.getContext('2d');
-            
-            // Destroy existing chart if it exists
-            if (window.activityChart) {
-                window.activityChart.destroy();
-            }
-            
-            window.activityChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: `${currentData.factionName} (${labelTitle})`,
-                            data: currentFactionData,
-                            borderColor: '#ffd700', // Yellow to match app styling
-                            backgroundColor: 'rgba(255, 215, 0, 0.1)',
-                            borderWidth: 2,
-                            fill: false,
-                            tension: 0.4,
-                            pointRadius: 3,
-                            pointHoverRadius: 5,
-                            pointBackgroundColor: '#ffd700',
-                            pointBorderColor: '#fff',
-                            pointBorderWidth: 1
-                        },
-                        {
-                            label: `${ownFactionName} (${labelTitle})`,
-                            data: ownFactionData,
-                            borderColor: '#9C27B0', // Purple
-                            backgroundColor: 'rgba(156, 39, 176, 0.1)',
-                            borderWidth: 2,
-                            fill: false,
-                            tension: 0.4,
-                            pointRadius: 3,
-                            pointHoverRadius: 5,
-                            pointBackgroundColor: '#9C27B0',
-                            pointBorderColor: '#fff',
-                            pointBorderWidth: 1
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: true,
-                            position: 'top',
-                            labels: {
-                                color: '#fff',
-                                font: {
-                                    size: 12,
-                                    weight: 'bold'
-                                },
-                                usePointStyle: true,
-                                padding: 10
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                            titleColor: '#ffd700',
-                            bodyColor: '#fff',
-                            borderColor: '#ffd700',
-                            borderWidth: 1,
-                            callbacks: {
-                                label: function(context) {
-                                    const y = context.parsed.y;
-                                    if (y == null || (typeof y === 'number' && isNaN(y))) {
-                                        return `${context.dataset.label}: incomplete`;
-                                    }
-                                    return `${context.dataset.label}: ${formatHoursMinutes(y)}`;
-                                }
-                            }
-                        }
-                    },
-                    scales: {
-                        x: {
-                            title: {
-                                display: true,
-                                text: 'Players (Most Active → Least Active)',
-                                color: '#fff',
-                                font: {
-                                    size: 14,
-                                    weight: 'bold'
-                                }
-                            },
-                            ticks: {
-                                color: '#fff',
-                                font: {
-                                    size: 10
-                                },
-                                maxRotation: 45,
-                                minRotation: 45
-                            },
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }
-                        },
-                        y: {
-                            beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: 'Activity (Hours)',
-                                color: '#fff',
-                                font: {
-                                    size: 14,
-                                    weight: 'bold'
-                                }
-                            },
-                            ticks: {
-                                color: '#fff',
-                                stepSize: 50
-                            },
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }
-                        }
-                    }
-                }
-            });
+            renderComparisonChartFromContext(window.comparisonGraphContext.mode || 'activity');
+            syncComparisonGraphModeButtons();
         }, 300);
     };
     
@@ -6068,12 +6423,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     Comparison Loaded
                 </button>
             </div>
-            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">Faction Activity Comparison (${labelTitle})</h2>
+            <h2 style="text-align: center; margin-bottom: 20px; color: var(--accent-color);">Faction Activity & Stat Comparison (${labelTitle})</h2>
             
-            <!-- Activity Graph -->
+            <!-- Comparison graph: Activity vs Stats (Y-axis) -->
             <div style="margin-bottom: 30px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <h3 style="color: var(--accent-color); margin: 0;">Activity Graph (Most Active → Least Active)</h3>
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 15px;">
+                    <div>
+                        <h3 style="color: var(--accent-color); margin: 0 0 6px 0;">Faction comparison graph</h3>
+                        <p id="comparison-graph-x-subtitle" style="margin: 0; font-size: 13px; color: #aaa; max-width: 560px;">Each faction ranked by activity (most → least); paired by rank.</p>
+                    </div>
+                    <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+                        <span style="color: #bbb; font-size: 12px;">Compare by</span>
+                        <div style="display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;">
+                            <button type="button" id="comparison-graph-mode-activity" class="comparison-graph-mode-btn comparison-graph-mode-btn--active" onclick="window.setComparisonGraphMode && window.setComparisonGraphMode('activity')">Activity</button>
+                            <button type="button" id="comparison-graph-mode-stats" class="comparison-graph-mode-btn comparison-graph-mode-btn--inactive" onclick="window.setComparisonGraphMode && window.setComparisonGraphMode('stats')">Stats</button>
+                        </div>
+                    </div>
                 </div>
                 <div style="position: relative; height: 400px;">
                     <canvas id="activityGraph"></canvas>
@@ -6160,144 +6525,7 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsContainer.innerHTML = tableHtml;
         resultsContainer.style.display = 'block';
         
-        // Re-create the graph after DOM update - wait for canvas to exist
-        setTimeout(() => {
-            const canvas = document.getElementById('activityGraph');
-            if (canvas) {
-                // The graph should already be created by updateGraphWithComparison, but verify
-                if (!window.activityChart) {
-                    console.warn('Graph chart not found, attempting to recreate...');
-                    // Recreate with combined data
-                    const allPlayerIDs = new Set();
-                    currentData.sortedMemberIDs.forEach(id => allPlayerIDs.add(String(id)));
-                    Object.keys(ownActivityHours).forEach(id => allPlayerIDs.add(String(id)));
-                    const sortedAllPlayerIDsForGraph = Array.from(allPlayerIDs).sort((a, b) => {
-                        const activityA = Math.max(
-                            activityHoursSortValue(getActivityHoursForMember(currentData.activityHours, a)),
-                            activityHoursSortValue(getActivityHoursForMember(ownActivityHours, a))
-                        );
-                        const activityB = Math.max(
-                            activityHoursSortValue(getActivityHoursForMember(currentData.activityHours, b)),
-                            activityHoursSortValue(getActivityHoursForMember(ownActivityHours, b))
-                        );
-                        return activityB - activityA;
-                    });
-                    const labels = sortedAllPlayerIDsForGraph.map(id => {
-                        const member = currentData.membersObject[id] || currentData.membersObject[parseInt(id)] || ownMembersObject[id] || ownMembersObject[parseInt(id)];
-                        const isOwnFaction = ownActivityHours[id] !== undefined || ownActivityHours[parseInt(id)] !== undefined;
-                        return member ? `${member.name}${isOwnFaction ? ' (Your Faction)' : ''}` : `Player ${id}`;
-                    });
-                    const currentFactionData = sortedAllPlayerIDsForGraph.map(id => {
-                        const v = getActivityHoursForMember(currentData.activityHours, id);
-                        return v == null ? NaN : v;
-                    });
-                    const ownFactionData = sortedAllPlayerIDsForGraph.map(id => {
-                        const v = getActivityHoursForMember(ownActivityHours, id);
-                        return v == null ? NaN : v;
-                    });
-                    const ctx = canvas.getContext('2d');
-                    window.activityChart = new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: labels,
-                            datasets: [
-                                {
-                                    label: `${currentData.factionName} (${labelTitle})`,
-                                    data: currentFactionData,
-                                    borderColor: '#ffd700',
-                                    backgroundColor: 'rgba(255, 215, 0, 0.1)',
-                                    borderWidth: 2,
-                                    fill: false,
-                                    tension: 0.4,
-                                    pointRadius: 3,
-                                    pointHoverRadius: 5,
-                                    pointBackgroundColor: '#ffd700',
-                                    pointBorderColor: '#fff',
-                                    pointBorderWidth: 1
-                                },
-                                {
-                                    label: `${ownFactionName} (${labelTitle})`,
-                                    data: ownFactionData,
-                                    borderColor: '#9C27B0',
-                                    backgroundColor: 'rgba(156, 39, 176, 0.1)',
-                                    borderWidth: 2,
-                                    fill: false,
-                                    tension: 0.4,
-                                    pointRadius: 3,
-                                    pointHoverRadius: 5,
-                                    pointBackgroundColor: '#9C27B0',
-                                    pointBorderColor: '#fff',
-                                    pointBorderWidth: 1
-                                }
-                            ]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: {
-                                    display: true,
-                                    position: 'top',
-                                    labels: {
-                                        color: '#fff',
-                                        font: { size: 12, weight: 'bold' },
-                                        usePointStyle: true,
-                                        padding: 10
-                                    }
-                                },
-                                tooltip: {
-                                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                                    titleColor: '#ffd700',
-                                    bodyColor: '#fff',
-                                    borderColor: '#ffd700',
-                                    borderWidth: 1,
-                                    callbacks: {
-                                        label: function(context) {
-                                            const y = context.parsed.y;
-                                            if (y == null || (typeof y === 'number' && isNaN(y))) {
-                                                return `${context.dataset.label}: incomplete`;
-                                            }
-                                            return `${context.dataset.label}: ${formatHoursMinutes(y)}`;
-                                        }
-                                    }
-                                }
-                            },
-                            scales: {
-                                x: {
-                                    title: {
-                                        display: true,
-                                        text: 'Players (Most Active → Least Active)',
-                                        color: '#fff',
-                                        font: { size: 14, weight: 'bold' }
-                                    },
-                                    ticks: {
-                                        color: '#fff',
-                                        font: { size: 10 },
-                                        maxRotation: 45,
-                                        minRotation: 45
-                                    },
-                                    grid: { color: 'rgba(255, 255, 255, 0.1)' }
-                                },
-                                y: {
-                                    beginAtZero: true,
-                                    title: {
-                                        display: true,
-                                        text: 'Activity (Hours)',
-                                        color: '#fff',
-                                        font: { size: 14, weight: 'bold' }
-                                    },
-                                    ticks: {
-                                        color: '#fff',
-                                        stepSize: 50
-                                    },
-                                    grid: { color: 'rgba(255, 255, 255, 0.1)' }
-                                }
-                            }
-                        }
-                    });
-                }
-            }
-        }, 200);
+        // Chart is drawn in updateGraphWithComparison (renderComparisonChartFromContext); buttons use window.setComparisonGraphMode.
         
         // Add sorting functionality for comparison table
         const table = document.getElementById('membersTable');
@@ -6509,7 +6737,7 @@ document.addEventListener('DOMContentLoaded', () => {
             copyComparisonTableBtn.addEventListener('click', async () => {
                 const tbl = document.getElementById('membersTable');
                 await battleStatsCopyTableToClipboard(copyComparisonTableBtn, tbl, {
-                    factionTitle: `Faction Activity Comparison (${labelTitle}) — ${currentFactionName} vs ${ownFactionName}`,
+                    factionTitle: `Faction Activity & Stat Comparison (${labelTitle}) — ${currentFactionName} vs ${ownFactionName}`,
                     excludeColumns: []
                 });
             });
@@ -6521,6 +6749,62 @@ document.addEventListener('DOMContentLoaded', () => {
                 await battleStatsCopyTableToClipboard(copyActivityDetailTableBtn, detailTbl, {
                     factionTitle: `${currentFactionName} — activity list (${labelTitle})`,
                     excludeColumns: ['ffscore']
+                });
+            });
+        }
+
+        const detailTable = document.getElementById('membersTableActivityDetail');
+        if (detailTable) {
+            const detailHeaders = detailTable.querySelectorAll('th[data-column]');
+            let detailSortColumn = 'activity';
+            let detailSortDirection = 'desc';
+            const sortDetailTable = (column, direction) => {
+                const tbody = detailTable.querySelector('tbody');
+                if (!tbody) return;
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                detailHeaders.forEach(h => {
+                    const indicator = h.querySelector('.sort-indicator');
+                    const hColumn = h.getAttribute('data-column');
+                    if (!indicator) return;
+                    if (hColumn === column) {
+                        indicator.textContent = direction === 'asc' ? ' ↑' : ' ↓';
+                    } else {
+                        indicator.textContent = '';
+                    }
+                });
+                rows.sort((a, b) => {
+                    const aCell = a.querySelector(`td[data-column="${column}"]`);
+                    const bCell = b.querySelector(`td[data-column="${column}"]`);
+                    if (!aCell || !bCell) return 0;
+                    let aValue = aCell.getAttribute('data-value') || aCell.textContent;
+                    let bValue = bCell.getAttribute('data-value') || bCell.textContent;
+                    if (column === 'member') {
+                        aValue = String(aValue).toLowerCase();
+                        bValue = String(bValue).toLowerCase();
+                        if (aValue < bValue) return direction === 'asc' ? -1 : 1;
+                        if (aValue > bValue) return direction === 'asc' ? 1 : -1;
+                        return 0;
+                    }
+                    let aNum = parseFloat(aValue);
+                    let bNum = parseFloat(bValue);
+                    if (isNaN(aNum)) aNum = -1;
+                    if (isNaN(bNum)) bNum = -1;
+                    if (direction === 'desc') return bNum - aNum;
+                    return aNum - bNum;
+                });
+                rows.forEach(row => tbody.appendChild(row));
+            };
+            sortDetailTable(detailSortColumn, detailSortDirection);
+            detailHeaders.forEach(header => {
+                header.addEventListener('click', () => {
+                    const column = header.getAttribute('data-column');
+                    if (detailSortColumn === column) {
+                        detailSortDirection = detailSortDirection === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        detailSortColumn = column;
+                        detailSortDirection = 'asc';
+                    }
+                    sortDetailTable(detailSortColumn, detailSortDirection);
                 });
             });
         }
