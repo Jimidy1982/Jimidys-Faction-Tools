@@ -902,17 +902,8 @@ function initWarReport2() {
         }
     };
 
-    // Helper function to format war dates
-    const formatWarDate = (timestamp) => {
-        const date = new Date(timestamp * 1000);
-        return date.toLocaleDateString('en-US', { 
-            month: 'short', 
-            day: 'numeric', 
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-    };
+    /** War list Start/End: Torn City Time (UTC), same as in-game — not browser local time. */
+    const formatWarDate = (timestamp) => formatUnixAsTct(timestamp);
 
     // Helper function to determine war status
     const getWarStatus = (war) => {
@@ -928,7 +919,7 @@ function initWarReport2() {
         const enemyName = enemy?.name || 'Unknown';
         const status = getWarStatus(war);
         const startDate = formatWarDate(war.start);
-        const endDate = formatWarDate(war.end);
+        const endDate = status === 'Upcoming' ? 'TBC' : formatWarDate(war.end);
         
         // Left border accent: green = ongoing, gold = ended & upcoming (matches tool theme)
         const borderAccentColor = status === 'Ongoing' ? '#4CAF50' : '#ffd700';
