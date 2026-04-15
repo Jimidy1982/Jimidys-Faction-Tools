@@ -1,5 +1,78 @@
 console.log('[ORGANISED CRIME STATS] organised-crime-stats.js LOADED');
 
+const OC_STATS_DATE_FILTERS_LS_KEY = 'organisedCrimeStats_dateFilters';
+const OC_STATS_ALLOWED_PRESETS = new Set(['all', '7', '14', '30', '90', '365', 'custom']);
+const OC_STATS_ALLOWED_UNITS = new Set(['days', 'months', 'years']);
+
+function persistOcStatsDateFilters() {
+    try {
+        const payload = {
+            difficulty: document.getElementById('difficultyDateFilter')?.value ?? 'all',
+            player: document.getElementById('playerDateFilter')?.value ?? 'all',
+            difficultyCustomAmount: Math.max(1, parseInt(document.getElementById('difficultyCustomAmount')?.value, 10) || 30),
+            difficultyCustomUnit: document.getElementById('difficultyCustomUnit')?.value ?? 'days',
+            playerCustomAmount: Math.max(1, parseInt(document.getElementById('playerCustomAmount')?.value, 10) || 30),
+            playerCustomUnit: document.getElementById('playerCustomUnit')?.value ?? 'days'
+        };
+        if (!OC_STATS_ALLOWED_PRESETS.has(payload.difficulty)) payload.difficulty = 'all';
+        if (!OC_STATS_ALLOWED_PRESETS.has(payload.player)) payload.player = 'all';
+        if (!OC_STATS_ALLOWED_UNITS.has(payload.difficultyCustomUnit)) payload.difficultyCustomUnit = 'days';
+        if (!OC_STATS_ALLOWED_UNITS.has(payload.playerCustomUnit)) payload.playerCustomUnit = 'days';
+        localStorage.setItem(OC_STATS_DATE_FILTERS_LS_KEY, JSON.stringify(payload));
+    } catch (e) {
+        console.warn('[ORGANISED CRIME STATS] Could not save date filter preferences:', e);
+    }
+}
+
+function loadOcStatsDateFiltersFromStorage() {
+    try {
+        const raw = localStorage.getItem(OC_STATS_DATE_FILTERS_LS_KEY);
+        if (!raw) return;
+        const o = JSON.parse(raw);
+        if (!o || typeof o !== 'object') return;
+
+        const preset = (x) => {
+            const s = String(x);
+            return OC_STATS_ALLOWED_PRESETS.has(s) ? s : 'all';
+        };
+        const unit = (x) => (OC_STATS_ALLOWED_UNITS.has(x) ? x : 'days');
+
+        const diffSel = document.getElementById('difficultyDateFilter');
+        const playSel = document.getElementById('playerDateFilter');
+        if (diffSel && o.difficulty != null) diffSel.value = preset(o.difficulty);
+        if (playSel && o.player != null) playSel.value = preset(o.player);
+
+        const dAmt = document.getElementById('difficultyCustomAmount');
+        const dUnit = document.getElementById('difficultyCustomUnit');
+        const pAmt = document.getElementById('playerCustomAmount');
+        const pUnit = document.getElementById('playerCustomUnit');
+        if (dAmt && o.difficultyCustomAmount != null) dAmt.value = String(Math.max(1, parseInt(o.difficultyCustomAmount, 10) || 30));
+        if (dUnit && o.difficultyCustomUnit != null) dUnit.value = unit(o.difficultyCustomUnit);
+        if (pAmt && o.playerCustomAmount != null) pAmt.value = String(Math.max(1, parseInt(o.playerCustomAmount, 10) || 30));
+        if (pUnit && o.playerCustomUnit != null) pUnit.value = unit(o.playerCustomUnit);
+
+        if (diffSel) ocStatsData.activeFilters.difficulty = diffSel.value;
+        if (playSel) ocStatsData.activeFilters.player = playSel.value;
+
+        toggleCustomRangeVisibility('difficulty');
+        toggleCustomRangeVisibility('player');
+    } catch (e) {
+        console.warn('[ORGANISED CRIME STATS] Could not load date filter preferences:', e);
+    }
+}
+
+/** After fetch, re-apply both section filters so tables match saved dropdowns (not always "all"). */
+function reapplyOcStatsDateFiltersToTables() {
+    const d = document.getElementById('difficultyDateFilter');
+    const p = document.getElementById('playerDateFilter');
+    if (d) ocStatsData.activeFilters.difficulty = d.value;
+    if (p) ocStatsData.activeFilters.player = p.value;
+    toggleCustomRangeVisibility('difficulty');
+    toggleCustomRangeVisibility('player');
+    handleDateFilterChange('difficulty');
+    handleDateFilterChange('player');
+}
+
 // Global state for OC stats
 let ocStatsData = {
     difficultyStats: [],
@@ -69,12 +142,24 @@ function initOrganisedCrimeStats() {
     // Custom timeframe: when amount or unit changes, re-apply filter if Custom is selected
     const difficultyCustomAmount = document.getElementById('difficultyCustomAmount');
     const difficultyCustomUnit = document.getElementById('difficultyCustomUnit');
-    if (difficultyCustomAmount) difficultyCustomAmount.addEventListener('change', () => { if (document.getElementById('difficultyDateFilter')?.value === 'custom') handleDateFilterChange('difficulty'); });
-    if (difficultyCustomUnit) difficultyCustomUnit.addEventListener('change', () => { if (document.getElementById('difficultyDateFilter')?.value === 'custom') handleDateFilterChange('difficulty'); });
+    if (difficultyCustomAmount) difficultyCustomAmount.addEventListener('change', () => {
+        persistOcStatsDateFilters();
+        if (document.getElementById('difficultyDateFilter')?.value === 'custom') handleDateFilterChange('difficulty');
+    });
+    if (difficultyCustomUnit) difficultyCustomUnit.addEventListener('change', () => {
+        persistOcStatsDateFilters();
+        if (document.getElementById('difficultyDateFilter')?.value === 'custom') handleDateFilterChange('difficulty');
+    });
     const playerCustomAmount = document.getElementById('playerCustomAmount');
     const playerCustomUnit = document.getElementById('playerCustomUnit');
-    if (playerCustomAmount) playerCustomAmount.addEventListener('change', () => { if (document.getElementById('playerDateFilter')?.value === 'custom') handleDateFilterChange('player'); });
-    if (playerCustomUnit) playerCustomUnit.addEventListener('change', () => { if (document.getElementById('playerDateFilter')?.value === 'custom') handleDateFilterChange('player'); });
+    if (playerCustomAmount) playerCustomAmount.addEventListener('change', () => {
+        persistOcStatsDateFilters();
+        if (document.getElementById('playerDateFilter')?.value === 'custom') handleDateFilterChange('player');
+    });
+    if (playerCustomUnit) playerCustomUnit.addEventListener('change', () => {
+        persistOcStatsDateFilters();
+        if (document.getElementById('playerDateFilter')?.value === 'custom') handleDateFilterChange('player');
+    });
     
     const factionCutInput = document.getElementById('ocFactionCutPercent');
     if (factionCutInput) {
@@ -84,6 +169,9 @@ function initOrganisedCrimeStats() {
             }
         });
     }
+
+    // Apply saved time filters AFTER selects are cloned — cloneNode can drop programmatic .value
+    loadOcStatsDateFiltersFromStorage();
     
     console.log('[ORGANISED CRIME STATS] Initialization complete - waiting for user interaction');
 }
@@ -229,8 +317,9 @@ const handleOCDataFetch = async () => {
         ocStatsData.currentMemberIds = Array.from(currentMemberIds); // Convert Set to Array for storage
         ocStatsData.playerNames = playerNames; // Store for filtering
         
-        // Update UI
+        // Update UI (full data first, then apply saved time filters so tables match dropdowns)
         updateOCStatsUI(difficultyStats, playerStats, totalCrimes);
+        reapplyOcStatsDateFiltersToTables();
         
         // Show results section
         if (resultsSection) {
@@ -287,6 +376,204 @@ function parseCrimeRewards(rewards) {
     return { money, itemCount, items };
 }
 
+/**
+ * Turn API "items" that may be an array, a keyed object { "385": { quantity: 2 } }, or a single object into rows.
+ */
+function flattenCostItemContainer(val) {
+    if (val == null) return [];
+    if (Array.isArray(val)) return val.filter((x) => x != null);
+    if (typeof val !== 'object') return [];
+    // Single item row object (not a map of id → qty)
+    if (
+        val.id != null ||
+        val.item_id != null ||
+        val.item != null ||
+        val.name != null ||
+        val.item_name != null
+    ) {
+        return [val];
+    }
+    const keys = Object.keys(val);
+    if (keys.length === 0) return [];
+    return keys.map((k) => {
+        const inner = val[k];
+        const keyAsId = /^\d+$/.test(String(k)) ? Number(k) : k;
+        if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+            const id = inner.id ?? inner.item_id ?? inner.item?.id ?? keyAsId;
+            const qty =
+                typeof inner.quantity === 'number'
+                    ? inner.quantity
+                    : (typeof inner.qty === 'number'
+                        ? inner.qty
+                        : (typeof inner.amount === 'number'
+                            ? inner.amount
+                            : (typeof inner.count === 'number' ? inner.count : 1)));
+            return { ...inner, id, quantity: qty };
+        }
+        const qty = typeof inner === 'number' ? inner : 1;
+        return { id: keyAsId, quantity: qty };
+    });
+}
+
+/**
+ * Parse running costs from a completed crime (v2 faction crimes).
+ * Money: common field names. Items: consumed vs used-but-returned — only consumed items count toward $ cost
+ * (market value); returned/loan/reusable are listed separately in the UI.
+ */
+function parseCrimeCosts(crime) {
+    let moneyCost = 0;
+    const consumed = [];
+    const usedNotConsumed = [];
+
+    const addMoney = (v) => {
+        if (typeof v === 'number' && !isNaN(v) && v > 0) moneyCost += v;
+    };
+
+    addMoney(crime.cost);
+    addMoney(crime.money_cost);
+    addMoney(crime.money_spent);
+    addMoney(crime.total_cost);
+    addMoney(crime.money_expense);
+    addMoney(crime.spent);
+
+    if (crime.cost && typeof crime.cost === 'object' && !Array.isArray(crime.cost)) {
+        addMoney(crime.cost.money);
+        addMoney(crime.cost.total);
+        addMoney(crime.cost.amount);
+    }
+
+    if (crime.expenses && typeof crime.expenses === 'object' && !Array.isArray(crime.expenses)) {
+        addMoney(crime.expenses.money);
+        addMoney(crime.expenses.total);
+        addMoney(crime.expenses.amount);
+    }
+    if (Array.isArray(crime.expenses)) {
+        crime.expenses.forEach((ex) => {
+            if (typeof ex === 'number') addMoney(ex);
+            else if (ex && typeof ex === 'object') {
+                addMoney(ex.money);
+                addMoney(ex.amount);
+                addMoney(ex.cost);
+            }
+        });
+    }
+
+    if (crime.planning && typeof crime.planning === 'object') {
+        addMoney(crime.planning.cost);
+        addMoney(crime.planning.money_cost);
+        if (crime.planning.expenses && typeof crime.planning.expenses === 'object') {
+            addMoney(crime.planning.expenses.money);
+            addMoney(crime.planning.expenses.total);
+        }
+    }
+
+    function classify(entry, defaultConsumed) {
+        if (entry == null) return;
+        if (typeof entry !== 'object') return;
+        const id = entry.id ?? entry.item_id ?? entry.item?.id;
+        const name = entry.name ?? entry.item?.name ?? entry.item_name ?? entry.label;
+        const qtyRaw =
+            typeof entry.quantity === 'number'
+                ? entry.quantity
+                : (typeof entry.qty === 'number'
+                    ? entry.qty
+                    : (typeof entry.amount === 'number'
+                        ? entry.amount
+                        : (typeof entry.count === 'number' ? entry.count : 1)));
+        const qty = typeof qtyRaw === 'number' && !isNaN(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
+        if (id == null && name == null) return;
+        const row = { id: id != null ? id : String(name), name: name || `Item #${id}`, quantity: qty };
+        const explicitConsumed = entry.consumed === true || entry.is_consumed === true;
+        const explicitNotConsumed =
+            entry.returned === true ||
+            entry.loaned === true ||
+            entry.consumed === false ||
+            entry.is_consumed === false ||
+            (entry.is_reusable === true && !explicitConsumed) ||
+            (entry.reusable === true && !explicitConsumed);
+        if (explicitConsumed) {
+            consumed.push(row);
+        } else if (explicitNotConsumed) {
+            usedNotConsumed.push(row);
+        } else if (defaultConsumed) {
+            consumed.push(row);
+        } else {
+            usedNotConsumed.push(row);
+        }
+    }
+
+    const itemRowSources = [];
+
+    [
+        crime.items,
+        crime.requirements,
+        crime.consumables,
+        crime.cost_items,
+        crime.items_used,
+        crime.items_consumed,
+        crime.expense_items,
+        crime.expenses && typeof crime.expenses === 'object' && !Array.isArray(crime.expenses) ? crime.expenses.items : null,
+        crime.cost && typeof crime.cost === 'object' ? crime.cost.items : null,
+        crime.planning && typeof crime.planning === 'object' ? crime.planning.items : null
+    ].forEach((c) => {
+        itemRowSources.push(...flattenCostItemContainer(c));
+    });
+
+    itemRowSources.forEach((p) => classify(p, true));
+
+    if (Array.isArray(crime.slots)) {
+        crime.slots.forEach((slot) => {
+            if (!slot || typeof slot !== 'object') return;
+            // v2 faction/crimes: each slot may have item_requirement { id, is_reusable, is_available, ... }
+            const req = slot.item_requirement;
+            if (req && typeof req === 'object' && req.id != null) {
+                const qtyRaw =
+                    typeof req.quantity === 'number'
+                        ? req.quantity
+                        : (typeof req.qty === 'number' ? req.qty : 1);
+                const qty = typeof qtyRaw === 'number' && !isNaN(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
+                const row = { id: req.id, name: `Item #${req.id}`, quantity: qty };
+                if (req.is_reusable === true || req.reusable === true) {
+                    usedNotConsumed.push(row);
+                } else {
+                    consumed.push(row);
+                }
+            }
+            const packs = [
+                ...flattenCostItemContainer(slot.items),
+                ...flattenCostItemContainer(slot.item),
+                ...flattenCostItemContainer(slot.equipment),
+                ...flattenCostItemContainer(slot.required_item),
+                ...flattenCostItemContainer(slot.consumables),
+                ...flattenCostItemContainer(slot.requirements),
+                ...flattenCostItemContainer(slot.requirement),
+                ...flattenCostItemContainer(slot.consumed_items),
+                ...flattenCostItemContainer(slot.items_consumed)
+            ];
+            if (slot.cost && typeof slot.cost === 'object' && !Array.isArray(slot.cost)) {
+                addMoney(slot.cost.money);
+                addMoney(slot.cost.total);
+                packs.push(...flattenCostItemContainer(slot.cost.items));
+            }
+            if (slot.expenses && typeof slot.expenses === 'object' && !Array.isArray(slot.expenses)) {
+                addMoney(slot.expenses.money);
+                addMoney(slot.expenses.total);
+                packs.push(...flattenCostItemContainer(slot.expenses.items));
+            }
+            packs.forEach((p) => classify(p, true));
+        });
+    }
+
+    return { moneyCost, consumed, usedNotConsumed };
+}
+
+function applyCostToStat(stat, costParsed) {
+    if (!stat || !costParsed) return;
+    stat.totalCostMoney = (stat.totalCostMoney || 0) + costParsed.moneyCost;
+    mergeItemBreakdown(stat.costItemsBreakdown, costParsed.consumed);
+    mergeItemBreakdown(stat.usedNotConsumedBreakdown, costParsed.usedNotConsumed);
+}
+
 // Merge parsed items into a breakdown object keyed by item id: { [id]: { name, quantity } }
 function mergeItemBreakdown(breakdown, items) {
     (items || []).forEach(it => {
@@ -322,6 +609,43 @@ function getTotalRewardValue(difficultyStats) {
     }, 0);
 }
 
+function getTotalCostValue(difficultyStats) {
+    const itemsMap = ocStatsData.itemsMap || {};
+    return (difficultyStats || []).reduce((sum, stat) => {
+        const cash = stat.totalCostMoney || 0;
+        const itemsVal = getTotalItemsValue(stat.costItemsBreakdown, itemsMap);
+        return sum + cash + itemsVal;
+    }, 0);
+}
+
+function getDifficultyStatRewardValue(stat) {
+    const itemsMap = ocStatsData.itemsMap || {};
+    return (stat.totalRewardMoney || 0) + getTotalItemsValue(stat.rewardItemsBreakdown, itemsMap);
+}
+
+function getDifficultyStatCostValue(stat) {
+    const itemsMap = ocStatsData.itemsMap || {};
+    return (stat.totalCostMoney || 0) + getTotalItemsValue(stat.costItemsBreakdown, itemsMap);
+}
+
+function getDifficultyStatNetValue(stat) {
+    return getDifficultyStatRewardValue(stat) - getDifficultyStatCostValue(stat);
+}
+
+/** Numeric value for table sort / CSV (Rewards column sorts by cash + items, not cash alone). */
+function getDifficultySortValue(stat, column) {
+    switch (column) {
+        case 'rewardValue':
+            return getDifficultyStatRewardValue(stat);
+        case 'costValue':
+            return getDifficultyStatCostValue(stat);
+        case 'netValue':
+            return getDifficultyStatNetValue(stat);
+        default:
+            return stat[column];
+    }
+}
+
 // Player's total reward value: their share of cash (already stored) + their share of item value per crime (faction cut and split)
 function getPlayerTotalRewardValue(player) {
     const cashShare = player.totalRewardMoney || 0;
@@ -336,6 +660,15 @@ function getPlayerTotalRewardValue(player) {
         itemsShare += crimeItemsValue * afterCutMultiplier / participants;
     });
     return cashShare + itemsShare;
+}
+
+/** Sort key for player rows — must match Rewards column (cash + item share), not totalRewardMoney alone. */
+function getPlayerSortValue(player, column) {
+    if (column === 'totalRewardMoney') {
+        return getPlayerTotalRewardValue(player);
+    }
+    const v = player[column];
+    return typeof v === 'number' ? v : Number(v) || 0;
 }
 
 // Format amount as whole dollars (no decimals)
@@ -392,6 +725,65 @@ function formatRewardsCell(record) {
     return totalDisplay + ' <details class="reward-details" style="display: inline; margin-left: 6px;"><summary style="cursor: pointer; color: var(--accent-color); font-size: 0.85em;">Details</summary>' + detailsContent + '</details>';
 }
 
+/** Running cost cell: money + consumed items (market value); Details lists consumed vs used-not-consumed. */
+function formatCostCell(record) {
+    const cash = record.totalCostMoney || 0;
+    const breakdown = record.costItemsBreakdown || {};
+    const usedBreakdown = record.usedNotConsumedBreakdown || {};
+    const itemsMap = ocStatsData.itemsMap || {};
+    const itemsValue = getTotalItemsValue(breakdown, itemsMap);
+    const totalValue = cash + itemsValue;
+    const costSummaryColor = '#ffab91';
+    const totalDisplayHtml =
+        totalValue > 0
+            ? `<span style="color: ${costSummaryColor};">${formatDollars(totalValue)}</span>`
+            : '<span style="color: #888;">—</span>';
+
+    const entries = Object.entries(breakdown).filter(([, v]) => v && v.quantity > 0);
+    const usedEntries = Object.entries(usedBreakdown).filter(([, v]) => v && v.quantity > 0);
+    const hasDetails = cash > 0 || entries.length > 0 || usedEntries.length > 0;
+    if (!hasDetails) return totalDisplayHtml;
+
+    const cashLine = cash > 0 ? `<div>Money: <span style="color: #ffab91;">${formatDollars(cash)}</span></div>` : '';
+    const listHtml = entries.map(([id, v]) => {
+        const item = itemsMap[id] || itemsMap[String(id)];
+        const name = (item && item.name) ? item.name : (v.name || `Item #${id}`);
+        const qty = v.quantity || 1;
+        const marketVal = (item && item.market_value != null) ? item.market_value : null;
+        const totalVal = (marketVal != null && marketVal > 0) ? marketVal * qty : null;
+        const imgSrc = (item && item.image) ? String(item.image).replace(/"/g, '&quot;') : '';
+        const img = imgSrc ? `<img src="${imgSrc}" alt="" class="reward-item-img" style="width:20px;height:20px;vertical-align:middle;margin-right:4px;">` : '';
+        const valueStr = totalVal != null ? ` <span style="color: #ffab91;">(${formatDollars(totalVal)})</span>` : '';
+        return img + `${qty}× ${escapeHtml(name)} <span style="color:#aaa;">(consumed)</span>` + valueStr;
+    }).join('<br>');
+
+    const usedHtml = usedEntries.map(([id, v]) => {
+        const item = itemsMap[id] || itemsMap[String(id)];
+        const name = (item && item.name) ? item.name : (v.name || `Item #${id}`);
+        const qty = v.quantity || 1;
+        const imgSrc = (item && item.image) ? String(item.image).replace(/"/g, '&quot;') : '';
+        const img = imgSrc ? `<img src="${imgSrc}" alt="" class="reward-item-img" style="width:20px;height:20px;vertical-align:middle;margin-right:4px;">` : '';
+        return img + `${qty}× ${escapeHtml(name)} <span style="color:#888;">(used, not consumed)</span>`;
+    }).join('<br>');
+
+    const consumedInner = `${cashLine}${listHtml ? (cashLine ? '<br>' : '') + listHtml : ''}`;
+    const consumedBlock =
+        (cashLine || listHtml)
+            ? `<div style="margin-bottom:8px;"><strong style="color:#bbb;font-size:0.9em;">Counted toward cost</strong><br>${consumedInner}</div>`
+            : '';
+    const usedBlock = usedHtml
+        ? `<div><strong style="color:#bbb;font-size:0.9em;">Used but not consumed</strong><br>${usedHtml}</div>`
+        : '';
+    const detailsContent = `<div style="margin-top: 4px; padding: 6px 8px; background: var(--secondary-color); border-radius: 4px; font-size: 0.85em; max-width: 360px;">${consumedBlock || ''}${usedBlock}</div>`;
+    return totalDisplayHtml + ' <details class="cost-details" style="display: inline; margin-left: 6px;"><summary style="cursor: pointer; color: var(--accent-color); font-size: 0.85em;">Details</summary>' + detailsContent + '</details>';
+}
+
+function formatNetCell(stat) {
+    const n = getDifficultyStatNetValue(stat);
+    const color = n >= 0 ? '#4ecdc4' : '#ff6b6b';
+    return `<span style="color: ${color}; font-weight: bold;">${formatDollars(n)}</span>`;
+}
+
 function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set(), factionCutPercent = 20) {
     console.log('[ORGANISED CRIME STATS] Processing crime data...');
     console.log(`[ORGANISED CRIME STATS] Filtering by ${currentMemberIds.size} current members`);
@@ -408,6 +800,9 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             totalRewardMoney: 0,
             totalRewardItemCount: 0,
             rewardItemsBreakdown: {},
+            totalCostMoney: 0,
+            costItemsBreakdown: {},
+            usedNotConsumedBreakdown: {},
             crimeTypes: {} // { [crimeId]: { crimeId, crimeName, total, successful, failed, totalRewardMoney, rewardItemsBreakdown } }
         };
     }
@@ -490,7 +885,10 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                         failed: 0,
                         totalRewardMoney: 0,
                         totalRewardItemCount: 0,
-                        rewardItemsBreakdown: {}
+                        rewardItemsBreakdown: {},
+                        totalCostMoney: 0,
+                        costItemsBreakdown: {},
+                        usedNotConsumedBreakdown: {}
                     };
                 }
                 const ct = difficultyMap[difficulty].crimeTypes[crimeTypeKey];
@@ -503,6 +901,9 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                 } else {
                     ct.failed++;
                 }
+                const costParsed = parseCrimeCosts(crime);
+                applyCostToStat(difficultyMap[difficulty], costParsed);
+                applyCostToStat(ct, costParsed);
             }
         }
         
@@ -622,6 +1023,8 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
     const overallSuccessRate = totalCrimes > 0 ? Math.round((totalSuccessful / totalCrimes) * 100) : 0;
     const totalPlayers = playerStats.length;
     const totalValue = getTotalRewardValue(difficultyStats);
+    const totalCostValue = getTotalCostValue(difficultyStats);
+    const netProfitValue = totalValue - totalCostValue;
     const factionCutVal = (document.getElementById('ocFactionCutPercent') && document.getElementById('ocFactionCutPercent').value !== '') ? document.getElementById('ocFactionCutPercent').value : '20';
     
     // Update difficulty stats table with summary
@@ -648,8 +1051,16 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                         <span class="summary-value" style="color: #ff6b6b;">${totalFailed}</span>
                     </div>
                     <div class="summary-item">
-                        <span class="summary-label">Total value:</span>
+                        <span class="summary-label">Total rewards:</span>
                         <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Total cost:</span>
+                        <span class="summary-value" style="color: #ffab91;">${formatDollars(totalCostValue)}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Net profit:</span>
+                        <span class="summary-value" style="color: ${netProfitValue >= 0 ? '#4ecdc4' : '#ff6b6b'};">${formatDollars(netProfitValue)}</span>
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Faction cut %:</span>
@@ -664,7 +1075,8 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     <div style="display: block; margin-bottom: 4px;">Please note:</div>
                     <ul style="margin: 0; padding-left: 20px; text-align: left; display: inline-block;">
                         <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
-                        <li>Reward item values are based on current market value, not the value at the time of the crime.</li>
+                        <li>Reward and consumed-item values use current market value, not the value at the time of the crime.</li>
+                        <li>Cost = Current Market Value of consumed items</li>
                     </ul>
                 </div>
             </div>
@@ -679,7 +1091,9 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                             <th data-column="successful" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                             <th data-column="failed" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                             <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
-                            <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes at this difficulty">Rewards <span class="sort-indicator"></span></th>
+                            <th data-column="rewardValue" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes (cash + items at market value)">Rewards <span class="sort-indicator"></span></th>
+                            <th data-column="costValue" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Cost to run (money + consumed items)">Cost <span class="sort-indicator"></span></th>
+                            <th data-column="netValue" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards − cost">Net <span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -698,6 +1112,8 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${stat.failed}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${stat.successRate}%</td>
                     <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(stat)}</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatCostCell(stat)}</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatNetCell(stat)}</td>
                 </tr>
             `;
             (Object.values(stat.crimeTypes || {})).forEach(ct => {
@@ -713,6 +1129,8 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     <td style="padding: 8px 12px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
                     <td style="padding: 8px 12px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
                     <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(ctDisplay)}</td>
+                    <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatCostCell(ct)}</td>
+                    <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatNetCell(ct)}</td>
                 </tr>
             `;
             });
@@ -947,16 +1365,14 @@ function sortDifficultyTable(column) {
     // Get the currently filtered data
     const dataToSort = getCurrentFilteredData('difficulty');
     
-    // Sort the data
+    // Sort the data (rewardValue / costValue / netValue use full $ totals, not raw stat fields)
     dataToSort.sort((a, b) => {
-        let aVal = a[column];
-        let bVal = b[column];
-        
+        const aVal = getDifficultySortValue(a, column);
+        const bVal = getDifficultySortValue(b, column);
         if (currentSort.direction === 'asc') {
             return aVal - bVal;
-        } else {
-            return bVal - aVal;
         }
+        return bVal - aVal;
     });
     
     // Update UI with sorted, filtered data
@@ -999,28 +1415,22 @@ function sortPlayerTable(column) {
     // Get the currently filtered data
     const dataToSort = getCurrentFilteredData('player');
     
-    // Sort the data
+    // Sort the data (Rewards uses full value via getPlayerSortValue, not cash-only totalRewardMoney)
     dataToSort.sort((a, b) => {
-        let aVal = a[column];
-        let bVal = b[column];
-        
-        // Handle text sorting for name
         if (column === 'name') {
-            aVal = aVal.toLowerCase();
-            bVal = bVal.toLowerCase();
+            let aVal = (a.name || '').toLowerCase();
+            let bVal = (b.name || '').toLowerCase();
             if (currentSort.direction === 'asc') {
                 return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-            } else {
-                return bVal < aVal ? -1 : bVal > aVal ? 1 : 0;
             }
+            return bVal < aVal ? -1 : bVal > aVal ? 1 : 0;
         }
-        
-        // Numeric sorting
+        const aVal = getPlayerSortValue(a, column);
+        const bVal = getPlayerSortValue(b, column);
         if (currentSort.direction === 'asc') {
             return aVal - bVal;
-        } else {
-            return bVal - aVal;
         }
+        return bVal - aVal;
     });
     
     // Update UI with sorted, filtered data
@@ -1061,38 +1471,31 @@ function exportOCStatsToCSV() {
     // Apply sorting to difficulty stats (same as table display)
     const difficultySort = ocStatsData.sortState.difficulty;
     const sortedDifficultyStats = [...filteredDifficultyStats].sort((a, b) => {
-        let aVal = a[difficultySort.column];
-        let bVal = b[difficultySort.column];
+        const aVal = getDifficultySortValue(a, difficultySort.column);
+        const bVal = getDifficultySortValue(b, difficultySort.column);
         if (difficultySort.direction === 'asc') {
             return aVal - bVal;
-        } else {
-            return bVal - aVal;
         }
+        return bVal - aVal;
     });
     
     // Apply sorting to player stats (same as table display)
     const playerSort = ocStatsData.sortState.player;
     const sortedPlayerStats = [...filteredPlayerStats].sort((a, b) => {
-        let aVal = a[playerSort.column];
-        let bVal = b[playerSort.column];
-        
-        // Handle text sorting for name
         if (playerSort.column === 'name') {
-            aVal = aVal.toLowerCase();
-            bVal = bVal.toLowerCase();
+            const aVal = (a.name || '').toLowerCase();
+            const bVal = (b.name || '').toLowerCase();
             if (playerSort.direction === 'asc') {
                 return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-            } else {
-                return bVal < aVal ? -1 : bVal > aVal ? 1 : 0;
             }
+            return bVal < aVal ? -1 : bVal > aVal ? 1 : 0;
         }
-        
-        // Numeric sorting
+        const aVal = getPlayerSortValue(a, playerSort.column);
+        const bVal = getPlayerSortValue(b, playerSort.column);
         if (playerSort.direction === 'asc') {
             return aVal - bVal;
-        } else {
-            return bVal - aVal;
         }
+        return bVal - aVal;
     });
     
     // Calculate totals from filtered data
@@ -1100,14 +1503,23 @@ function exportOCStatsToCSV() {
     const totalFailed = sortedDifficultyStats.reduce((sum, stat) => sum + stat.failed, 0);
     const totalCrimes = totalSuccessful + totalFailed;
     
+    const csvRewardTotal = getTotalRewardValue(sortedDifficultyStats);
+    const csvCostTotal = getTotalCostValue(sortedDifficultyStats);
+    const csvNetTotal = csvRewardTotal - csvCostTotal;
     let csvContent = 'Organised Crime Statistics\n\n';
-    csvContent += `Total Crimes Analyzed: ${totalCrimes}\n\n`;
+    csvContent += `Total Crimes Analyzed: ${totalCrimes}\n`;
+    csvContent += `Total Rewards (filtered): ${formatDollars(csvRewardTotal)}\n`;
+    csvContent += `Total Cost (filtered): ${formatDollars(csvCostTotal)}\n`;
+    csvContent += `Net Profit (filtered): ${formatDollars(csvNetTotal)}\n\n`;
     
     // Difficulty stats (using filtered and sorted data)
     csvContent += 'SUCCESS RATES BY DIFFICULTY\n';
-    csvContent += 'Difficulty,Total Crimes,Successful,Failed,Success Rate,Rewards\n';
+    csvContent += 'Difficulty,Total Crimes,Successful,Failed,Success Rate,Rewards ($),Cost ($),Net ($)\n';
     sortedDifficultyStats.forEach(stat => {
-        csvContent += `${stat.difficulty}/10,${stat.total},${stat.successful},${stat.failed},${stat.successRate}%,"${formatRewardsSummary(stat)}"\n`;
+        const r = getDifficultyStatRewardValue(stat);
+        const c = getDifficultyStatCostValue(stat);
+        const n = getDifficultyStatNetValue(stat);
+        csvContent += `${stat.difficulty}/10,${stat.total},${stat.successful},${stat.failed},${stat.successRate}%,"${formatDollars(r)}","${formatDollars(c)}","${formatDollars(n)}"\n`;
     });
     
     csvContent += '\n\nPLAYER PARTICIPATION STATS\n';
@@ -1219,6 +1631,7 @@ function handleDateFilterChange(section) {
             updatePlayerStatsUI(filteredData.playerStats);
         }
     }
+    persistOcStatsDateFilters();
 }
 
 function filterDataByDateRange(cutoffDate) {
@@ -1279,6 +1692,8 @@ function updateDifficultyStatsUI(difficultyStats) {
         const totalCrimes = totalSuccessful + totalFailed;
         const overallSuccessRate = totalCrimes > 0 ? Math.round((totalSuccessful / totalCrimes) * 100) : 0;
         const totalValue = getTotalRewardValue(difficultyStats);
+        const totalCostValue = getTotalCostValue(difficultyStats);
+        const netProfitValue = totalValue - totalCostValue;
         const factionCutVal = (document.getElementById('ocFactionCutPercent') && document.getElementById('ocFactionCutPercent').value !== '') ? document.getElementById('ocFactionCutPercent').value : '20';
         
         let html = `
@@ -1303,8 +1718,16 @@ function updateDifficultyStatsUI(difficultyStats) {
                         <span class="summary-value" style="color: #ff6b6b;">${totalFailed}</span>
                     </div>
                     <div class="summary-item">
-                        <span class="summary-label">Total value:</span>
+                        <span class="summary-label">Total rewards:</span>
                         <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Total cost:</span>
+                        <span class="summary-value" style="color: #ffab91;">${formatDollars(totalCostValue)}</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Net profit:</span>
+                        <span class="summary-value" style="color: ${netProfitValue >= 0 ? '#4ecdc4' : '#ff6b6b'};">${formatDollars(netProfitValue)}</span>
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Faction cut %:</span>
@@ -1319,11 +1742,13 @@ function updateDifficultyStatsUI(difficultyStats) {
                     <div style="display: block; margin-bottom: 4px;">Please note:</div>
                     <ul style="margin: 0; padding-left: 20px; text-align: left; display: inline-block;">
                         <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
-                        <li>Reward item values are based on current market value, not the value at the time of the crime.</li>
+                        <li>Reward and consumed-item values use current market value, not the value at the time of the crime.</li>
+                        <li>Cost = Current Market Value of consumed items</li>
                     </ul>
                 </div>
             </div>
-            <table id="difficultyTable" style="width: 100%; border-collapse: collapse;">
+            <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+                <table id="difficultyTable" style="width: 100%; min-width: 500px; border-collapse: collapse;">
                 <thead>
                     <tr>
                         <th data-column="difficulty" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Difficulty <span class="sort-indicator"></span></th>
@@ -1331,7 +1756,9 @@ function updateDifficultyStatsUI(difficultyStats) {
                         <th data-column="successful" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                         <th data-column="failed" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                         <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
-                        <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Rewards <span class="sort-indicator"></span></th>
+                        <th data-column="rewardValue" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes (cash + items at market value)">Rewards <span class="sort-indicator"></span></th>
+                        <th data-column="costValue" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Cost to run (money + consumed items)">Cost <span class="sort-indicator"></span></th>
+                        <th data-column="netValue" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards − cost">Net <span class="sort-indicator"></span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1350,6 +1777,8 @@ function updateDifficultyStatsUI(difficultyStats) {
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${stat.failed}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${stat.successRate}%</td>
                     <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(stat)}</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatCostCell(stat)}</td>
+                    <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatNetCell(stat)}</td>
                 </tr>
             `;
             (Object.values(stat.crimeTypes || {})).forEach(ct => {
@@ -1365,6 +1794,8 @@ function updateDifficultyStatsUI(difficultyStats) {
                     <td style="padding: 8px 12px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
                     <td style="padding: 8px 12px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
                     <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(ctDisplay)}</td>
+                    <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatCostCell(ct)}</td>
+                    <td style="padding: 8px 12px; text-align: center; white-space: nowrap;">${formatNetCell(ct)}</td>
                 </tr>
             `;
             });
@@ -1373,6 +1804,7 @@ function updateDifficultyStatsUI(difficultyStats) {
         html += `
                 </tbody>
             </table>
+            </div>
         `;
         
         difficultyTable.innerHTML = html;
