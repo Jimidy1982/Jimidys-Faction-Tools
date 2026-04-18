@@ -23,6 +23,8 @@
         filterMinScoreCb: 'recruitment_filter_min_score_cb',
         filterMinScore: 'recruitment_filter_min_score',
         filterIgnoreContacted: 'recruitment_filter_ignore_contacted',
+        excludeLeader: 'recruitment_exclude_leader',
+        excludeCoLeader: 'recruitment_exclude_coleader',
         sortKey: 'recruitment_sort_key',
         sortDir: 'recruitment_sort_dir',
         clickedPlayers: 'recruitment_clicked_players',
@@ -146,7 +148,7 @@
     let rankedWarsList = []; // { warId, factions: { id: { name, score, chain } }, war: { start, end, target, winner } }
     let quickListTotal = 0;  // total wars returned by Torn rankedwars API (so we know when quick list is exhausted)
     let factionMap = {};     // factionId -> { name, rank, leader, respect }
-    let playerList = [];     // { id, name, level, warHits, warScore, factionId, factionName, factionRank, respect, leader, ff, bs }
+    let playerList = [];     // { id, name, level, warHits, warScore, factionId, factionName, factionRank, respect, leader, ff, bs, isFactionLeader?, isFactionCoLeader? }
 
     function getApiKey() {
         return (localStorage.getItem('tornApiKey') || '').trim();
@@ -285,6 +287,21 @@
         });
     }
 
+    /** Ranked war report member `position` — Torn uses fixed labels "Leader" and "Co-leader" only. */
+    function getRankedWarMemberPosition(m) {
+        if (!m || typeof m !== 'object') return '';
+        const raw = m.position ?? m.Position ?? '';
+        return String(raw).trim();
+    }
+
+    function isCoLeaderFactionPosition(pos) {
+        return String(pos).trim() === 'Co-leader';
+    }
+
+    function isLeaderFactionPosition(pos) {
+        return String(pos).trim() === 'Leader';
+    }
+
     /** Fetch single war report torn/{warId}?selections=rankedwarreport (used when not batching). */
     async function fetchWarReport(apiKey, warId, progressOpts) {
         const url = `https://api.torn.com/torn/${warId}?selections=rankedwarreport&key=${apiKey}`;
@@ -405,9 +422,15 @@
                         respect: (facInfo && facInfo.respect) || '—',
                         leader: (facInfo && facInfo.leader) || '—',
                         rankId: rankId || null,
-                        warResultText: warResultText
+                        warResultText: warResultText,
+                        isFactionLeader: false,
+                        isFactionCoLeader: false
                     };
                 }
+                const rolePos = getRankedWarMemberPosition(m);
+                if (isCoLeaderFactionPosition(rolePos)) playerMap[pid].isFactionCoLeader = true;
+                else if (isLeaderFactionPosition(rolePos)) playerMap[pid].isFactionLeader = true;
+
                 playerMap[pid].warHits += attacks;
                 if (score > playerMap[pid].warScore) {
                     playerMap[pid].warScore = score;
@@ -512,6 +535,13 @@
             list = list.filter(p => !contactedIds.has(String(p.id)));
         }
 
+        if (document.getElementById('recruitment-exclude-leader')?.checked) {
+            list = list.filter(p => !p.isFactionLeader);
+        }
+        if (document.getElementById('recruitment-exclude-coleader')?.checked) {
+            list = list.filter(p => !p.isFactionCoLeader);
+        }
+
         const leaderHitsBelowOn = document.getElementById('recruitment-filter-leader-hits-below')?.checked;
         const leaderHitsBelowVal = Math.floor(parseNumInput(document.getElementById('recruitment-leader-hits-below')?.value || '10') || 10);
         if (leaderHitsBelowOn && Number.isFinite(leaderHitsBelowVal) && leaderHitsBelowVal >= 0) {
@@ -603,6 +633,10 @@
         if (minScoreFilterEl) { const v = localStorage.getItem(STORAGE_KEYS.filterMinScore); if (v !== null) minScoreFilterEl.value = formatNumInput(v) || v; }
         const ignoreContactedCb = document.getElementById('recruitment-filter-ignore-contacted');
         if (ignoreContactedCb) { const v = localStorage.getItem(STORAGE_KEYS.filterIgnoreContacted); ignoreContactedCb.checked = v === '1'; }
+        const exL = document.getElementById('recruitment-exclude-leader');
+        if (exL) { const v = localStorage.getItem(STORAGE_KEYS.excludeLeader); exL.checked = v === '1'; }
+        const exCL = document.getElementById('recruitment-exclude-coleader');
+        if (exCL) { const v = localStorage.getItem(STORAGE_KEYS.excludeCoLeader); exCL.checked = v === '1'; }
         const sk = localStorage.getItem(STORAGE_KEYS.sortKey);
         const sd = localStorage.getItem(STORAGE_KEYS.sortDir);
         if (sk) sortKey = sk;
@@ -646,6 +680,10 @@
         if (minScoreFilterEl) localStorage.setItem(STORAGE_KEYS.filterMinScore, String(minScoreFilterEl.value).replace(/,/g, ''));
         const ignoreContactedCb = document.getElementById('recruitment-filter-ignore-contacted');
         if (ignoreContactedCb) localStorage.setItem(STORAGE_KEYS.filterIgnoreContacted, ignoreContactedCb.checked ? '1' : '0');
+        const exL = document.getElementById('recruitment-exclude-leader');
+        if (exL) localStorage.setItem(STORAGE_KEYS.excludeLeader, exL.checked ? '1' : '0');
+        const exCL = document.getElementById('recruitment-exclude-coleader');
+        if (exCL) localStorage.setItem(STORAGE_KEYS.excludeCoLeader, exCL.checked ? '1' : '0');
         localStorage.setItem(STORAGE_KEYS.sortKey, sortKey);
         localStorage.setItem(STORAGE_KEYS.sortDir, String(sortDir));
         try {
@@ -962,6 +1000,8 @@
         document.getElementById('recruitment-filter-min-score')?.addEventListener('input', applyResultFiltersAndSave);
         document.getElementById('recruitment-filter-min-score')?.addEventListener('change', applyResultFiltersAndSave);
         document.getElementById('recruitment-filter-ignore-contacted')?.addEventListener('change', applyResultFiltersAndSave);
+        document.getElementById('recruitment-exclude-leader')?.addEventListener('change', applyResultFiltersAndSave);
+        document.getElementById('recruitment-exclude-coleader')?.addEventListener('change', applyResultFiltersAndSave);
 
         document.getElementById('recruitment-table')?.addEventListener('click', (e) => {
             const th = e.target.closest('th.recruitment-sort');

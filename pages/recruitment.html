@@ -34,6 +34,20 @@
                     </select>
                 </div>
                 <div class="recruitment-filter-group">
+                    <span class="recruitment-filter-label">Hide roles (from war report roster)</span>
+                    <div class="recruitment-checkbox-group" style="display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;">
+                        <label class="recruitment-filter-check" style="margin: 0;">
+                            <input type="checkbox" id="recruitment-exclude-leader">
+                            <span>Exclude leaders</span>
+                        </label>
+                        <label class="recruitment-filter-check" style="margin: 0;">
+                            <input type="checkbox" id="recruitment-exclude-coleader">
+                            <span>Exclude co-leaders</span>
+                        </label>
+                    </div>
+                    <span class="recruitment-hint" style="display: block; margin-top: 6px;" title="Matches war report position exactly: Leader or Co-leader. Other roles or a missing position are not excluded.">Only <strong>Leader</strong> and <strong>Co-leader</strong>; missing position is kept.</span>
+                </div>
+                <div class="recruitment-filter-group">
                     <button type="button" id="recruitment-build-list" class="btn">Build Player List</button>
                 </div>
             </div>

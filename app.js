@@ -4394,8 +4394,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
-     * Faction v2 /members often omits signup; fetch v1 profile for members missing accountStartTimestamp
-     * so effective past = account creation (players newer than the activity window).
+     * Fetch v1 profile for members missing accountStartTimestamp (v2 /members often omits signup).
+     * Check Activity no longer awaits this before timeplayed (same as Compare — avoids a long 0% stall);
+     * kept for possible reuse. When accountStart is missing, past snapshot uses the nominal window start.
      */
     async function enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, _textProgressIgnored = null) {
         const need = memberIDs
@@ -5230,11 +5231,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         try {
-            // v2 faction /members often omits signup — resolve in background (no main progress bar; not counted as timeplayed pulls)
-            if (progressDetails) {
-                progressDetails.textContent = 'Preparing (optional profile lookups for join dates)…';
-            }
-            await enrichBattleStatsMembersAccountStart(memberIDs, membersObject, apiKey, null);
+            // Same as “Compare to own faction”: do not block on v1 profile pulls before timeplayed — v2 /members
+            // already supplies accountStartTimestamp when the API includes it.
 
             // Calculate timestamps based on selected period (exact days for custom)
             const periodDays = periodConfig.periodDays;
