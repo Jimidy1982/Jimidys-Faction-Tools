@@ -1,0 +1,110 @@
+<style>
+    .mpr-checklist { list-style: none; padding: 0; margin: 14px 0 0; font-size: 13px; color: #bbb; line-height: 1.55; }
+    .mpr-checklist li { padding: 3px 0 3px 22px; position: relative; }
+    .mpr-checklist li::before { position: absolute; left: 0; top: 3px; width: 16px; text-align: center; font-weight: bold; }
+    .mpr-check--pending::before { content: "○"; color: #666; }
+    .mpr-check--active::before { content: "…"; color: var(--accent-color, #ffd700); }
+    .mpr-check--done::before { content: "✓"; color: #4ecdc4; }
+    .mpr-check--error::before { content: "✗"; color: #ff6b6b; }
+    .mpr-table-options { padding: 10px 12px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid rgba(255,215,0,0.15); }
+    /* Full width of .input-section; avoids global .welcome-message narrow centered column */
+    .mpr-page-intro {
+        margin: 0 0 20px 0;
+        padding: 0 0 18px 0;
+        border-bottom: 1px solid rgba(255, 215, 0, 0.22);
+        line-height: 1.55;
+        font-size: 1.05rem;
+        color: var(--text-color);
+        text-align: left;
+        max-width: none;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .mpr-page-intro code { font-size: 0.95em; }
+    .mpr-activity-loading { display: inline-flex; align-items: center; gap: 8px; color: #bbb; font-size: 13px; }
+    .mpr-activity-loading .mpr-activity-spinner {
+        width: 16px; height: 16px; margin: 0;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        border-radius: 50%;
+        border-top-color: var(--accent-color, #ffd700);
+        animation: spin 1s ease-in-out infinite;
+        flex-shrink: 0;
+    }
+    /* Overrides .date-range-section grid so start, end, and quick buttons sit in one row (wraps on small screens). */
+    .mpr-date-row {
+        display: flex !important;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: flex-end;
+        justify-content: flex-start;
+    }
+    .mpr-quick-range {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .mpr-quick-range-label { color: #888; font-size: 12px; white-space: nowrap; margin-right: 2px; }
+</style>
+<div class="container">
+    <h1>Member Performance</h1>
+
+    <div class="input-section">
+        <p class="mpr-page-intro">
+            Pick a start and end date (TCT), then <strong>Fetch report</strong>.
+        </p>
+        <div class="date-range-section consumption-date-only-section mpr-date-row">
+            <div class="date-input">
+                <label for="mprStartDate">Start date</label>
+                <input type="text" id="mprStartDate" placeholder="YYYY-MM-DD" autocomplete="off">
+            </div>
+            <div class="date-input">
+                <label for="mprEndDate">End date</label>
+                <input type="text" id="mprEndDate" placeholder="YYYY-MM-DD" autocomplete="off">
+            </div>
+            <div id="mprQuickRangeBtns" class="mpr-quick-range" role="group" aria-label="Quick date range">
+                <span class="mpr-quick-range-label">Quick</span>
+                <button type="button" data-mpr-range-days="7">1 week</button>
+                <button type="button" data-mpr-range-days="14">2 weeks</button>
+                <button type="button" data-mpr-range-days="30">30 days</button>
+            </div>
+        </div>
+        <div class="fetch-container" style="margin-top: 12px;">
+            <button type="button" id="mprFetchBtn">Fetch report</button>
+            <div id="mprLoadingSpinner" class="loading-spinner-inline" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Shown during fetch; stays visible above the table while timeplayed (activity) completes -->
+    <div id="mprProgressContainer" class="progress-container" style="display: none; margin-bottom: 20px;">
+        <div class="progress-info">
+            <span id="mprProgressMessage">Working…</span>
+            <span id="mprProgressPercentage">0%</span>
+        </div>
+        <div class="progress-bar">
+            <div id="mprProgressFill" class="progress-fill"></div>
+        </div>
+        <div class="progress-details">
+            <span id="mprProgressDetails"></span>
+        </div>
+        <ul id="mprChecklist" class="mpr-checklist" aria-label="Fetch steps"></ul>
+    </div>
+
+    <div id="mprResultsSection" class="results-section" style="display: none;">
+        <p id="mprRangeSummary" style="color: #ccc; font-size: 0.95rem; margin-bottom: 12px;"></p>
+        <div id="mprWarChainNote" style="display: none; color: #ffb74d; font-size: 0.9rem; margin-bottom: 10px;"></div>
+        <div id="mprTableOptions" class="mpr-table-options" style="display: none;">
+            <details>
+                <summary style="cursor: pointer; color: var(--accent-color); font-weight: 600;">Table options</summary>
+                <div style="margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+                    <label for="mprFactionCutPercent" style="color: #ccc; font-size: 13px;">OC faction cut %</label>
+                    <input type="number" id="mprFactionCutPercent" min="0" max="100" step="1" value="20" style="width: 4rem; padding: 4px 8px;" title="Same meaning as Organised Crime Stats (reward split). The OC score column here is participation points only and does not change with this setting." />
+                    <span style="color: #888; font-size: 12px; max-width: 28rem; line-height: 1.4;">Matches Organised Crime Stats for reward context. <strong>Participation score</strong> in this report is <strong>not</strong> affected by faction cut.</span>
+                </div>
+            </details>
+        </div>
+        <div class="table-scroll-wrapper" style="overflow-x: auto;">
+            <div id="mprTableWrap"></div>
+        </div>
+    </div>
+</div>

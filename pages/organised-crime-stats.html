@@ -2,10 +2,12 @@
     <h1>Organised Crime Stats</h1>
     
     <div class="input-section">
-        <div class="fetch-container">
+        <div class="fetch-container" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
             <button id="fetchOCData">Fetch Crime Data</button>
+            <button type="button" id="loadOcStatsCache" style="display: none;">Load from cache</button>
             <div id="loadingSpinner" class="loading-spinner-inline" style="display: none;"></div>
         </div>
+        <p id="ocStatsCacheHint" style="margin: 10px 0 0 0; font-size: 0.88em; color: #aaa; max-width: 52rem; line-height: 1.45;"></p>
         
         <div id="progressContainer" class="progress-container" style="display: none;">
             <div class="progress-info">

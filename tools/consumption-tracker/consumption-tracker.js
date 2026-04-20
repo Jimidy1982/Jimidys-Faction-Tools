@@ -118,6 +118,203 @@ function consumptionSetSelectByInt(id, num, maxVal) {
 
 var CONSUMPTION_EXACT_WAR_TIMES_VIP_REQUIRED = 1;
 
+const CONSUMPTION_XANAX_HITS_SORT_KEY = 'consumptionXanaxHitsSort';
+
+const CONSUMPTION_XANAX_FLAG_LOW_KEY = 'consumptionXanaxFlagLowHits';
+const CONSUMPTION_XANAX_FLAG_USE_MIN_HITS_KEY = 'consumptionXanaxFlagUseMinHits';
+const CONSUMPTION_XANAX_FLAG_USE_PER_XANAX_KEY = 'consumptionXanaxFlagUsePerXanax';
+const CONSUMPTION_XANAX_FLAG_MIN_HITS_KEY = 'consumptionXanaxFlagMinHits';
+const CONSUMPTION_XANAX_FLAG_PER_XANAX_KEY = 'consumptionXanaxFlagPerXanax';
+const CONSUMPTION_XANAX_FLAG_COMBINE_KEY = 'consumptionXanaxFlagCombineMode';
+
+/** @returns {'or'|'and'} — default AND (strict: fail either threshold → flag) when unset. */
+function consumptionGetXanaxFlagCombineMode() {
+    const v = (localStorage.getItem(CONSUMPTION_XANAX_FLAG_COMBINE_KEY) || 'and').toLowerCase();
+    return v === 'and' ? 'and' : 'or';
+}
+
+function consumptionSetXanaxFlagCombineMode(mode) {
+    localStorage.setItem(CONSUMPTION_XANAX_FLAG_COMBINE_KEY, mode === 'and' ? 'and' : 'or');
+}
+
+/** One-time: split legacy single "Flag" toggle into two independent rule toggles. */
+function consumptionMigrateXanaxFlagRuleKeysOnce() {
+    if (window._consumptionXanaxFlagRuleKeysMigrated) return;
+    window._consumptionXanaxFlagRuleKeysMigrated = true;
+    const legacy = localStorage.getItem(CONSUMPTION_XANAX_FLAG_LOW_KEY);
+    if (legacy === null || legacy === '') return;
+    const on = legacy === '1' || legacy === 'true';
+    const vMin = localStorage.getItem(CONSUMPTION_XANAX_FLAG_USE_MIN_HITS_KEY);
+    const vPer = localStorage.getItem(CONSUMPTION_XANAX_FLAG_USE_PER_XANAX_KEY);
+    if (vMin === null || vMin === '') {
+        localStorage.setItem(CONSUMPTION_XANAX_FLAG_USE_MIN_HITS_KEY, on ? '1' : '0');
+    }
+    if (vPer === null || vPer === '') {
+        localStorage.setItem(CONSUMPTION_XANAX_FLAG_USE_PER_XANAX_KEY, on ? '1' : '0');
+    }
+    localStorage.removeItem(CONSUMPTION_XANAX_FLAG_LOW_KEY);
+}
+
+function consumptionGetXanaxFlagUseMinHits() {
+    const v = localStorage.getItem(CONSUMPTION_XANAX_FLAG_USE_MIN_HITS_KEY);
+    if (v === null || v === '') return true;
+    return v === '1' || v === 'true';
+}
+
+function consumptionSetXanaxFlagUseMinHits(on) {
+    localStorage.setItem(CONSUMPTION_XANAX_FLAG_USE_MIN_HITS_KEY, on ? '1' : '0');
+}
+
+function consumptionGetXanaxFlagUsePerXanax() {
+    const v = localStorage.getItem(CONSUMPTION_XANAX_FLAG_USE_PER_XANAX_KEY);
+    if (v === null || v === '') return true;
+    return v === '1' || v === 'true';
+}
+
+function consumptionSetXanaxFlagUsePerXanax(on) {
+    localStorage.setItem(CONSUMPTION_XANAX_FLAG_USE_PER_XANAX_KEY, on ? '1' : '0');
+}
+
+function consumptionGetXanaxFlagMinHits() {
+    const raw = localStorage.getItem(CONSUMPTION_XANAX_FLAG_MIN_HITS_KEY);
+    if (raw === null || raw === '') return 35;
+    return consumptionClampInt(parseInt(raw, 10), 0, 999999, 35);
+}
+
+function consumptionSetXanaxFlagMinHits(value) {
+    const n = consumptionClampInt(parseInt(String(value).trim(), 10), 0, 999999, 35);
+    localStorage.setItem(CONSUMPTION_XANAX_FLAG_MIN_HITS_KEY, String(n));
+}
+
+function consumptionGetXanaxFlagPerXanax() {
+    const raw = localStorage.getItem(CONSUMPTION_XANAX_FLAG_PER_XANAX_KEY);
+    if (raw === null || raw === '') return 10;
+    return consumptionClampInt(parseInt(raw, 10), 0, 500, 10);
+}
+
+function consumptionSetXanaxFlagPerXanax(value) {
+    const n = consumptionClampInt(parseInt(String(value).trim(), 10), 0, 500, 10);
+    localStorage.setItem(CONSUMPTION_XANAX_FLAG_PER_XANAX_KEY, String(n));
+}
+
+/**
+ * True if total attacks are flagged (low activity).
+ * When only one rule checkbox is on: flag if that rule fails (threshold > 0 and attacks below it).
+ * When both checkboxes are on and both thresholds apply: OR = lenient (meeting either rule clears the flag → flag only if BOTH fail). AND = strict (must meet both → flag if EITHER fails).
+ * qty must be > 0.
+ */
+function consumptionXanaxIsLowFlagged(totalHits, xanaxQty) {
+    if (xanaxQty <= 0) return false;
+    const minH = consumptionGetXanaxFlagMinHits();
+    const fac = consumptionGetXanaxFlagPerXanax();
+    const th = Number(totalHits) || 0;
+    const useMin = consumptionGetXanaxFlagUseMinHits();
+    const usePer = consumptionGetXanaxFlagUsePerXanax();
+    const minFail = useMin && minH > 0 && th < minH;
+    const ratioFail = usePer && fac > 0 && th < fac * xanaxQty;
+    const activeMin = useMin && minH > 0;
+    const activePer = usePer && fac > 0;
+    if (!activeMin && !activePer) return false;
+
+    if (!useMin || !usePer) {
+        return minFail || ratioFail;
+    }
+
+    if (!activeMin) return ratioFail;
+    if (!activePer) return minFail;
+
+    if (consumptionGetXanaxFlagCombineMode() === 'or') {
+        return minFail && ratioFail;
+    }
+    return minFail || ratioFail;
+}
+
+function consumptionRefreshConsumptionUiFromCache() {
+    const d = window.consumptionTrackerData;
+    if (!d || !Array.isArray(d.members) || !d.members.length) return;
+    updateConsumptionUI(
+        d.members,
+        d.totalTime,
+        d.cacheStats,
+        d.wasCached,
+        d.itemValues || {},
+        d.fromTimestamp,
+        d.toTimestamp,
+        d.itemTypes || {},
+        d.warChainMeta || { ok: false, warnings: [], message: '', hitsById: {} }
+    );
+}
+
+function consumptionGetXanaxHitsSort() {
+    try {
+        const raw = localStorage.getItem(CONSUMPTION_XANAX_HITS_SORT_KEY);
+        if (raw) {
+            const o = JSON.parse(raw);
+            const allowed = new Set(['name', 'war', 'outside', 'total', 'xanax', 'value']);
+            if (o && allowed.has(o.column) && (o.direction === 'asc' || o.direction === 'desc')) {
+                return { column: o.column, direction: o.direction };
+            }
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    return { column: 'xanax', direction: 'desc' };
+}
+
+function consumptionSetXanaxHitsSort(column, direction) {
+    localStorage.setItem(CONSUMPTION_XANAX_HITS_SORT_KEY, JSON.stringify({ column, direction }));
+}
+
+function consumptionToggleXanaxHitsSort(column) {
+    const cur = consumptionGetXanaxHitsSort();
+    if (cur.column === column) {
+        consumptionSetXanaxHitsSort(column, cur.direction === 'asc' ? 'desc' : 'asc');
+    } else {
+        consumptionSetXanaxHitsSort(column, column === 'name' ? 'asc' : 'desc');
+    }
+}
+
+/** Sort Xanax + hits player rows (wc ok uses hit fields; otherwise those sort as 0). */
+function consumptionSortXanaxHitsPlayers(players, sortColumn, sortDirection, xanaxUnitPrice, wcOk) {
+    const dir = sortDirection === 'asc' ? 1 : -1;
+    const num = (p, key) => {
+        if (!wcOk) return 0;
+        const v = p[key];
+        return v != null && !isNaN(Number(v)) ? Number(v) : 0;
+    };
+    const copy = players.slice();
+    copy.sort((a, b) => {
+        if (sortColumn === 'name') {
+            const an = (a.name || '').toLowerCase();
+            const bn = (b.name || '').toLowerCase();
+            if (an < bn) return sortDirection === 'asc' ? -1 : 1;
+            if (an > bn) return sortDirection === 'asc' ? 1 : -1;
+            return 0;
+        }
+        if (sortColumn === 'war') return dir * (num(a, 'warHits') - num(b, 'warHits'));
+        if (sortColumn === 'outside') return dir * (num(a, 'outsideHits') - num(b, 'outsideHits'));
+        if (sortColumn === 'total') return dir * (num(a, 'totalAttacksHits') - num(b, 'totalAttacksHits'));
+        if (sortColumn === 'xanax') {
+            const ax = a.xanax || 0;
+            const bx = b.xanax || 0;
+            return dir * (ax - bx);
+        }
+        if (sortColumn === 'value') {
+            const av = (a.xanax || 0) * (xanaxUnitPrice || 0);
+            const bv = (b.xanax || 0) * (xanaxUnitPrice || 0);
+            return dir * (av - bv);
+        }
+        return 0;
+    });
+    return copy;
+}
+
+function consumptionXanaxHitsSortIndicator(column) {
+    const s = consumptionGetXanaxHitsSort();
+    if (s.column !== column) return '<span class="sort-indicator"></span>';
+    return `<span class="sort-indicator">${s.direction === 'asc' ? '↑' : '↓'}</span>`;
+}
+
 /**
  * VIP 1+ unlocks “exact war & chain times” for the war→war preset (same pattern as War Report custom end).
  */
@@ -607,6 +804,214 @@ function getGapsForRange(segments, rangeFrom, rangeTo) {
     return gaps;
 }
 
+/** Same burst + throttle pattern as War & Chain Reporter (`fetchTornApiInChunks` in app.js). */
+async function consumptionFetchTornApiInChunks(apiKey, requests, chunkSize = 10) {
+    const batchTornApiCalls = window.batchTornApiCalls;
+    if (typeof batchTornApiCalls !== 'function') {
+        throw new Error('batchTornApiCalls is not available (load the main app first).');
+    }
+    const allData = {};
+    const throttleDelay = 667;
+    const firstBurstCount = 50;
+    const burstRequests = requests.slice(0, firstBurstCount);
+    const throttledRequests = requests.slice(firstBurstCount);
+
+    if (burstRequests.length > 0) {
+        for (let i = 0; i < burstRequests.length; i += chunkSize) {
+            const chunk = burstRequests.slice(i, i + chunkSize);
+            Object.assign(allData, await batchTornApiCalls(apiKey, chunk));
+        }
+    }
+    if (throttledRequests.length > 0) {
+        await new Promise(r => setTimeout(r, 30000));
+    }
+    if (throttledRequests.length > 0) {
+        for (let i = 0; i < throttledRequests.length; i += chunkSize) {
+            const chunk = throttledRequests.slice(i, i + chunkSize);
+            Object.assign(allData, await batchTornApiCalls(apiKey, chunk));
+            if (i + chunkSize < throttledRequests.length) {
+                await new Promise(r => setTimeout(r, throttleDelay));
+            }
+        }
+    }
+    return allData;
+}
+
+function consumptionNormalizeRankedWarsArray(warListPayload) {
+    const root = (warListPayload && warListPayload.rankedwars) || {};
+    if (Array.isArray(root)) return root;
+    const nested = root.rankedwars;
+    if (Array.isArray(nested)) return nested;
+    if (nested && typeof nested === 'object') return Object.values(nested);
+    if (root && typeof root === 'object') return Object.values(root);
+    return [];
+}
+
+function consumptionWarOverlapsRange(war, fromTs, toTs) {
+    if (!war || war.start == null) return false;
+    const warEnd = war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
+    return war.start <= toTs && warEnd >= fromTs;
+}
+
+/** Merge chain report payloads into per-member chain attack totals (same as `processChainReports` in app.js). */
+function consumptionMergeChainReportsIntoHits(chainReportData, hitsById) {
+    const ensure = id => {
+        const k = String(id);
+        if (!hitsById[k]) hitsById[k] = { war: 0, chain: 0, outside: 0 };
+        return hitsById[k];
+    };
+    for (const report of Object.values(chainReportData || {})) {
+        if (report && report.error) continue;
+        if (report && report.chainreport && Array.isArray(report.chainreport.attackers)) {
+            report.chainreport.attackers.forEach(attacker => {
+                const memberId = String(attacker.id);
+                const row = ensure(memberId);
+                const atk = attacker.attacks || {};
+                const total = atk.total != null ? atk.total : 0;
+                const warInChain = atk.war != null ? atk.war : 0;
+                row.chain += total || 0;
+                row.outside += Math.max(0, (total || 0) - (warInChain || 0));
+            });
+        }
+    }
+}
+
+/** Merge ranked war reports for our faction only (war attack counts, as in `processRankedWarReports` in app.js). */
+function consumptionMergeWarReportsIntoHits(warReportData, hitsById, ownFactionId) {
+    const own = String(ownFactionId);
+    const ensure = id => {
+        const k = String(id);
+        if (!hitsById[k]) hitsById[k] = { war: 0, chain: 0, outside: 0 };
+        return hitsById[k];
+    };
+    for (const report of Object.values(warReportData || {})) {
+        if (report && report.error) continue;
+        if (!report || !report.rankedwarreport || !report.rankedwarreport.factions) continue;
+        for (const factionData of Object.values(report.rankedwarreport.factions)) {
+            if (String(factionData.id) !== own) continue;
+            if (!Array.isArray(factionData.members)) continue;
+            for (const memberData of factionData.members) {
+                const memberId = memberData.id != null ? String(memberData.id) : '';
+                if (!memberId) continue;
+                const attacks = memberData.attacks || 0;
+                ensure(memberId).war += attacks || 0;
+            }
+        }
+    }
+}
+
+/**
+ * War hits + chain hits for the same [fromTs, toTs] as consumption (War & Chain Reporter endpoints).
+ * @returns {{ ok: boolean, hitsById: Object.<string, {war:number, chain:number, outside:number}>, warnings: string[], message?: string }}
+ */
+async function consumptionFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
+    const warnings = [];
+    const hitsById = {};
+    const key = (apiKey || '').trim();
+    if (!key) {
+        return { ok: false, hitsById, warnings, message: 'No API key.' };
+    }
+    if (typeof window.batchTornApiCalls !== 'function') {
+        return { ok: false, hitsById, warnings, message: 'API batch helper not loaded.' };
+    }
+
+    const userUrl = consumptionTornFetchUrl(`https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(key)}`);
+    const userRes = await fetch(userUrl);
+    const userData = await userRes.json();
+    if (userData.error) {
+        return { ok: false, hitsById, warnings, message: userData.error.error || 'User API error' };
+    }
+    const factionId =
+        userData.faction_id ||
+        userData.faction?.faction_id ||
+        (userData.faction && userData.faction.id != null ? userData.faction.id : null);
+    if (!factionId) {
+        return {
+            ok: false,
+            hitsById,
+            warnings,
+            message: 'No faction on profile (same requirement as War & Chain Reporter).'
+        };
+    }
+    const fid = String(factionId);
+
+    const warListRequest = {
+        name: 'rankedwars',
+        url: `https://api.torn.com/v2/faction/${fid}/rankedwars`,
+        params: ''
+    };
+    const warListData = await window.batchTornApiCalls(key, [warListRequest]);
+    const warRoot = warListData.rankedwars;
+    if (warRoot && warRoot.error) {
+        return { ok: false, hitsById, warnings, message: warRoot.error.error || 'Ranked wars error' };
+    }
+
+    const allWars = consumptionNormalizeRankedWarsArray(warListData);
+    let overlapping = allWars.filter(w => consumptionWarOverlapsRange(w, fromTs, toTs));
+    overlapping.sort((a, b) => (b.start || 0) - (a.start || 0));
+    const WAR_CAP = 100;
+    if (overlapping.length > WAR_CAP) {
+        warnings.push(`Ranked war reports capped at ${WAR_CAP} wars (this range overlaps ${overlapping.length}).`);
+        overlapping = overlapping.slice(0, WAR_CAP);
+    }
+
+    const chainListRequest = {
+        name: 'chains',
+        url: `https://api.torn.com/v2/faction/${fid}/chains`,
+        params: `limit=100&sort=DESC&to=${toTs}&from=${fromTs}&timestamp=${Math.floor(Date.now() / 1000)}`
+    };
+    const chainListData = await window.batchTornApiCalls(key, [chainListRequest]);
+    const chainRoot = chainListData.chains;
+    if (chainRoot && chainRoot.error) {
+        return { ok: false, hitsById, warnings, message: chainRoot.error.error || 'Chains list error' };
+    }
+    const chainsResponse = chainRoot || {};
+    const chainsArray = chainsResponse.chains || [];
+    if (chainsArray.length >= 100) {
+        warnings.push('Chain list is limited to 100 chains (Torn API); very busy ranges may be incomplete.');
+    }
+
+    if (chainsArray.length > 0) {
+        const chainReportRequests = chainsArray.map((chainData, index) => {
+            const factionIdForChain = chainData.faction || chainData.faction_id || chainData.id;
+            const ts = chainData.end || chainData.start || index;
+            return {
+                name: `chain_${index}`,
+                url: `https://api.torn.com/v2/faction/${factionIdForChain}/chainreport`,
+                params: `timestamp=${ts}`
+            };
+        });
+        const chainReportData = await consumptionFetchTornApiInChunks(key, chainReportRequests);
+        consumptionMergeChainReportsIntoHits(chainReportData, hitsById);
+    }
+
+    if (overlapping.length > 0) {
+        const warReportRequests = overlapping.map((warData, index) => {
+            const warId = warData.id || warData.war_id;
+            return {
+                name: `war_${index}`,
+                url: `https://api.torn.com/v2/faction/${warId}/rankedwarreport`,
+                params: ''
+            };
+        });
+        const warReportData = await consumptionFetchTornApiInChunks(key, warReportRequests);
+        consumptionMergeWarReportsIntoHits(warReportData, hitsById, fid);
+    }
+
+    return { ok: true, hitsById, warnings, message: '' };
+}
+
+function consumptionApplyWarChainHitsToMembers(members, hitsById) {
+    if (!Array.isArray(members) || !hitsById) return;
+    for (const m of members) {
+        const id = m.id != null ? String(m.id) : '';
+        const h = id ? hitsById[id] : null;
+        m.warHits = h ? h.war : 0;
+        m.outsideHits = h ? h.outside : 0;
+        m.totalAttacksHits = h ? (h.war + h.outside) : 0;
+    }
+}
+
 /** Fetch all armory news for a single date range from the API. Returns array of entries.
  *  progressCallback(page, count, rangeProgressFraction) — fraction is 0–1 for how much of this range is covered.
  */
@@ -666,6 +1071,51 @@ function initConsumptionTracker() {
     const fetchBtn = document.getElementById('fetchData');
     if (fetchBtn) {
         fetchBtn.addEventListener('click', handleConsumptionFetch);
+    }
+
+    if (!window._consumptionXanaxHitsSortClick) {
+        window._consumptionXanaxHitsSortClick = true;
+        document.addEventListener('click', e => {
+            const el = e.target && e.target.closest && e.target.closest('[data-xanax-sort]');
+            if (!el || !el.dataset || !el.dataset.xanaxSort) return;
+            e.preventDefault();
+            consumptionToggleXanaxHitsSort(el.dataset.xanaxSort);
+            consumptionRefreshConsumptionUiFromCache();
+        });
+    }
+
+    consumptionMigrateXanaxFlagRuleKeysOnce();
+    if (!window._consumptionXanaxFlagLowListener) {
+        window._consumptionXanaxFlagLowListener = true;
+        document.addEventListener('change', e => {
+            const t = e.target;
+            if (!t) return;
+            if (t.name === 'consumptionXanaxFlagCombine') {
+                consumptionSetXanaxFlagCombineMode(t.value === 'and' ? 'and' : 'or');
+                consumptionRefreshConsumptionUiFromCache();
+                return;
+            }
+            if (!t.id) return;
+            if (t.id === 'consumptionXanaxFlagUseMinHits') {
+                consumptionSetXanaxFlagUseMinHits(!!t.checked);
+                consumptionRefreshConsumptionUiFromCache();
+                return;
+            }
+            if (t.id === 'consumptionXanaxFlagUsePerXanax') {
+                consumptionSetXanaxFlagUsePerXanax(!!t.checked);
+                consumptionRefreshConsumptionUiFromCache();
+                return;
+            }
+            if (t.id === 'consumptionXanaxFlagMinHits') {
+                consumptionSetXanaxFlagMinHits(t.value);
+                consumptionRefreshConsumptionUiFromCache();
+                return;
+            }
+            if (t.id === 'consumptionXanaxFlagPerXanax') {
+                consumptionSetXanaxFlagPerXanax(t.value);
+                consumptionRefreshConsumptionUiFromCache();
+            }
+        });
     }
     
     // Initialize date pickers using global function (same as War & Chain Reporter)
@@ -1207,6 +1657,48 @@ const handleConsumptionFetch = async () => {
         
         // Store item values for UI
         consumptionTrackerData.itemValues = itemValues;
+
+        let warChainMeta = { ok: false, hitsById: {}, warnings: [], message: '' };
+        if (typeof window.batchTornApiCalls === 'function') {
+            if (progressContainer) {
+                progressMessage.textContent = 'Fetching war & chain activity (same range)...';
+                progressPercentage.textContent = '100%';
+                progressFill.style.width = '100%';
+                progressDetails.textContent = 'Ranked wars overlapping range + chains (v2 API)';
+            }
+            try {
+                warChainMeta = await consumptionFetchWarChainHitsForRange(apiKey, fromTimestamp, toTimestamp);
+                if (warChainMeta.ok && warChainMeta.hitsById) {
+                    consumptionApplyWarChainHitsToMembers(consumptionMembers, warChainMeta.hitsById);
+                } else {
+                    consumptionMembers.forEach(m => {
+                        m.warHits = null;
+                        m.outsideHits = null;
+                        m.totalAttacksHits = null;
+                    });
+                }
+            } catch (e) {
+                console.warn('[CONSUMPTION] War/chain fetch failed:', e);
+                warChainMeta = {
+                    ok: false,
+                    hitsById: {},
+                    warnings: [],
+                    message: e.message || 'War/chain fetch failed'
+                };
+                consumptionMembers.forEach(m => {
+                    m.warHits = null;
+                    m.outsideHits = null;
+                    m.totalAttacksHits = null;
+                });
+            }
+        } else {
+            consumptionMembers.forEach(m => {
+                m.warHits = null;
+                m.outsideHits = null;
+                m.totalAttacksHits = null;
+            });
+            warChainMeta = { ok: false, hitsById: {}, warnings: [], message: 'War/chain stats need the main app (batch API helper).' };
+        }
         
         // Hide progress bar
         if (progressContainer) {
@@ -1214,7 +1706,7 @@ const handleConsumptionFetch = async () => {
         }
         
         // Update UI with the data
-        updateConsumptionUI(consumptionMembers, totalTime, null, wasCached, itemValues, fromTimestamp, toTimestamp, itemTypes);
+        updateConsumptionUI(consumptionMembers, totalTime, null, wasCached, itemValues, fromTimestamp, toTimestamp, itemTypes, warChainMeta);
         
         // Show results section
         if (resultsSection) {
@@ -1259,7 +1751,9 @@ function sortConsumptionMembers(members, sortColumn, sortDirection) {
     });
 }
 
-function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValues = {}, fromTimestamp = null, toTimestamp = null, itemTypes = {}) {
+function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValues = {}, fromTimestamp = null, toTimestamp = null, itemTypes = {}, warChainMeta = null) {
+    consumptionMigrateXanaxFlagRuleKeysOnce();
+    const wc = warChainMeta || { ok: false, warnings: [], message: '', hitsById: {} };
     // Store data globally for CSV export
     consumptionTrackerData = {
         members: members,
@@ -1270,7 +1764,8 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
         itemValues: itemValues,
         fromTimestamp: fromTimestamp,
         toTimestamp: toTimestamp,
-        itemTypes: itemTypes
+        itemTypes: itemTypes,
+        warChainMeta: wc
     };
     window.consumptionTrackerData = consumptionTrackerData;
     
@@ -1284,6 +1779,14 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
         });
         return;
     }
+    
+    /** Preserve open "Players" lists across UI rebuild (e.g. Xanax flag toggles refresh the table). */
+    const expandedPlayerListItems = new Set();
+    tableContainer.querySelectorAll('.players-list[data-item]').forEach(el => {
+        const id = el.getAttribute('data-item');
+        if (!id) return;
+        if (el.style.display === 'block') expandedPlayerListItems.add(id);
+    });
     
                // Define columns for the table
            const columns = [
@@ -1401,7 +1904,7 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
     summaryHTML += `
             </div>
         </div>
-        <div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,215,0,0.15);display:flex;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div class="consumption-summary-options" style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,215,0,0.15);display:flex;align-items:center;flex-wrap:wrap;gap:12px;">
             <label class="tools-member-id-cb-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:#ccc;font-size:13px;">
                 <input type="checkbox" class="tools-show-member-id-cb" ${window.toolsGetShowMemberIdInBrackets() ? 'checked' : ''} style="accent-color:#ffd700;" />
                 Show player <strong>Name [ID]</strong> in lists (like Torn)
@@ -1462,7 +1965,7 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
                        .sort((a, b) => b[col.id] - a[col.id]); // Sort by quantity descending
                    
                    // For points, show price/value if market value is available
-                   const statsHTML = col.isPoints && itemPrice > 0
+                   let statsHTML = col.isPoints && itemPrice > 0
                        ? `<span class="item-total">Total: ${itemTotal} points</span>
                           <span class="item-value">Value: $${itemValue.toLocaleString()}</span>
                           <span class="item-price">Price: $${itemPrice.toLocaleString()} per point</span>`
@@ -1471,35 +1974,134 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
                        : `<span class="item-total">Total: ${itemTotal}</span>
                           <span class="item-value">Value: $${itemValue.toLocaleString()}</span>
                           <span class="item-price">Price: $${itemPrice.toLocaleString()}</span>`;
-                   
+                   if (col.id === 'xanax') {
+                       if (wc.ok && wc.warnings && wc.warnings.length) {
+                           statsHTML += `<div class="consumption-war-chain-note">${wc.warnings.map(consumptionEscapeHtml).join(' ')}</div>`;
+                       } else if (!wc.ok && wc.message) {
+                           statsHTML += `<div class="consumption-war-chain-note consumption-war-chain-note--err">${consumptionEscapeHtml(wc.message)}</div>`;
+                       }
+                   }
+
+                   const showWarChain = col.id === 'xanax';
+                   const useMinRule = consumptionGetXanaxFlagUseMinHits();
+                   const usePerRule = consumptionGetXanaxFlagUsePerXanax();
+                   const combineMode = consumptionGetXanaxFlagCombineMode();
+                   const xanaxCombineBlock =
+                       useMinRule && usePerRule
+                           ? `<div class="consumption-xanax-hits-toolbar-combine" role="radiogroup" aria-label="Combine the two flag rules">
+                                <span class="consumption-xanax-hits-toolbar-combine-hint" title="AND: both rules must pass (attacks high enough for each) to avoid a flag — failing either rule flags the row. OR: passing either rule is enough to avoid a flag — only failing both rules flags the row.">Combine</span>
+                                <label class="consumption-xanax-hits-toolbar-radio"><input type="radio" id="consumptionXanaxFlagCombineOr" name="consumptionXanaxFlagCombine" value="or" ${combineMode === 'or' ? 'checked' : ''} />OR</label>
+                                <label class="consumption-xanax-hits-toolbar-radio"><input type="radio" id="consumptionXanaxFlagCombineAnd" name="consumptionXanaxFlagCombine" value="and" ${combineMode === 'and' ? 'checked' : ''} />AND</label>
+                              </div>`
+                           : '';
+                   const xanaxHitsToolbar = showWarChain
+                       ? `<div class="consumption-xanax-hits-toolbar">
+                            <label class="consumption-xanax-hits-toolbar-line" title="When enabled, highlights rows if total attacks are below the number. Use 0 to skip this threshold. Saved in this browser.">
+                                <input type="checkbox" id="consumptionXanaxFlagUseMinHits" ${useMinRule ? 'checked' : ''} />
+                                <span class="consumption-xanax-hits-toolbar-line-label">Minimum Flagged Hits</span>
+                                <input type="number" id="consumptionXanaxFlagMinHits" class="consumption-xanax-hits-toolbar-in" min="0" max="999999" step="1" value="${consumptionGetXanaxFlagMinHits()}" ${useMinRule ? '' : 'disabled'} />
+                            </label>
+                            ${xanaxCombineBlock}
+                            <label class="consumption-xanax-hits-toolbar-line" title="When enabled, highlights rows if total attacks are below (factor × Xanax quantity). Use 0 to skip this threshold.">
+                                <input type="checkbox" id="consumptionXanaxFlagUsePerXanax" ${usePerRule ? 'checked' : ''} />
+                                <span class="consumption-xanax-hits-toolbar-line-label">Minimum Hits Per Xanax</span>
+                                <input type="number" id="consumptionXanaxFlagPerXanax" class="consumption-xanax-hits-toolbar-in" min="0" max="500" step="1" value="${consumptionGetXanaxFlagPerXanax()}" ${usePerRule ? '' : 'disabled'} />
+                            </label>
+                          </div>`
+                       : '';
+                   const warChainListHead = showWarChain
+                       ? `<div class="consumption-players-list-head">
+                               <span class="consumption-players-list-head-name consumption-xanax-hits-sort-h consumption-xanax-hits-sort-h--player" data-xanax-sort="name" title="Sort by player name">Player${consumptionXanaxHitsSortIndicator('name')}</span>
+                               <span class="consumption-players-list-head-metric consumption-xanax-hits-sort-h" data-xanax-sort="war" title="Sort by ranked war hits">War${consumptionXanaxHitsSortIndicator('war')}</span>
+                               <span class="consumption-players-list-head-metric consumption-xanax-hits-sort-h" data-xanax-sort="outside" title="Sort by outside (chain) hits">OUTSIDE${consumptionXanaxHitsSortIndicator('outside')}</span>
+                               <span class="consumption-players-list-head-metric consumption-xanax-hits-sort-h" data-xanax-sort="total" title="Sort by total attacks (war + outside)">Total${consumptionXanaxHitsSortIndicator('total')}</span>
+                               <span class="consumption-players-list-head-metric consumption-xanax-hits-sort-h" data-xanax-sort="xanax" title="Sort by Xanax quantity">XAN QTY${consumptionXanaxHitsSortIndicator('xanax')}</span>
+                               <span class="consumption-players-list-head-value consumption-xanax-hits-sort-h" data-xanax-sort="value" title="Sort by Xanax value ($)">Value${consumptionXanaxHitsSortIndicator('value')}</span>
+                          </div>`
+                       : '';
+
+                   const xanaxHitsSortedPlayers =
+                       col.id === 'xanax'
+                           ? (() => {
+                                 const xs = consumptionGetXanaxHitsSort();
+                                 return consumptionSortXanaxHitsPlayers(
+                                     playersWhoUsed,
+                                     xs.column,
+                                     xs.direction,
+                                     itemPrice,
+                                     wc.ok
+                                 );
+                             })()
+                           : playersWhoUsed;
+
+                   const itemTitleHtml = col.id === 'xanax' ? 'Xanax (Including hits)' : col.label;
                    itemSection.innerHTML = `
                        <div class="item-header">
                            <div class="item-info">
-                               <h4 class="item-name">${col.label}</h4>
+                               <h4 class="item-name">${itemTitleHtml}</h4>
                                <div class="item-stats">
                                    ${statsHTML}
                                </div>
                            </div>
                            <div class="item-players">
                                <button class="players-toggle" data-item="${col.id}">
-                                   Players (${playersWhoUsed.length})
+                                   ${expandedPlayerListItems.has(col.id) ? 'Players ▲' : 'Players ▼'} (${playersWhoUsed.length})
                                </button>
                            </div>
                        </div>
-                       <div class="players-list" data-item="${col.id}" style="display: none;">
-                           ${playersWhoUsed.map(player => {
+                       <div class="players-list${showWarChain ? ' players-list--xanax-hits' : ''}" data-item="${col.id}" style="display: ${expandedPlayerListItems.has(col.id) ? 'block' : 'none'};">
+                           ${xanaxHitsToolbar}
+                           ${warChainListHead}
+                           ${xanaxHitsSortedPlayers.map(player => {
                                const quantity = player[col.id];
                                const costHTML = col.isPoints && itemPrice > 0
                                    ? `<span class="player-cost">$${(quantity * itemPrice).toLocaleString()}</span>`
                                    : col.isPoints
                                    ? `<span class="player-cost">${quantity} points</span>`
                                    : `<span class="player-cost">$${(quantity * itemPrice).toLocaleString()}</span>`;
+                               const okWc = wc && wc.ok;
+                               const wStr = okWc ? (Number(player.warHits) || 0).toLocaleString() : '—';
+                               const tStr = okWc ? (Number(player.totalAttacksHits) || 0).toLocaleString() : '—';
+                               const oStr = okWc ? (Number(player.outsideHits) || 0).toLocaleString() : '—';
+                               const warChainCells = showWarChain
+                                   ? `<span class="player-activity-hits war" title="Ranked war attacks (wars overlapping this range)">${wStr}</span>
+                                      <span class="player-activity-hits outside" title="Chain reports: sum of (attacks.total - attacks.war)">${oStr}</span>
+                                      <span class="player-activity-hits total-attacks" title="War hits + outside (ranked war + chain outside)">${tStr}</span>`
+                                   : '';
+                               const totalHits = okWc ? (Number(player.totalAttacksHits) || 0) : 0;
+                               const useMinHits = consumptionGetXanaxFlagUseMinHits();
+                               const usePerXanax = consumptionGetXanaxFlagUsePerXanax();
+                               const minH = consumptionGetXanaxFlagMinHits();
+                               const fac = consumptionGetXanaxFlagPerXanax();
+                               const lowHitRatio =
+                                   showWarChain &&
+                                   okWc &&
+                                   consumptionXanaxIsLowFlagged(totalHits, quantity);
+                               const rowClass = showWarChain
+                                   ? `player-item player-item--war-chain${lowHitRatio ? ' player-item--low-xanax-hit-ratio' : ''}`
+                                   : 'player-item';
+                               const rowTitle = lowHitRatio
+                                   ? (() => {
+                                       const parts = [];
+                                       if (useMinHits && minH > 0 && totalHits < minH) {
+                                           parts.push(`attacks ${totalHits} < min ${minH}`);
+                                       }
+                                       if (usePerXanax && fac > 0 && quantity > 0 && totalHits < fac * quantity) {
+                                           parts.push(`attacks ${totalHits} < ${fac} x Xanax (${quantity}) = ${fac * quantity}`);
+                                       }
+                                       return parts.length ? `Low activity: ${parts.join('; ')}.` : '';
+                                   })()
+                                   : '';
+                               const rowTitleAttr = rowTitle
+                                   ? rowTitle.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+                                   : '';
                                return `
-                               <div class="player-item">
+                               <div class="${rowClass}"${rowTitleAttr ? ` title="${rowTitleAttr}"` : ''}>
                                    <a href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank" class="player-link"${window.toolsMemberLinkAttrs(player.name, player.id)}>
                                        ${window.toolsFormatMemberDisplayLabel(player, window.toolsGetShowMemberIdInBrackets())}
                                    </a>
-                                   <span class="player-quantity">${quantity}</span>
+                                   ${warChainCells}
+                                   <span class="player-quantity${showWarChain ? ' player-quantity--xanax' : ''}">${quantity}</span>
                                    ${costHTML}
                                </div>
                            `;
@@ -1828,12 +2430,14 @@ function exportGroupedToCSV() {
 
 // Export players data to CSV
 function exportPlayersToCSV() {
+    consumptionMigrateXanaxFlagRuleKeysOnce();
     if (!consumptionTrackerData) {
         alert('No data to export. Please fetch data first.');
         return;
     }
     
-    const { members, itemValues, fromTimestamp, toTimestamp } = consumptionTrackerData;
+    const { members, itemValues, fromTimestamp, toTimestamp, warChainMeta } = consumptionTrackerData;
+    const wc = warChainMeta && warChainMeta.ok ? warChainMeta : null;
     
                // Define columns
            const columns = [
@@ -1873,7 +2477,11 @@ function exportPlayersToCSV() {
     const fileStamp = `${new Date(fromTimestamp * 1000).toISOString().slice(0, 10)}_${new Date(toTimestamp * 1000).toISOString().slice(0, 10)}`;
     
     let csvContent = `Consumption Tracker - Player Details\n`;
-    csvContent += `${rangeCsv}\n\n`;
+    csvContent += `${rangeCsv}\n`;
+    if (wc) {
+        csvContent += `Xanax low-flag (when both rule checkboxes on and both thresholds >0): combine=${consumptionGetXanaxFlagCombineMode().toUpperCase()}; AND=strict (fail either threshold → flag). OR=lenient (flag only if both thresholds fail). Single checkbox on: flag if that rule fails. "Minimum Flagged Hits" ${consumptionGetXanaxFlagUseMinHits() ? 'on' : 'off'} (threshold=${consumptionGetXanaxFlagMinHits()}, 0=skip) | "Minimum Hits Per Xanax" ${consumptionGetXanaxFlagUsePerXanax() ? 'on' : 'off'} (factor=${consumptionGetXanaxFlagPerXanax()}, 0=skip)\n`;
+    }
+    csvContent += `\n`;
     
     // Calculate which items have usage across all players
     const itemsWithUsage = {};
@@ -1886,7 +2494,7 @@ function exportPlayersToCSV() {
     
     // Header row (only for items with usage)
     const pointsPrice = itemValues['Points'] || 0;
-    csvContent += `Player Name,`;
+    csvContent += `Player Name${wc ? ',War hits,Outside (chain total - chain war),Total attacks (war + outside),Low flag (see rule line above)' : ''},`;
     Object.values(itemsWithUsage).forEach(col => {
         if (col.isPoints && pointsPrice === 0) {
             csvContent += `${col.label} (Qty),`;
@@ -1898,7 +2506,14 @@ function exportPlayersToCSV() {
     
     // Player rows
     members.forEach(member => {
-        csvContent += `${window.toolsCsvMemberCell({ name: member.name, id: member.id })},`;
+        csvContent += `${window.toolsCsvMemberCell({ name: member.name, id: member.id })}`;
+        if (wc) {
+            const qx = member.xanax || 0;
+            const th = Number(member.totalAttacksHits) || 0;
+            const low = consumptionXanaxIsLowFlagged(th, qx) ? 'Yes' : 'No';
+            csvContent += `,${csvPlainInt(member.warHits ?? 0)},${csvPlainInt(member.outsideHits ?? 0)},${csvPlainInt(member.totalAttacksHits ?? 0)},${low}`;
+        }
+        csvContent += ',';
         let playerTotal = 0;
         
         Object.values(itemsWithUsage).forEach(col => {
@@ -1934,7 +2549,7 @@ function exportPlayersToCSV() {
     
     const grandTotal = Object.values(totalValues).reduce((sum, cost) => sum + cost, 0);
     
-    csvContent += `TOTALS,`;
+    csvContent += wc ? 'TOTALS,,,,' : 'TOTALS,';
     Object.values(itemsWithUsage).forEach(col => {
         if (col.isPoints) {
             const price = itemValues['Points'] || 0;
@@ -1965,21 +2580,12 @@ function exportPlayersToCSV() {
 window.exportConsumptionToCSV = exportConsumptionToCSV;
 window.exportGroupedToCSV = exportGroupedToCSV;
 window.exportPlayersToCSV = exportPlayersToCSV;
+/** Other faction tools (e.g. member performance range) reuse war/chain hit totals for the same date range. */
+window.factionToolsFetchWarChainHitsForRange = consumptionFetchWarChainHitsForRange;
 
 if (!window._consumptionToolsMemberIdListener) {
     window._consumptionToolsMemberIdListener = true;
     window.addEventListener('toolsMemberIdDisplayChanged', () => {
-        const d = window.consumptionTrackerData;
-        if (!d || !Array.isArray(d.members) || !d.members.length) return;
-        updateConsumptionUI(
-            d.members,
-            d.totalTime,
-            d.cacheStats,
-            d.wasCached,
-            d.itemValues || {},
-            d.fromTimestamp,
-            d.toTimestamp,
-            d.itemTypes || {}
-        );
+        consumptionRefreshConsumptionUiFromCache();
     });
 }

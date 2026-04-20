@@ -1,8 +1,183 @@
 console.log('[ORGANISED CRIME STATS] organised-crime-stats.js LOADED');
 
 const OC_STATS_DATE_FILTERS_LS_KEY = 'organisedCrimeStats_dateFilters';
+const OC_STATS_CRIMES_CACHE_KEY = 'organisedCrimeStats_crimesCache_v1';
+const OC_STATS_PULL_META_KEY = 'organisedCrimeStats_apiPullMeta_v1';
 const OC_STATS_ALLOWED_PRESETS = new Set(['all', '7', '14', '30', '90', '365', 'custom']);
 const OC_STATS_ALLOWED_UNITS = new Set(['days', 'months', 'years']);
+
+/** Stable fingerprint for the API key (never store the raw key in the crimes cache payload beyond this). */
+function ocStatsApiKeyFingerprint(apiKey) {
+    const s = String(apiKey || '');
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h.toString(16);
+}
+
+function saveOcStatsApiPullMeta(apiKey, crimePages, crimeCount) {
+    try {
+        const totalApiCalls = Number(crimePages) + 2;
+        localStorage.setItem(
+            OC_STATS_PULL_META_KEY,
+            JSON.stringify({
+                v: 1,
+                keyFp: ocStatsApiKeyFingerprint(apiKey),
+                savedAt: Date.now(),
+                crimePages: Number(crimePages) || 0,
+                totalApiCalls,
+                crimeCount: Number(crimeCount) || 0
+            })
+        );
+    } catch (e) {
+        console.warn('[ORGANISED CRIME STATS] Could not save API pull meta:', e);
+    }
+}
+
+function readOcStatsApiPullMeta(apiKey) {
+    try {
+        const raw = localStorage.getItem(OC_STATS_PULL_META_KEY);
+        if (!raw) return null;
+        const o = JSON.parse(raw);
+        if (!o || o.v !== 1 || o.keyFp !== ocStatsApiKeyFingerprint(apiKey)) return null;
+        return o;
+    } catch {
+        return null;
+    }
+}
+
+function saveOcStatsCrimesCache(apiKey, allCrimes, crimePages) {
+    saveOcStatsApiPullMeta(apiKey, crimePages, allCrimes.length);
+    try {
+        localStorage.setItem(
+            OC_STATS_CRIMES_CACHE_KEY,
+            JSON.stringify({
+                v: 1,
+                keyFp: ocStatsApiKeyFingerprint(apiKey),
+                savedAt: Date.now(),
+                crimePages: Number(crimePages) || 0,
+                crimes: allCrimes
+            })
+        );
+    } catch (e) {
+        console.warn('[ORGANISED CRIME STATS] Could not cache crimes JSON (quota or size):', e);
+    }
+}
+
+function loadOcStatsCrimesFromCache(apiKey) {
+    try {
+        const raw = localStorage.getItem(OC_STATS_CRIMES_CACHE_KEY);
+        if (!raw) return null;
+        const o = JSON.parse(raw);
+        if (!o || o.v !== 1 || o.keyFp !== ocStatsApiKeyFingerprint(apiKey) || !Array.isArray(o.crimes)) return null;
+        return o.crimes;
+    } catch (e) {
+        console.warn('[ORGANISED CRIME STATS] Could not read crimes cache:', e);
+        return null;
+    }
+}
+
+function formatOcStatsCacheDate(ts) {
+    try {
+        return new Date(ts).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    } catch {
+        return '';
+    }
+}
+
+function updateOcStatsCacheHint() {
+    const el = document.getElementById('ocStatsCacheHint');
+    const btn = document.getElementById('loadOcStatsCache');
+    const apiKey = localStorage.getItem('tornApiKey');
+    if (!el) return;
+    if (!apiKey) {
+        el.textContent = '';
+        if (btn) btn.style.display = 'none';
+        return;
+    }
+    const meta = readOcStatsApiPullMeta(apiKey);
+    const crimesCached = !!loadOcStatsCrimesFromCache(apiKey);
+    if (!meta) {
+        el.textContent = '';
+        if (btn) btn.style.display = 'none';
+        return;
+    }
+    const when = formatOcStatsCacheDate(meta.savedAt);
+    el.textContent =
+        `Last full fetch used about ${meta.totalApiCalls} API calls (${meta.crimePages} crime page${meta.crimePages === 1 ? '' : 's'} at 100 crimes each + faction members + item prices). ` +
+        `${crimesCached ? `Crimes are cached locally (${meta.crimeCount} rows, saved ${when}). "Load from cache" uses 2 calls (members + items) only.` : `Crime list was not cached (too large or first run); next fetch will re-pull all crime pages.`}`;
+    if (btn) btn.style.display = crimesCached ? 'inline-block' : 'none';
+}
+
+/**
+ * After `allCrimes` is available (from API or local cache), fetch members + items and build tables.
+ * @returns {Promise<void>}
+ */
+async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
+    const {
+        progressMessage,
+        progressDetails,
+        resultsSection
+    } = progressRefs;
+
+    if (progressMessage) progressMessage.textContent = 'Fetching current faction members...';
+    if (progressDetails) progressDetails.textContent = 'Loading member list...';
+
+    const apiKey = localStorage.getItem('tornApiKey');
+    const membersResponse = await fetch(`https://api.torn.com/v2/faction/members?key=${apiKey}`);
+    const membersData = await membersResponse.json();
+
+    if (membersData.error) {
+        throw new Error(`Could not fetch faction members: ${membersData.error.error}`);
+    }
+
+    const currentMemberIds = new Set();
+    const playerNames = {};
+    const membersArray = membersData.members || [];
+
+    membersArray.forEach(member => {
+        currentMemberIds.add(member.id.toString());
+        playerNames[member.id.toString()] = member.name;
+    });
+
+    if (progressMessage) progressMessage.textContent = 'Processing crime data...';
+    if (progressDetails) progressDetails.textContent = 'Analyzing crimes (filtering by current members)...';
+
+    const factionCutInput = document.getElementById('ocFactionCutPercent');
+    const factionCutPercent = factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 20)) : 20;
+    const { difficultyStats, playerStats } = processCrimeData(allCrimes, playerNames, currentMemberIds, factionCutPercent);
+
+    if (progressMessage) progressMessage.textContent = 'Loading item details...';
+    if (progressDetails) progressDetails.textContent = 'Fetching item names and values...';
+    try {
+        const itemsResponse = await fetch(`https://api.torn.com/torn/?selections=items&key=${apiKey}`);
+        const itemsData = await itemsResponse.json();
+        ocStatsData.itemsMap = itemsData && itemsData.items ? itemsData.items : {};
+    } catch (e) {
+        console.warn('[ORGANISED CRIME STATS] Could not fetch Torn items:', e);
+        ocStatsData.itemsMap = {};
+    }
+
+    const totalSuccessful = difficultyStats.reduce((sum, stat) => sum + stat.successful, 0);
+    const totalFailed = difficultyStats.reduce((sum, stat) => sum + stat.failed, 0);
+    const totalCrimes = totalSuccessful + totalFailed;
+
+    ocStatsData.difficultyStats = difficultyStats;
+    ocStatsData.playerStats = playerStats;
+    ocStatsData.totalCrimes = totalCrimes;
+    ocStatsData.allCrimes = allCrimes;
+    ocStatsData.currentMemberIds = Array.from(currentMemberIds);
+    ocStatsData.playerNames = playerNames;
+
+    updateOCStatsUI(difficultyStats, playerStats, totalCrimes);
+    reapplyOcStatsDateFiltersToTables();
+
+    if (resultsSection) {
+        resultsSection.style.display = 'block';
+    }
+}
 
 function persistOcStatsDateFilters() {
     try {
@@ -108,6 +283,14 @@ function initOrganisedCrimeStats() {
         });
     }
 
+    const loadCacheBtn = document.getElementById('loadOcStatsCache');
+    if (loadCacheBtn) {
+        const btn = loadCacheBtn.cloneNode(true);
+        loadCacheBtn.parentNode.replaceChild(btn, loadCacheBtn);
+        btn.addEventListener('click', () => handleOCDataLoadFromCache());
+    }
+    updateOcStatsCacheHint();
+
     const exportBtn = document.getElementById('exportStats');
     if (exportBtn) {
         const newExportBtn = exportBtn.cloneNode(true);
@@ -206,6 +389,8 @@ const handleOCDataFetch = async () => {
     try {
         if (loadingSpinner) loadingSpinner.style.display = 'inline-block';
         if (fetchBtn) fetchBtn.disabled = true;
+        const loadCacheBtnStart = document.getElementById('loadOcStatsCache');
+        if (loadCacheBtnStart) loadCacheBtnStart.disabled = true;
         if (progressContainer) progressContainer.style.display = 'block';
 
         console.log('[ORGANISED CRIME STATS] Fetching organised crime data...');
@@ -261,71 +446,19 @@ const handleOCDataFetch = async () => {
         }
         
         console.log(`[ORGANISED CRIME STATS] Total crimes fetched: ${allCrimes.length}`);
-        
-        if (progressMessage) progressMessage.textContent = 'Fetching current faction members...';
-        if (progressDetails) progressDetails.textContent = 'Loading member list...';
-        
-        // Fetch current faction members using v2 API
-        const membersResponse = await fetch(`https://api.torn.com/v2/faction/members?key=${apiKey}`);
-        const membersData = await membersResponse.json();
-        
-        if (membersData.error) {
-            throw new Error(`Could not fetch faction members: ${membersData.error.error}`);
-        }
-        
-        // Build set of current member IDs and their names
-        const currentMemberIds = new Set();
-        const playerNames = {};
-        const membersArray = membersData.members || [];
-        
-        console.log(`[ORGANISED CRIME STATS] Found ${membersArray.length} current faction members`);
-        membersArray.forEach(member => {
-            currentMemberIds.add(member.id.toString());
-            playerNames[member.id.toString()] = member.name;
+
+        if (progressFill) progressFill.style.width = '100%';
+        if (progressPercentage) progressPercentage.textContent = `${pageCount} pages`;
+
+        await runOcStatsAfterCrimesReady(allCrimes, {
+            progressMessage,
+            progressDetails,
+            resultsSection
         });
-        
-        if (progressMessage) progressMessage.textContent = 'Processing crime data...';
-        if (progressDetails) progressDetails.textContent = 'Analyzing crimes (filtering by current members)...';
-        
-        // Process the data, filtering by current members only
-        const factionCutInput = document.getElementById('ocFactionCutPercent');
-        const factionCutPercent = factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 20)) : 20;
-        const { difficultyStats, playerStats } = processCrimeData(allCrimes, playerNames, currentMemberIds, factionCutPercent);
-        
-        // Fetch Torn items (names, market_value, image) for reward display
-        if (progressMessage) progressMessage.textContent = 'Loading item details...';
-        if (progressDetails) progressDetails.textContent = 'Fetching item names and values...';
-        try {
-            const itemsResponse = await fetch(`https://api.torn.com/torn/?selections=items&key=${apiKey}`);
-            const itemsData = await itemsResponse.json();
-            ocStatsData.itemsMap = (itemsData && itemsData.items) ? itemsData.items : {};
-        } catch (e) {
-            console.warn('[ORGANISED CRIME STATS] Could not fetch Torn items:', e);
-            ocStatsData.itemsMap = {};
-        }
-        
-        // Calculate total crimes from the processed data
-        const totalSuccessful = difficultyStats.reduce((sum, stat) => sum + stat.successful, 0);
-        const totalFailed = difficultyStats.reduce((sum, stat) => sum + stat.failed, 0);
-        const totalCrimes = totalSuccessful + totalFailed;
-        
-        // Store data globally (preserve sortState)
-        ocStatsData.difficultyStats = difficultyStats;
-        ocStatsData.playerStats = playerStats;
-        ocStatsData.totalCrimes = totalCrimes;
-        ocStatsData.allCrimes = allCrimes; // Store raw crime data for filtering
-        ocStatsData.currentMemberIds = Array.from(currentMemberIds); // Convert Set to Array for storage
-        ocStatsData.playerNames = playerNames; // Store for filtering
-        
-        // Update UI (full data first, then apply saved time filters so tables match dropdowns)
-        updateOCStatsUI(difficultyStats, playerStats, totalCrimes);
-        reapplyOcStatsDateFiltersToTables();
-        
-        // Show results section
-        if (resultsSection) {
-            resultsSection.style.display = 'block';
-        }
-        
+
+        saveOcStatsCrimesCache(apiKey, allCrimes, pageCount);
+        updateOcStatsCacheHint();
+
         if (progressContainer) progressContainer.style.display = 'none';
 
     } catch (error) {
@@ -347,9 +480,69 @@ const handleOCDataFetch = async () => {
     } finally {
         if (loadingSpinner) loadingSpinner.style.display = 'none';
         if (fetchBtn) fetchBtn.disabled = false;
+        const loadB = document.getElementById('loadOcStatsCache');
+        if (loadB) loadB.disabled = false;
         if (progressContainer) progressContainer.style.display = 'none';
         ocStatsData.isFetching = false; // Reset guard flag
         console.log('[ORGANISED CRIME STATS] Fetch complete');
+    }
+};
+
+/** Rebuild stats from locally cached crimes (2 API calls: members + items only). */
+const handleOCDataLoadFromCache = async () => {
+    if (ocStatsData.isFetching) {
+        console.warn('[ORGANISED CRIME STATS] Load already in progress');
+        return;
+    }
+    const apiKey = localStorage.getItem('tornApiKey');
+    if (!apiKey) {
+        alert('Please enter your API key in the sidebar first');
+        return;
+    }
+    const crimes = loadOcStatsCrimesFromCache(apiKey);
+    if (!crimes || crimes.length === 0) {
+        alert('No cached crime list for this API key. Run "Fetch Crime Data" once to build the cache.');
+        return;
+    }
+
+    ocStatsData.isFetching = true;
+    const loadingSpinner = document.getElementById('loadingSpinner');
+    const fetchBtn = document.getElementById('fetchOCData');
+    const loadCacheBtn = document.getElementById('loadOcStatsCache');
+    const resultsSection = document.querySelector('.results-section');
+    const progressContainer = document.getElementById('progressContainer');
+    const progressMessage = document.getElementById('progressMessage');
+    const progressPercentage = document.getElementById('progressPercentage');
+    const progressFill = document.getElementById('progressFill');
+    const progressDetails = document.getElementById('progressDetails');
+
+    try {
+        if (loadingSpinner) loadingSpinner.style.display = 'inline-block';
+        if (fetchBtn) fetchBtn.disabled = true;
+        if (loadCacheBtn) loadCacheBtn.disabled = true;
+        if (progressContainer) progressContainer.style.display = 'block';
+        if (progressMessage) progressMessage.textContent = 'Loading from local cache...';
+        if (progressDetails) progressDetails.textContent = `${crimes.length} crimes in cache — 2 live API calls (members + items)`;
+        if (progressPercentage) progressPercentage.textContent = '2 calls';
+        if (progressFill) progressFill.style.width = '30%';
+
+        await runOcStatsAfterCrimesReady(crimes, {
+            progressMessage,
+            progressDetails,
+            resultsSection
+        });
+
+        updateOcStatsCacheHint();
+        if (progressContainer) progressContainer.style.display = 'none';
+    } catch (error) {
+        console.error('[ORGANISED CRIME STATS] Error loading from cache:', error);
+        alert('Error loading from cache: ' + error.message);
+    } finally {
+        if (loadingSpinner) loadingSpinner.style.display = 'none';
+        if (fetchBtn) fetchBtn.disabled = false;
+        if (loadCacheBtn) loadCacheBtn.disabled = false;
+        if (progressContainer) progressContainer.style.display = 'none';
+        ocStatsData.isFetching = false;
     }
 };
 
@@ -667,6 +860,9 @@ function getPlayerSortValue(player, column) {
     if (column === 'totalRewardMoney') {
         return getPlayerTotalRewardValue(player);
     }
+    if (column === 'highestDifficultySucceeded') {
+        return Number(player.highestDifficultySucceeded) || 0;
+    }
     const v = player[column];
     return typeof v === 'number' ? v : Number(v) || 0;
 }
@@ -816,6 +1012,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             totalParticipations: 0,
             successfulParticipations: 0,
             failedParticipations: 0,
+            highestDifficultySucceeded: 0,
             totalScore: 0,
             successRate: 0,
             totalRewardMoney: 0,
@@ -925,6 +1122,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                                 totalParticipations: 0,
                                 successfulParticipations: 0,
                                 failedParticipations: 0,
+                                highestDifficultySucceeded: 0,
                                 totalScore: 0,
                                 successRate: 0,
                                 totalRewardMoney: 0,
@@ -981,6 +1179,11 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                         // Count outcome
                         if (outcome === 'Successful') {
                             playerMap[playerId].successfulParticipations++;
+                            const diffNum = parseInt(String(difficulty), 10);
+                            if (diffNum >= 1 && diffNum <= 10) {
+                                const prev = playerMap[playerId].highestDifficultySucceeded || 0;
+                                if (diffNum > prev) playerMap[playerId].highestDifficultySucceeded = diffNum;
+                            }
                         } else {
                             playerMap[playerId].failedParticipations++;
                         }
@@ -1197,7 +1400,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
             
             <!-- Table Wrapper (SCROLLABLE) -->
             <div class="table-scroll-wrapper" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
-                <table id="playerTable" style="width: 100%; min-width: 700px; border-collapse: collapse;">
+                <table id="playerTable" style="width: 100%; min-width: 820px; border-collapse: collapse;">
                     <thead>
                         <tr>
                             <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">${window.toolsMemberColumnHeaderWrap('<span>Player Name <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
@@ -1206,6 +1409,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                             <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                             <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                             <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
+                            <th data-column="highestDifficultySucceeded" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Highest OC difficulty (1–10) where this player had a successful slot outcome in the filtered period.">Highest D. <span class="sort-indicator"></span></th>
                             <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes this player participated in">Rewards <span class="sort-indicator"></span></th>
                             <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
                         </tr>
@@ -1216,6 +1420,10 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         playerStats.forEach((player, index) => {
             const rateColor = player.successRate >= 70 ? '#4ecdc4' : 
                              player.successRate >= 50 ? '#ffd700' : '#ff6b6b';
+            const hiD = Number(player.highestDifficultySucceeded) || 0;
+            const hiDCell = hiD >= 1
+                ? `<span style="font-weight: bold; color: #ffd700;">${hiD}/10</span>`
+                : '<span style="color: #666;">—</span>';
             
             // Main player row
             html += `
@@ -1230,6 +1438,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     <td style="padding: 12px; text-align: center; color: #4ecdc4; font-weight: bold;">${player.successfulParticipations}</td>
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${player.failedParticipations}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${player.successRate}%</td>
+                    <td style="padding: 12px; text-align: center;">${hiDCell}</td>
                     <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(player)}</td>
                     <td style="padding: 12px; text-align: center;">
                         ${player.totalParticipations > 0 ? `
@@ -1245,7 +1454,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
             if (player.totalParticipations > 0) {
                 html += `
                     <tr class="details-row" data-player-id="${player.id}" style="display: none; background-color: rgba(255, 215, 0, 0.05);">
-                        <td colspan="8" style="padding: 20px;">
+                        <td colspan="9" style="padding: 20px;">
                             <div style="background-color: var(--secondary-color); padding: 15px; border-radius: 8px; border-left: 3px solid var(--accent-color);">
                                 <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">Difficulty Breakdown for ${player.name}</h4>
                                 <table style="width: 100%; border-collapse: collapse;">
@@ -1523,9 +1732,11 @@ function exportOCStatsToCSV() {
     });
     
     csvContent += '\n\nPLAYER PARTICIPATION STATS\n';
-    csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate,Rewards\n';
+    csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate,Highest difficulty succeeded (1-10),Rewards\n';
     sortedPlayerStats.forEach(player => {
-        csvContent += `${window.toolsCsvMemberCell(player)},${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%,"${Array.isArray(player.rewardParticipations) ? formatDollars(getPlayerTotalRewardValue(player)) : formatRewardsSummary(player)}"\n`;
+        const hiD = Number(player.highestDifficultySucceeded) || 0;
+        const hiDcsv = hiD >= 1 ? `${hiD}/10` : '';
+        csvContent += `${window.toolsCsvMemberCell(player)},${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%,${hiDcsv},"${Array.isArray(player.rewardParticipations) ? formatDollars(getPlayerTotalRewardValue(player)) : formatRewardsSummary(player)}"\n`;
     });
     
     csvContent += '\n\nPLAYER DIFFICULTY BREAKDOWN\n';
@@ -1874,7 +2085,7 @@ function updatePlayerStatsUI(playerStats) {
         
         // Now just build the table
         let html = `
-            <table id="playerTable" style="width: 100%; border-collapse: collapse;">
+            <table id="playerTable" style="width: 100%; min-width: 820px; border-collapse: collapse;">
                 <thead>
                     <tr>
                         <th data-column="name" style="padding: 12px; text-align: left; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">${window.toolsMemberColumnHeaderWrap('<span>Player Name <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
@@ -1883,7 +2094,8 @@ function updatePlayerStatsUI(playerStats) {
                         <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                         <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                         <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
-                        <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;">Rewards <span class="sort-indicator"></span></th>
+                        <th data-column="highestDifficultySucceeded" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Highest OC difficulty (1–10) where this player had a successful slot outcome in the filtered period.">Highest D. <span class="sort-indicator"></span></th>
+                        <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes this player participated in">Rewards <span class="sort-indicator"></span></th>
                         <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
                     </tr>
                 </thead>
@@ -1893,6 +2105,10 @@ function updatePlayerStatsUI(playerStats) {
         playerStats.forEach((player, index) => {
             const rateColor = player.successRate >= 70 ? '#4ecdc4' : 
                             player.successRate >= 50 ? '#ffd700' : '#ff6b6b';
+            const hiD = Number(player.highestDifficultySucceeded) || 0;
+            const hiDCell = hiD >= 1
+                ? `<span style="font-weight: bold; color: #ffd700;">${hiD}/10</span>`
+                : '<span style="color: #666;">—</span>';
             
             html += `
                 <tr style="border-bottom: 1px solid var(--border-color);" data-player-id="${player.id}">
@@ -1906,6 +2122,7 @@ function updatePlayerStatsUI(playerStats) {
                     <td style="padding: 12px; text-align: center; color: #4ecdc4; font-weight: bold;">${player.successfulParticipations}</td>
                     <td style="padding: 12px; text-align: center; color: #ff6b6b; font-weight: bold;">${player.failedParticipations}</td>
                     <td style="padding: 12px; text-align: center; font-weight: bold; font-size: 1.1em; color: ${rateColor};">${player.successRate}%</td>
+                    <td style="padding: 12px; text-align: center;">${hiDCell}</td>
                     <td style="padding: 12px; text-align: center; white-space: nowrap;">${formatRewardsCell(player)}</td>
                     <td style="padding: 12px; text-align: center;">
                         ${player.totalParticipations > 0 ? `
@@ -1921,7 +2138,7 @@ function updatePlayerStatsUI(playerStats) {
             if (player.totalParticipations > 0) {
                 html += `
                     <tr class="details-row" data-player-id="${player.id}" style="display: none; background-color: rgba(255, 215, 0, 0.05);">
-                        <td colspan="8" style="padding: 20px;">
+                        <td colspan="9" style="padding: 20px;">
                             <div style="background-color: var(--secondary-color); padding: 15px; border-radius: 8px; border-left: 3px solid var(--accent-color);">
                                 <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">Difficulty Breakdown for ${player.name}</h4>
                                 <table style="width: 100%; border-collapse: collapse;">

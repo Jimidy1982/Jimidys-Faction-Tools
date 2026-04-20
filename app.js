@@ -3831,6 +3831,24 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 };
                 document.head.appendChild(script);
+            } else if (page.includes('member-performance-range')) {
+                const oldScript = document.getElementById('member-performance-range-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src = './tools/member-performance-range/member-performance-range.js';
+                script.id = 'member-performance-range-script';
+                script.onload = () => {
+                    console.log('[APP] member-performance-range.js loaded');
+                    if (typeof initMemberPerformanceRange === 'function') {
+                        initMemberPerformanceRange();
+                    } else if (window.initMemberPerformanceRange) {
+                        window.initMemberPerformanceRange();
+                    }
+                };
+                script.onerror = (err) => {
+                    console.error('[APP] Failed to load member-performance-range.js', err);
+                };
+                document.body.appendChild(script);
             } else if (page.includes('faction-battle-stats')) {
                 initBattleStats();
             } else if (page.includes('war-chain-reporter')) {
