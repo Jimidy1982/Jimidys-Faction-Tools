@@ -136,6 +136,33 @@
         return null;
     }
 
+    /** From v2/faction/members `last_action` (same fields as War Dashboard / battle stats). */
+    function mprFormatRelativeFromUnixSeconds(ts) {
+        const now = Math.floor(Date.now() / 1000);
+        const diff = Math.max(0, now - ts);
+        const days = Math.floor(diff / 86400);
+        if (days === 0) return 'Today';
+        if (days === 1) return '1 day ago';
+        return `${days} days ago`;
+    }
+
+    function mprLastOnlineFromMember(m) {
+        const la = (m && m.last_action) || {};
+        const ts = la.timestamp != null ? Number(la.timestamp) : null;
+        const tsOk = ts != null && !isNaN(ts) && ts > 0;
+        const relative = la.relative != null ? String(la.relative).trim() : '';
+        const statusRaw = la.status != null ? String(la.status).trim() : '';
+        const status = statusRaw.toLowerCase();
+        let display = relative;
+        if (!display && tsOk) display = mprFormatRelativeFromUnixSeconds(ts);
+        if (!display && statusRaw) display = statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1).toLowerCase();
+        if (!display) display = '—';
+        let sortVal = tsOk ? ts : 0;
+        if (!tsOk && (status === 'online' || status === 'idle')) sortVal = Math.floor(Date.now() / 1000);
+        const title = tsOk ? mprFormatTctUtc(ts) : (relative || statusRaw || '').trim();
+        return { sortVal, display, title };
+    }
+
     function mprParseYmd(ymd) {
         if (!ymd || typeof ymd !== 'string') return null;
         const p = ymd.split('-').map(Number);
@@ -760,6 +787,8 @@
         switch (col) {
             case 'name':
                 return (row.name || '').toLowerCase();
+            case 'lastOnline':
+                return row.lastOnlineSort == null || row.lastOnlineSort === 0 ? -Infinity : row.lastOnlineSort;
             case 'daysInFaction':
                 return row.daysInFaction == null ? -Infinity : row.daysInFaction;
             case 'crimeScore':
@@ -802,6 +831,7 @@
                 : nameHeaderClickable;
         const nameTh = `<th style="padding:10px;text-align:left;background:var(--secondary-color);border-bottom:1px solid var(--border-color);vertical-align:middle;">${nameThInner}</th>`;
         const otherHeaders = [
+            ['lastOnline', 'Last online'],
             ['daysInFaction', 'Days in faction'],
             ['crimeScore', 'OC score'],
             ['warHits', 'War hits'],
@@ -815,7 +845,7 @@
             )
             .join('');
         let html =
-            '<table class="mpr-roster-table" style="width:100%;min-width:1040px;border-collapse:collapse;"><thead><tr>' +
+            '<table class="mpr-roster-table" style="width:100%;min-width:1160px;border-collapse:collapse;"><thead><tr>' +
             nameTh +
             otherHeaders +
             '</tr></thead><tbody>';
@@ -828,6 +858,8 @@
             const linkAttrs =
                 typeof window.toolsMemberLinkAttrs === 'function' ? window.toolsMemberLinkAttrs(row.name, row.id) : '';
             const nameCell = `<a class="player-link" href="https://www.torn.com/profiles.php?XID=${row.id}" target="_blank" rel="noopener noreferrer"${linkAttrs}>${label}</a>`;
+            const loTitle = row.lastOnlineTitle ? mprEscapeHtml(row.lastOnlineTitle) : '';
+            const lastOnlineCell = `<span title="${loTitle}">${mprEscapeHtml(row.lastOnlineDisplay || '—')}</span>`;
             const daysCell = row.daysInFaction == null ? '—' : String(row.daysInFaction);
             const crimeCell = `<strong style="color:#ffd700">${row.crimeScore}</strong> <span style="color:#aaa;font-size:0.85em">(${row.ocParts} parts)</span><details style="margin-top:4px;"><summary style="cursor:pointer;color:var(--accent-color);font-size:0.85em;">Details</summary><div style="margin-top:6px;padding:8px;background:var(--secondary-color);border-radius:6px;max-width:360px;">${mprCrimeDetailsHtml(
                 row.ocPlayer || { totalParticipations: 0, difficultyBreakdown: {} }
@@ -848,7 +880,7 @@
                       )}</div></details>`
                     : '<span style="color:#888">$0</span>';
 
-            html += `<tr style="border-bottom:1px solid var(--border-color);"><td style="padding:10px;">${nameCell}</td><td style="padding:10px;text-align:center;">${daysCell}</td><td style="padding:10px;vertical-align:top;">${crimeCell}</td><td style="padding:10px;text-align:center;">${war}</td><td style="padding:10px;text-align:center;">${out}</td><td style="padding:10px;text-align:center;">${act}</td><td style="padding:10px;vertical-align:top;">${costCell}</td></tr>`;
+            html += `<tr style="border-bottom:1px solid var(--border-color);"><td style="padding:10px;">${nameCell}</td><td style="padding:10px;text-align:center;white-space:nowrap;font-size:0.92em;color:#ccc;">${lastOnlineCell}</td><td style="padding:10px;text-align:center;">${daysCell}</td><td style="padding:10px;vertical-align:top;">${crimeCell}</td><td style="padding:10px;text-align:center;">${war}</td><td style="padding:10px;text-align:center;">${out}</td><td style="padding:10px;text-align:center;">${act}</td><td style="padding:10px;vertical-align:top;">${costCell}</td></tr>`;
         });
         html += '</tbody></table>';
         wrap.innerHTML = html;
@@ -915,9 +947,13 @@
             const outsideHits = h ? h.outside : warMeta.ok ? 0 : null;
             const ah = activityPending ? null : activityHoursById[id];
             const cost = mprConsumptionCostDollars(cons, itemValues);
+            const lo = mprLastOnlineFromMember(m);
             return {
                 id,
                 name: m.name,
+                lastOnlineSort: lo.sortVal,
+                lastOnlineDisplay: lo.display,
+                lastOnlineTitle: lo.title,
                 daysInFaction: mprDaysInFaction(m, rangeEndTs),
                 crimeScore: ocPlayer.totalScore,
                 ocParts: ocPlayer.totalParticipations,

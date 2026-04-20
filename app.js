@@ -699,27 +699,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Recruitment tool requires VIP 3
     const RECRUITMENT_VIP_REQUIRED = 3;
+    /** Member Performance (date-range roster) requires VIP 1+ */
+    const MEMBER_PERFORMANCE_VIP_REQUIRED = 1;
     window.currentVipLevel = window.currentVipLevel ?? 0;
     /** True only after we've fetched VIP (welcome flow); avoids redirecting on refresh before key is validated. */
     window.vipLevelKnown = window.vipLevelKnown ?? false;
 
-    /** Apply VIP gating to Recruitment: grey out and tooltip if vipLevel < RECRUITMENT_VIP_REQUIRED. */
+    /** Apply VIP gating to Recruitment (VIP 3) and Member Performance (VIP 1): nav + home tool cards. */
     function applyVipGating(vipLevel) {
         const level = vipLevel ?? window.currentVipLevel ?? 0;
         window.currentVipLevel = level;
-        const hasAccess = level >= RECRUITMENT_VIP_REQUIRED;
-        const tooltip = 'Requires VIP 3. Send Xanax to Jimidy to unlock this tool.';
+
+        const hasRecruitment = level >= RECRUITMENT_VIP_REQUIRED;
+        const recruitTooltip = 'Requires VIP 3. Send Xanax to Jimidy to unlock this tool.';
         document.querySelectorAll('#mainNav a[href="#recruitment"]').forEach((a) => {
-            if (hasAccess) {
+            if (hasRecruitment) {
                 a.classList.remove('vip-locked');
                 a.removeAttribute('title');
             } else {
                 a.classList.add('vip-locked');
-                a.setAttribute('title', tooltip);
+                a.setAttribute('title', recruitTooltip);
             }
         });
         document.querySelectorAll('a.tool-card[href="#recruitment"], .tool-cards-grid a[href="#recruitment"]').forEach((a) => {
-            if (hasAccess) {
+            if (hasRecruitment) {
                 a.classList.remove('vip-locked');
                 a.removeAttribute('title');
                 const wrap = a.closest('.tool-card-vip-wrap');
@@ -729,7 +732,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } else {
                 a.classList.add('vip-locked');
-                a.setAttribute('title', tooltip);
+                a.setAttribute('title', recruitTooltip);
                 if (!a.closest('.tool-card-vip-wrap')) {
                     const wrap = document.createElement('div');
                     wrap.className = 'tool-card-vip-wrap';
@@ -743,6 +746,59 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         });
+
+        const hasMemberPerformance = level >= MEMBER_PERFORMANCE_VIP_REQUIRED;
+        const mprTooltip =
+            'Requires VIP 1. Send Xanax to Jimidy to unlock — open “How VIP works” in the sidebar for balance and tiers.';
+        document.querySelectorAll('#mainNav a[href="#member-performance-range"]').forEach((a) => {
+            if (hasMemberPerformance) {
+                a.classList.remove('vip-locked');
+                a.removeAttribute('title');
+            } else {
+                a.classList.add('vip-locked');
+                a.setAttribute('title', mprTooltip);
+            }
+        });
+        document.querySelectorAll(
+            'a.tool-card[href="#member-performance-range"], .tool-cards-grid a[href="#member-performance-range"]'
+        ).forEach((a) => {
+            if (hasMemberPerformance) {
+                a.classList.remove('vip-locked');
+                a.removeAttribute('title');
+                const wrap = a.closest('.tool-card-vip-wrap');
+                if (wrap && wrap.parentNode) {
+                    wrap.parentNode.insertBefore(a, wrap);
+                    wrap.remove();
+                }
+            } else {
+                a.classList.add('vip-locked');
+                a.setAttribute('title', mprTooltip);
+                if (!a.closest('.tool-card-vip-wrap')) {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'tool-card-vip-wrap';
+                    a.parentNode.insertBefore(wrap, a);
+                    wrap.appendChild(a);
+                    const badge = document.createElement('span');
+                    badge.className = 'tool-card-vip-badge';
+                    badge.setAttribute('aria-hidden', 'true');
+                    badge.textContent = '\uD83D\uDD12  VIP level 1';
+                    wrap.appendChild(badge);
+                }
+            }
+        });
+    }
+
+    /** After VIP level is known, kick restricted hashes to home (no-op if hash is allowed). */
+    function applyVipRedirectsForCurrentHash() {
+        if (!window.vipLevelKnown) return;
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page === 'recruitment' && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED) {
+            window.location.hash = 'home';
+            return;
+        }
+        if (page === 'member-performance-range' && (window.currentVipLevel ?? 0) < MEMBER_PERFORMANCE_VIP_REQUIRED) {
+            window.location.hash = 'home';
+        }
     }
 
     // Get progress to next VIP level
@@ -1395,6 +1451,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '<li><strong>War Report</strong> — custom payout end (set your own end date/time in TCT).</li>' +
             '<li><strong>Faction Battle Stats</strong> — <strong>Check Activity</strong> (compare member activity over 1 month, 3 months, or a custom number of days).</li>' +
             '<li><strong>Consumption Tracker</strong> — <strong>Exact war &amp; chain times</strong> for the war→war preset (bounds to the second, plus the ranked-war date shortcut). Without VIP 1, that range uses full TCT calendar days only.</li>' +
+            '<li><strong>Member Performance</strong> — date-range roster (OC score, hits, activity, consumption, last online). The tool itself requires VIP 1+.</li>' +
             '</ul>' +
             '<h4>VIP 2</h4>' +
             '<ul>' +
@@ -3638,22 +3695,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     applyVipGating(0);
                     setWelcomeVisible(false);
                 }
-                if (window.vipLevelKnown && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED && (window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
-                    window.location.hash = 'home';
-                }
+                applyVipRedirectsForCurrentHash();
             } catch (error) {
                 console.error('Error updating welcome message:', error);
                 window.currentVipLevel = 0;
                 window.vipLevelKnown = true;
                 applyVipGating(0);
                 setWelcomeVisible(false);
-                if ((window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
-                    window.location.hash = 'home';
-                }
+                applyVipRedirectsForCurrentHash();
             }
-            if (window.vipLevelKnown && (window.currentVipLevel ?? 0) < RECRUITMENT_VIP_REQUIRED && (window.location.hash || '').replace('#', '').split('/')[0] === 'recruitment') {
-                window.location.hash = 'home';
-            }
+            applyVipRedirectsForCurrentHash();
         }, 500);
     }
 
@@ -3745,6 +3796,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!welcomeMessage.innerHTML.includes('API calls/minute')) {
                     welcomeMessage.innerHTML += getRateLimitSettingsHtml();
                 }
+                applyVipRedirectsForCurrentHash();
             } catch (e) {
                 console.error('Welcome refresh failed:', e);
                 welcomeMessage.innerHTML = '<span style="color: #c0392b;">Refresh failed. Try again.</span>';
@@ -3966,7 +4018,17 @@ document.addEventListener('DOMContentLoaded', () => {
             loadPage('pages/home.html');
             return;
         }
-        
+
+        if (
+            pageName === 'member-performance-range' &&
+            window.vipLevelKnown &&
+            (window.currentVipLevel ?? 0) < MEMBER_PERFORMANCE_VIP_REQUIRED
+        ) {
+            window.location.hash = 'home';
+            loadPage('pages/home.html');
+            return;
+        }
+
         const pagePath = `pages/${pageName}.html`;
         loadPage(pagePath);
     };

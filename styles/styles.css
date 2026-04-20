@@ -131,6 +131,24 @@ header h1 {
     border-left-color: var(--accent-color);
 }
 
+/* Sidebar: same groupings as home tool cards */
+.dashboard-layout nav .nav-category-label {
+    margin: 14px 0 2px 0;
+    padding: 8px 12px 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent-color);
+    border-bottom: 1px solid rgba(255, 215, 0, 0.22);
+    line-height: 1.25;
+    user-select: none;
+}
+
+.dashboard-layout nav .nav-category-label span {
+    display: block;
+}
+
 .war-dashboard-table {
     table-layout: fixed;
     width: 100%;
@@ -1775,6 +1793,38 @@ nav a:hover::after {
     font-size: 1.1rem;
     margin: -10px 0 40px 0;
     color: var(--text-color);
+}
+
+/* Home: three category columns (Faction Members | Wars | Intel) */
+.tool-card-sections {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem 1.5rem;
+    align-items: start;
+    margin-top: 28px;
+}
+
+.tool-card-category {
+    margin: 0;
+    min-width: 0;
+}
+
+.tool-card-category-heading {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--accent-color);
+    margin: 0 0 0.35rem 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 215, 0, 0.28);
+    letter-spacing: 0.03em;
+}
+
+/* One vertical stack of cards per column (not a 3-wide mini grid) */
+.tool-card-sections .tool-cards-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+    margin-top: 1rem;
 }
 
 .tool-cards-grid {
@@ -4008,6 +4058,16 @@ th small {
     .welcome-message {
         font-size: 0.95rem;
         margin-bottom: 20px;
+    }
+
+    .tool-card-sections {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+        margin-top: 20px;
+    }
+
+    .tool-card-category-heading {
+        font-size: 1.05rem;
     }
     
     /* Tool cards - single column on mobile */
