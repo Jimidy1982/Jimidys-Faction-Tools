@@ -663,20 +663,47 @@ document.addEventListener('DOMContentLoaded', () => {
         return null;
     }
     
-    // Parse Xanax sent event from events API
+    // Parse Xanax sent event from events API (keep in sync with server parseIncomingXanaxEventHtml)
     function parseXanaxEvent(eventText) {
-        // Format: "You were sent 11x Xanax from <a href = http://www.torn.com/http://www.torn.com/profiles.php?XID=2181017>Methuzelah</a>"
-        const xanaxMatch = eventText.match(/You were sent (\d+)x Xanax from/);
+        const s = String(eventText || '');
+        if (!s.includes('You were sent') || !/xanax/i.test(s)) return null;
+        const xanaxMatch = s.match(/You were sent (\d+)x Xanax from/i);
         if (!xanaxMatch) return null;
-        
         const amount = parseInt(xanaxMatch[1], 10);
-        const playerMatch = eventText.match(/XID=(\d+)[^>]*>([^<]+)<\/a>/);
-        if (!playerMatch) return null;
-        
+        if (!Number.isFinite(amount) || amount <= 0) return null;
+
+        let playerId = null;
+        const idPatterns = [/[?&]XID=(\d+)\b/i, /\bXID\s*=\s*(\d+)/i];
+        for (let i = 0; i < idPatterns.length; i++) {
+            const m = s.match(idPatterns[i]);
+            if (m) {
+                const id = parseInt(m[1], 10);
+                if (Number.isFinite(id) && id > 0) {
+                    playerId = id;
+                    break;
+                }
+            }
+        }
+        if (!playerId) return null;
+
+        let playerName = '';
+        const fromAnchor = s.match(/You were sent \d+x Xanax from\s*(?:<a\b[^>]*>)([\s\S]*?)<\/a>/i);
+        if (fromAnchor) {
+            playerName = String(fromAnchor[1] || '')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+        if (!playerName) {
+            const plain = s.match(/You were sent \d+x Xanax from\s+([^<\n][^<]{0,80})/i);
+            if (plain) playerName = String(plain[1] || '').trim();
+        }
+        if (!playerName) playerName = 'Player ' + playerId;
+
         return {
             amount: amount,
-            playerId: parseInt(playerMatch[1], 10),
-            playerName: playerMatch[2]
+            playerId: playerId,
+            playerName: playerName
         };
     }
     
@@ -695,6 +722,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (balance >= VIP_LEVELS[2]) return 2;
         if (balance >= VIP_LEVELS[1]) return 1;
         return 0;
+    }
+
+    /** Balance used for VIP tier when faction pooling applies (≥2 members with same factionId on VIP docs). */
+    function getEffectiveBalanceForVipTier(vipData) {
+        if (!vipData) return 0;
+        if (vipData.factionId && (vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null) {
+            return Number(vipData.factionCombinedBalance) || 0;
+        }
+        return Number(vipData.currentBalance) || 0;
     }
 
     // Recruitment tool requires VIP 3
@@ -831,12 +867,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Returns milliseconds until next refetch. Deductions are still applied when reading from cache (see getVipBalance).
     // - No balance: 0 (no cache). Level 0: 2 days. Otherwise: (xanaxUntilDrop * 2 + 2) days so we refetch before they could drop a level.
     function calculateCacheExpiration(vipData) {
-        if (!vipData || vipData.currentBalance === 0) {
+        const effBal = getEffectiveBalanceForVipTier(vipData);
+        if (!vipData || effBal === 0) {
             return 0; // No cache for users with no balance
         }
         
-        const currentLevel = vipData.vipLevel || 0;
-        const currentBalance = vipData.currentBalance || 0;
+        const currentLevel = getVipLevel(effBal);
+        const currentBalance = effBal;
         
         // If they have no VIP level, cache for 2 days (they could send Xanax anytime)
         if (currentLevel === 0) {
@@ -888,19 +925,19 @@ document.addEventListener('DOMContentLoaded', () => {
                                 // Apply deductions to cached balance
                                 vipData.currentBalance = Math.max(0, vipData.currentBalance - deductions);
                                 vipData.lastDeductionDate = nowISO;
-                                
-                                // Recalculate VIP level after deductions
-                                vipData.vipLevel = getVipLevel(vipData.currentBalance);
-                                
-                                // Update cache with new balance (but keep same expiration)
+                                if ((vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null) {
+                                    vipData.factionCombinedBalance = Math.max(
+                                        0,
+                                        Number(vipData.factionCombinedBalance) - deductions
+                                    );
+                                }
+                                vipData.vipLevel = getVipLevel(getEffectiveBalanceForVipTier(vipData));
                                 localStorage.setItem(cacheKey, JSON.stringify(vipData));
                             } else {
-                                // No deductions needed, just recalculate VIP level
-                                vipData.vipLevel = getVipLevel(vipData.currentBalance);
+                                vipData.vipLevel = getVipLevel(getEffectiveBalanceForVipTier(vipData));
                             }
                         } else {
-                            // No lastDeductionDate, just recalculate VIP level
-                            vipData.vipLevel = getVipLevel(vipData.currentBalance);
+                            vipData.vipLevel = getVipLevel(getEffectiveBalanceForVipTier(vipData));
                         }
                         
                         return vipData;
@@ -1105,6 +1142,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             vipLevel: applyRes.balance.vipLevel,
                             lastLoginDate: applyRes.balance.lastLoginDate
                         };
+                        if (userData.factionId != null && String(userData.factionId) !== '') {
+                            vipData.factionId = String(userData.factionId);
+                        }
+                        if (userData.factionName) vipData.factionName = userData.factionName;
                     }
                 }
             }
@@ -1116,7 +1157,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (deductions > 0) {
                 vipData.currentBalance = Math.max(0, vipData.currentBalance - deductions);
                 vipData.lastDeductionDate = now;
-                
+                if ((vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null) {
+                    vipData.factionCombinedBalance = Math.max(
+                        0,
+                        Number(vipData.factionCombinedBalance) - deductions
+                    );
+                }
                 // Log deduction transaction
                 await logVipTransaction(
                     userData.playerId,
@@ -1129,19 +1175,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Start deduction clock from now; first deduction in 2 days
                 vipData.lastDeductionDate = now;
             }
-            
-            // Update VIP level
-            vipData.vipLevel = getVipLevel(vipData.currentBalance);
+            vipData.vipLevel = getVipLevel(getEffectiveBalanceForVipTier(vipData));
             vipData.lastLoginDate = now;
             
-            // Update backend (include faction when available so admin table can show it)
+            // Update backend (include faction when available so admin table can show it). Persist personal tier on the doc.
             await updateVipBalance(
                 vipData.playerId,
                 vipData.playerName,
                 vipData.totalXanaxSent,
                 vipData.currentBalance,
                 vipData.lastDeductionDate,
-                vipData.vipLevel,
+                getVipLevel(vipData.currentBalance),
                 vipData.lastLoginDate,
                 userData.factionName,
                 userData.factionId
@@ -1310,13 +1354,25 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const tierBal = getEffectiveBalanceForVipTier(vipData);
+        const vipLevel = getVipLevel(tierBal);
+        vipData.vipLevel = vipLevel;
         function applyWelcomeVipPulse() {
-            const level0 = (vipData.vipLevel || 0) === 0;
+            const level0 = (vipLevel || 0) === 0;
             welcomeMessage.classList.toggle('welcome-vip-pulse', level0);
         }
         
-        const vipLevel = vipData.vipLevel;
-        const progress = getVipProgress(vipData.currentBalance, vipLevel);
+        const progress = getVipProgress(tierBal, vipLevel);
+        const factionPoolNote =
+            (vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null
+                ? '<div style="font-size:0.72em;color:#8a9199;margin-top:6px;">Faction VIP pool: <strong>' +
+                  vipData.factionCombinedBalance +
+                  '</strong> (' +
+                  vipData.factionMemberCount +
+                  ' members with VIP) · Your balance: <strong>' +
+                  vipData.currentBalance +
+                  '</strong></div>'
+                : '';
         
         // Check if VIP status is already displayed (to avoid duplicates)
         if (welcomeMessage.innerHTML.includes('VIP') || welcomeMessage.innerHTML.includes('Xanax to VIP')) {
@@ -1333,7 +1389,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (progress.nextLevel) {
                     vipHtml += `
                         <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
-                            ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                            ${tierBal}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
                             <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
                                 <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
                             </div>
@@ -1342,7 +1398,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     vipHtml += `
                         <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
-                            ${vipData.currentBalance}/${VIP_LEVELS[3]} Xanax — Maximum VIP level!
+                            ${tierBal}/${VIP_LEVELS[3]} Xanax — Maximum VIP level!
                             <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
                                 <div style="background: var(--accent-color); height: 100%; width: 100%; transition: width 0.3s;"></div>
                             </div>
@@ -1350,17 +1406,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     `;
                 }
                 
-                vipHtml += `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+                vipHtml += factionPoolNote + `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
             } else if (progress.nextLevel) {
                 vipHtml = `
                     <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
                         <div style="font-size: 0.85em; color: #95a5a6;">
-                            ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                            ${tierBal}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
                             <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
                                 <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
                             </div>
                         </div>
-                        <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+                        ` + factionPoolNote + `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
             }
             
             welcomeMessage.innerHTML = welcomeText + vipHtml;
@@ -1387,7 +1443,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (progress.nextLevel) {
                 vipHtml += `
                     <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
-                        ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                        ${tierBal}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
                         <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
                             <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
                         </div>
@@ -1396,7 +1452,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 vipHtml += `
                     <div style="font-size: 0.85em; color: #95a5a6; margin-top: 4px;">
-                        ${vipData.currentBalance}/${VIP_LEVELS[3]} Xanax — Maximum VIP level!
+                        ${tierBal}/${VIP_LEVELS[3]} Xanax — Maximum VIP level!
                         <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
                             <div style="background: var(--accent-color); height: 100%; width: 100%; transition: width 0.3s;"></div>
                         </div>
@@ -1404,17 +1460,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 `;
             }
             
-            vipHtml += `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+            vipHtml += factionPoolNote + `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
         } else if (progress.nextLevel) {
             vipHtml = `
                 <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
                     <div style="font-size: 0.85em; color: #95a5a6;">
-                        ${vipData.currentBalance}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
+                        ${tierBal}/${VIP_LEVELS[progress.nextLevel]} Xanax to VIP ${progress.nextLevel}
                         <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden;">
                             <div style="background: var(--accent-color); height: 100%; width: ${progress.progress}%; transition: width 0.3s;"></div>
                         </div>
                     </div>
-                    <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
+                    ` + factionPoolNote + `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
         }
         
         // Append VIP status and rate limit settings to welcome message (don't replace)
@@ -1443,7 +1499,8 @@ document.addEventListener('DOMContentLoaded', () => {
             '</div>' +
             '<div class="app-modal-body vip-info-modal-body vip-info-modal-body--scroll">' +
             '<p>Support the tools by sending <strong>Xanax</strong> to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" rel="noopener">Jimidy</a> in Torn. Your <strong>current balance</strong> (tracked here when you use your API key) sets your VIP tier.</p>' +
-            '<p><strong>After you send Xanax,</strong> press the <strong>Refresh</strong> button (↻ in the sidebar next to your welcome message) so we can read your Torn events and credit your balance. If you don’t refresh, your tier may not update until the next automatic check.</p>' +
+            '<p><strong>Faction pooling:</strong> If <strong>two or more</strong> registered players share the same Torn <strong>faction</strong> on their VIP profile here, their balances are <strong>added together</strong> to determine VIP level and tool access. Each person’s balance still decays on its own timer; the welcome bar shows your balance and the combined pool when pooling applies.</p>' +
+            '<p><strong>After you send Xanax,</strong> your balance usually updates within about <strong>10 minutes</strong> (the server rechecks your Torn event feed on a schedule). If you don’t want to wait, press <strong>↻ Recheck</strong> next to your welcome message in the sidebar — that pulls new events right away. The button briefly shows a short countdown before you can tap it again.</p>' +
             '<h3>Levels (by current balance)</h3>' +
             '<ul>' +
             '<li><strong>VIP 1</strong> — ' + v1 + '+ Xanax balance</li>' +
@@ -2381,6 +2438,329 @@ document.addEventListener('DOMContentLoaded', () => {
                         document.getElementById('admin-vip-add-profile-input').focus();
                     };
                 })();
+                (function ensureAdminVipPaymentLogsModal() {
+                    /** Next :00 / :10 / … / :50 UTC instant at or after `nowMs` (matches `every 10 minutes` UTC scheduler). */
+                    function getNextTenMinuteUtcBoundaryMs(nowMs) {
+                        var t = typeof nowMs === 'number' ? nowMs : Date.now();
+                        var d = new Date(t);
+                        var dayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0);
+                        var SLOT = 10 * 60 * 1000;
+                        var elapsed = t - dayStart;
+                        var next = dayStart + Math.ceil(elapsed / SLOT) * SLOT;
+                        if (next <= t) next += SLOT;
+                        return next;
+                    }
+                    function stopAdminVipPaymentLogsCountdown() {
+                        if (window.__adminVipPaymentLogsCountdownTimer) {
+                            clearInterval(window.__adminVipPaymentLogsCountdownTimer);
+                            window.__adminVipPaymentLogsCountdownTimer = null;
+                        }
+                    }
+                    function startAdminVipPaymentLogsCountdown() {
+                        stopAdminVipPaymentLogsCountdown();
+                        var targetMs = getNextTenMinuteUtcBoundaryMs(Date.now());
+                        function tick() {
+                            var el = document.getElementById('admin-vip-next-sync-countdown');
+                            var mod = document.getElementById('admin-vip-payment-logs-modal');
+                            if (!el || !mod || mod.style.display === 'none') {
+                                stopAdminVipPaymentLogsCountdown();
+                                return;
+                            }
+                            var left = targetMs - Date.now();
+                            while (left <= 0) {
+                                targetMs += 10 * 60 * 1000;
+                                left = targetMs - Date.now();
+                            }
+                            var sec = Math.floor(left / 1000);
+                            var h = Math.floor(sec / 3600);
+                            var m = Math.floor((sec % 3600) / 60);
+                            var s = sec % 60;
+                            var txt;
+                            if (h > 0) {
+                                txt = h + 'h ' + m + 'm ' + s + 's';
+                            } else if (m > 0) {
+                                txt = m + 'm ' + s + 's';
+                            } else {
+                                txt = s + 's';
+                            }
+                            el.textContent = txt;
+                            var utcEl = document.getElementById('admin-vip-next-sync-utc-clock');
+                            if (utcEl) {
+                                utcEl.textContent =
+                                    new Date(targetMs).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+                            }
+                        }
+                        tick();
+                        window.__adminVipPaymentLogsCountdownTimer = setInterval(tick, 1000);
+                    }
+                    function closePaymentLogsModal() {
+                        stopAdminVipPaymentLogsCountdown();
+                        const o = document.getElementById('admin-vip-payment-logs-modal');
+                        if (!o) return;
+                        o.style.display = 'none';
+                        o.setAttribute('aria-hidden', 'true');
+                    }
+                    function escAttr(s) {
+                        return String(s == null ? '' : s)
+                            .replace(/&/g, '&amp;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/</g, '&lt;');
+                    }
+                    function fmtMs(ms) {
+                        if (ms == null || !Number.isFinite(Number(ms))) return '—';
+                        return new Date(Number(ms)).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+                    }
+                    function fmtUnixSec(sec) {
+                        if (sec == null || !Number.isFinite(Number(sec))) return '—';
+                        return new Date(Number(sec) * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+                    }
+                    function renderPaymentLogsBody(bodyEl, result) {
+                        const data = result && result.data ? result.data : {};
+                        const entries = Array.isArray(data.entries) ? data.entries : [];
+                        const pollInfo = data.pollInfo || {};
+                        const lastSync = fmtMs(pollInfo.lastPollAtMs);
+                        const cursorTornTime = fmtUnixSec(pollInfo.lastEventsFromUnix);
+                        const latestRow = entries[0];
+                        var latestLine = '—';
+                        if (latestRow && Number.isFinite(Number(latestRow.tornEventTimestamp))) {
+                            latestLine =
+                                '<span style="color:#eee">' +
+                                fmtUnixSec(latestRow.tornEventTimestamp) +
+                                ' · event </span><span style="font-family:monospace;color:#fff">' +
+                                escAttr(String(latestRow.tornEventId || '')) +
+                                '</span>';
+                        }
+                        var metaBits = [];
+                        if (pollInfo.lastEventCount != null && Number.isFinite(Number(pollInfo.lastEventCount))) {
+                            metaBits.push('Last pull: ' + pollInfo.lastEventCount + ' raw event(s)');
+                        }
+                        if (pollInfo.lastPollPages != null && Number.isFinite(Number(pollInfo.lastPollPages))) {
+                            metaBits.push(pollInfo.lastPollPages + ' API page(s)');
+                        }
+                        if (pollInfo.lastPollSource) {
+                            metaBits.push('source: ' + escAttr(pollInfo.lastPollSource));
+                        }
+                        var metaLine =
+                            metaBits.length > 0
+                                ? '<div style="margin-top:10px;font-size:0.8em;color:#c8c8c8;">' + metaBits.join(' · ') + '</div>'
+                                : '';
+                        var lpId = pollInfo.lastPulledNewestEventId != null ? String(pollInfo.lastPulledNewestEventId) : '';
+                        var lpTs =
+                            pollInfo.lastPulledNewestEventTimestamp != null
+                                ? Number(pollInfo.lastPulledNewestEventTimestamp)
+                                : NaN;
+                        var lpPrev =
+                            pollInfo.lastPulledNewestEventPreview != null
+                                ? String(pollInfo.lastPulledNewestEventPreview)
+                                : '';
+                        var lastPulledHtml;
+                        if (lpPrev || lpId) {
+                            lastPulledHtml =
+                                '<br><strong style="color:#fff;font-size:0.95em;">Last event pulled from Torn (newest in batch, any type)</strong>' +
+                                '<div style="margin-top:10px;padding:12px 14px;border-radius:8px;background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.18);">' +
+                                '<div style="font-size:0.72em;color:#c4c4c4;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">What it says (HTML stripped to plain text)</div>' +
+                                '<div style="font-size:0.98em;color:#fff;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:14em;overflow:auto;">' +
+                                escAttr(lpPrev || '(no preview text stored for this run)') +
+                                '</div>' +
+                                '<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.14);font-size:0.82em;color:#e0e0e0;">' +
+                                '<span style="color:#b0b0b0">Event ID</span> <span style="font-family:monospace;color:#fff;">' +
+                                escAttr(lpId || '—') +
+                                '</span> &nbsp;·&nbsp; <span style="color:#b0b0b0">Torn time</span> ' +
+                                escAttr(Number.isFinite(lpTs) ? fmtUnixSec(lpTs) : '—') +
+                                '</div></div>';
+                        } else {
+                            lastPulledHtml =
+                                '<br><strong style="color:#fff">Last event pulled from Torn:</strong> <span style="color:#ddd">Not recorded yet — run one successful sync (scheduler or Recheck VIP) to capture the newest feed line here.</span>';
+                        }
+                        var syncBox =
+                            '<div style="font-size:0.9em;color:#f0f0f0;margin:0 0 14px 0;padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:10px;line-height:1.6;">' +
+                            '<strong style="color:#fff">Last sync finished:</strong> ' +
+                            escAttr(lastSync) +
+                            '<br><strong style="color:#fff">Next sync in:</strong> ' +
+                            '<span id="admin-vip-next-sync-countdown" style="font-weight:700;color:var(--accent-color);">—</span>' +
+                            ' <span style="color:#ccc">(then every 10 min at </span>' +
+                            '<span id="admin-vip-next-sync-utc-clock" style="color:#fff;font-family:monospace;font-size:0.88em;"></span>' +
+                            '<span style="color:#ccc">)</span><br>' +
+                            '<strong style="color:#fff">Feed cursor (newest Torn event time processed):</strong> ' +
+                            escAttr(cursorTornTime) +
+                            lastPulledHtml +
+                            '<br><strong style="color:#fff">Newest Xanax row in this list:</strong> ' +
+                            latestLine +
+                            metaLine +
+                            '</div>';
+                        var html = syncBox;
+                        html += '<p style="font-size:0.88em;color:#ddd;margin:0 0 10px 0;">Recent Xanax gift rows from your event feed (up to 100).</p>';
+                        if (entries.length === 0) {
+                            html +=
+                                '<p style="color: #ddd;">No incoming Xanax rows in the log yet. Register the server poller and wait for a sync, or use <strong style="color:#fff">Recheck VIP</strong> on the welcome bar.</p>';
+                            bodyEl.innerHTML = html;
+                            startAdminVipPaymentLogsCountdown();
+                            return;
+                        }
+                        html += '<div style="max-height:52vh;overflow:auto;"><table class="admin-table" style="font-size:0.85rem;"><thead><tr><th>When (Torn)</th><th>Sender</th><th>Sender ID</th><th>Xanax</th><th>Event ID</th></tr></thead><tbody>';
+                        entries.forEach(function (row) {
+                            var ts = row.tornEventTimestamp != null ? Number(row.tornEventTimestamp) : NaN;
+                            var when = Number.isFinite(ts) ? new Date(ts * 1000).toLocaleString() : '—';
+                            var name = row.senderName || '—';
+                            var sid = row.senderPlayerId || '—';
+                            var amt = row.amount != null ? row.amount : 0;
+                            var eid = row.tornEventId || '—';
+                            var link =
+                                sid !== '—'
+                                    ? '<a href="https://www.torn.com/profiles.php?XID=' +
+                                      escAttr(sid) +
+                                      '" target="_blank" rel="noopener" class="user-link">' +
+                                      escAttr(name) +
+                                      '</a>'
+                                    : escAttr(name);
+                            html +=
+                                '<tr><td>' +
+                                escAttr(when) +
+                                '</td><td>' +
+                                link +
+                                '</td><td>' +
+                                escAttr(sid) +
+                                '</td><td>' +
+                                escAttr(String(amt)) +
+                                '</td><td style="font-family:monospace;font-size:0.8em;">' +
+                                escAttr(eid) +
+                                '</td></tr>';
+                        });
+                        html += '</tbody></table></div>';
+                        bodyEl.innerHTML = html;
+                        startAdminVipPaymentLogsCountdown();
+                    }
+                    function openPaymentLogsModal() {
+                        const bodyEl = document.getElementById('admin-vip-payment-logs-modal-body');
+                        const overlay = document.getElementById('admin-vip-payment-logs-modal');
+                        if (!bodyEl || !overlay) return;
+                        stopAdminVipPaymentLogsCountdown();
+                        const apiK = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                        if (!apiK || apiK.length !== 16) {
+                            bodyEl.innerHTML = '<p style="color: #c0392b;">Enter your API key in the sidebar.</p>';
+                            overlay.style.display = 'flex';
+                            overlay.setAttribute('aria-hidden', 'false');
+                            return;
+                        }
+                        bodyEl.innerHTML = '<p style="color: #888;">Loading…</p>';
+                        overlay.style.display = 'flex';
+                        overlay.setAttribute('aria-hidden', 'false');
+                        firebase.functions().httpsCallable('getVipIncomingXanaxLogForAdmin')({ apiKey: apiK, limit: 100 })
+                            .then(function (result) {
+                                renderPaymentLogsBody(bodyEl, result);
+                            })
+                            .catch(function (e) {
+                                console.error(e);
+                                bodyEl.innerHTML =
+                                    '<p style="color: #c0392b;">Failed to load payment logs. ' +
+                                    escAttr(e.message || e.code || '') +
+                                    '</p>';
+                            });
+                    }
+                    if (document.getElementById('admin-vip-payment-logs-modal')) {
+                        window.__openAdminVipPaymentLogsModal = openPaymentLogsModal;
+                        return;
+                    }
+                    const overlay = document.createElement('div');
+                    overlay.id = 'admin-vip-payment-logs-modal';
+                    overlay.className = 'app-modal-overlay';
+                    overlay.setAttribute('aria-hidden', 'true');
+                    overlay.style.display = 'none';
+                    overlay.innerHTML = '<div class="app-modal" role="dialog" style="max-width: 720px;" aria-labelledby="admin-vip-payment-logs-title">' +
+                        '<div class="app-modal-header">' +
+                        '<h2 id="admin-vip-payment-logs-title">Incoming Xanax payment logs</h2>' +
+                        '<button type="button" class="app-modal-close" id="admin-vip-payment-logs-modal-close" aria-label="Close">×</button>' +
+                        '</div>' +
+                        '<div class="app-modal-body" id="admin-vip-payment-logs-modal-body"><p style="color: #888;">Loading…</p></div></div>';
+                    document.body.appendChild(overlay);
+                    overlay.querySelector('#admin-vip-payment-logs-modal-close').addEventListener('click', closePaymentLogsModal);
+                    overlay.addEventListener('click', function (e) {
+                        if (e.target === overlay) closePaymentLogsModal();
+                    });
+                    window.__openAdminVipPaymentLogsModal = openPaymentLogsModal;
+                })();
+                /** Admin per-player Xanax log: scrollable body; deductions in a collapsed details block above credits. */
+                function renderAdminVipHistoryModalTransactions(bodyEl, transactions) {
+                    if (!transactions || transactions.length === 0) {
+                        bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>';
+                        return;
+                    }
+                    const deductions = [];
+                    const payments = [];
+                    transactions.forEach(function (t) {
+                        if (String(t.transactionType || '') === 'Deduction') deductions.push(t);
+                        else payments.push(t);
+                    });
+                    function historyTypeLabel(t) {
+                        const typ = String(t.transactionType || '');
+                        if (typ === 'Deduction') return 'Deduction';
+                        if (typ === 'Admin adjustment') return 'Admin adjustment';
+                        if (typ === 'Manual add') return 'Manual add';
+                        if (typ === 'Incoming Xanax') return 'Incoming Xanax';
+                        if (typ === 'Sent' && t.tornEventId) return 'Incoming Xanax';
+                        if (typ === 'Sent') return 'Credit (non-Torn)';
+                        return typ || 'Other';
+                    }
+                    function historyAmountCell(t) {
+                        const typ = String(t.transactionType || '');
+                        if (typ === 'Admin adjustment') {
+                            const parts = [];
+                            const balDelta = Number(t.amount);
+                            if (Number.isFinite(balDelta) && balDelta !== 0) {
+                                parts.push('Balance ' + (balDelta > 0 ? '+' : '') + balDelta);
+                            }
+                            if (t.deltaTotalXanaxSent != null && Number.isFinite(Number(t.deltaTotalXanaxSent)) && Number(t.deltaTotalXanaxSent) !== 0) {
+                                const ds = Number(t.deltaTotalXanaxSent);
+                                parts.push('Total sent ' + (ds > 0 ? '+' : '') + ds);
+                            }
+                            if (parts.length === 0) return '—';
+                            return parts.join(', ');
+                        }
+                        return String(t.amount ?? 0);
+                    }
+                    function rowHtml(t) {
+                        const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
+                        return (
+                            '<tr><td>' +
+                            dateStr +
+                            '</td><td>' +
+                            historyTypeLabel(t) +
+                            '</td><td>' +
+                            historyAmountCell(t) +
+                            '</td><td>' +
+                            (t.balanceAfter ?? 0) +
+                            '</td></tr>'
+                        );
+                    }
+                    function tableHtml(list) {
+                        var h =
+                            '<table class="admin-table" style="font-size:0.9rem;width:100%;table-layout:fixed;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
+                        list.forEach(function (t) {
+                            h += rowHtml(t);
+                        });
+                        return h + '</tbody></table>';
+                    }
+                    var html = '<div class="admin-vip-history-modal-scroll" style="padding:0 4px 4px 0;">';
+                    if (deductions.length > 0) {
+                        html +=
+                            '<details class="admin-vip-history-deductions" style="margin-bottom:14px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;background:rgba(0,0,0,0.22);">' +
+                            '<summary style="cursor:pointer;color:var(--accent-color);font-weight:600;font-size:0.95rem;">Deductions (' +
+                            deductions.length +
+                            ')</summary>' +
+                            '<div style="margin-top:10px;max-height:min(34vh,260px);overflow-y:auto;">' +
+                            tableHtml(deductions) +
+                            '</div></details>';
+                    }
+                    html +=
+                        '<p style="margin:0 0 8px;font-size:0.88rem;color:#e8e8e8;font-weight:600;">Incoming Xanax, admin adjustments, and other credits</p>';
+                    if (payments.length === 0) {
+                        html += '<p style="color:#888;font-size:0.9rem;">No rows in this section (only deductions above, if any).</p>';
+                    } else {
+                        html += '<div>' + tableHtml(payments) + '</div>';
+                    }
+                    html += '</div>';
+                    bodyEl.innerHTML = html;
+                }
                 const fn = firebase.functions().httpsCallable('getVipBalancesForAdmin');
                 const res = await fn({ apiKey: apiKey });
                 const balances = (res && res.data && res.data.balances) || [];
@@ -2389,9 +2769,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const toolbarHtml = '<div class="admin-vip-toolbar" style="margin-bottom: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">' +
                     '<button type="button" class="fetch-button" id="admin-vip-add-player-btn" style="background-color: #15803d;">Add player</button>' +
                     '<button type="button" class="fetch-button" id="admin-vip-refresh-list-btn" title="Fetch latest balances from the server">Refresh list</button>' +
-                    '<button type="button" class="fetch-button" id="admin-vip-apply-deductions-btn" style="background-color: var(--accent-color);">Apply deductions now</button>' +
-                    '<button type="button" class="fetch-button" id="admin-vip-reset-clock-btn" title="Set everyone\u2019s next deduction to 48 hours from now. Use after restoring balances so old timers don\u2019t wipe them.">Reset deduction clock</button>' +
-                    '<span id="admin-vip-apply-status" style="font-size: 0.9em; color: #888;"></span></div>';
+                    '<button type="button" class="fetch-button" id="admin-vip-sync-profiles-btn" title="Re-fetch every player name and faction from Torn and save to Firestore (overrides stale spreadsheet data)">Sync names &amp; factions</button>' +
+                    '<button type="button" class="fetch-button" id="admin-vip-register-poll-btn" title="Save your Torn key on the server so a job every 10 minutes can read your event feed and credit everyone who sent you Xanax">Register server Xanax poller</button>' +
+                    '<button type="button" class="fetch-button" id="admin-vip-payment-logs-btn" title="Xanax gifts detected on your event feed (server log, recent first)">Payment logs</button>' +
+                    '<span id="admin-vip-apply-status" style="font-size: 0.9em; color: #888;" title="Brief status when overdue balances are auto-applied in the background"></span></div>';
                 function wireAdminVipToolbarButtons() {
                     var addBtn = document.getElementById('admin-vip-add-player-btn');
                     if (addBtn) addBtn.onclick = function() { window.__openAdminVipAddPlayerModal && window.__openAdminVipAddPlayerModal(); };
@@ -2399,6 +2780,76 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (refBtn) refBtn.onclick = function() {
                         if (typeof window.__adminVipPullBalancesAndRender === 'function') window.__adminVipPullBalancesAndRender();
                     };
+                    var pollBtn = document.getElementById('admin-vip-register-poll-btn');
+                    if (pollBtn) pollBtn.onclick = function() {
+                        if (pollBtn.disabled) return;
+                        var apiK = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                        if (!apiK || apiK.length !== 16) {
+                            alert('Set your Torn API key in the sidebar first.');
+                            return;
+                        }
+                        pollBtn.disabled = true;
+                        firebase.functions().httpsCallable('registerVipIncomingXanaxPollKey')({ apiKey: apiK })
+                            .then(function() {
+                                alert('Server poller registered. Incoming Xanax credits sync about every 10 minutes from your event feed.');
+                            })
+                            .catch(function(e) {
+                                console.error(e);
+                                alert((e && e.message) || (e && e.code) || 'Failed to register poller');
+                            })
+                            .finally(function() { pollBtn.disabled = false; });
+                    };
+                    var payLogsBtn = document.getElementById('admin-vip-payment-logs-btn');
+                    if (payLogsBtn) payLogsBtn.onclick = function () {
+                        if (window.__openAdminVipPaymentLogsModal) window.__openAdminVipPaymentLogsModal();
+                    };
+                    var syncProfBtn = document.getElementById('admin-vip-sync-profiles-btn');
+                    if (syncProfBtn) {
+                        syncProfBtn.onclick = function () {
+                            if (syncProfBtn.disabled) return;
+                            var apiK = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+                            if (!apiK || apiK.length !== 16) {
+                                alert('Set your Torn API key in the sidebar first.');
+                                return;
+                            }
+                            syncProfBtn.disabled = true;
+                            var st = document.getElementById('admin-vip-apply-status');
+                            if (st) st.textContent = 'Syncing names/factions from Torn (may take a minute)…';
+                            firebase.functions().httpsCallable('refreshVipProfilesFromTorn')({ apiKey: apiK })
+                                .then(function (res) {
+                                    var d = res && res.data ? res.data : {};
+                                    var u = d.updated != null ? d.updated : 0;
+                                    var t = d.total != null ? d.total : 0;
+                                    var fc = d.failedCount != null ? d.failedCount : 0;
+                                    var msg = 'Profile sync: updated ' + u + ' of ' + t + ' row(s).';
+                                    if (fc) msg += ' Failed: ' + fc + ' (see alert for sample).';
+                                    if (st) st.textContent = msg;
+                                    var extra = '';
+                                    if (d.failed && d.failed.length) {
+                                        extra =
+                                            '\n\nSample errors:\n' +
+                                            d.failed
+                                                .slice(0, 8)
+                                                .map(function (f) {
+                                                    return f.playerId + ': ' + f.error;
+                                                })
+                                                .join('\n');
+                                    }
+                                    alert(msg + extra);
+                                    if (typeof window.__adminVipPullBalancesAndRender === 'function') {
+                                        return window.__adminVipPullBalancesAndRender();
+                                    }
+                                })
+                                .catch(function (e) {
+                                    console.error(e);
+                                    if (st) st.textContent = (e && e.message) || 'Profile sync failed';
+                                    alert((e && e.message) || (e && e.code) || 'Profile sync failed');
+                                })
+                                .finally(function () {
+                                    syncProfBtn.disabled = false;
+                                });
+                        };
+                    }
                 }
                 if (balances.length === 0) {
                     contentEl.innerHTML = toolbarHtml + '<p style="color: #888;">No VIP balances yet. Use <strong>Add player</strong> to add someone by profile link.</p>';
@@ -2451,279 +2902,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 tableHtml += '</tbody></table>';
                 contentEl.innerHTML = toolbarHtml + tableHtml;
-                // Apply deductions now button (must be a scoped function, not an IIFE name — adminVipPullBalancesAndRender calls this)
-                function attachApplyDeductionsListener() {
-                    const btn = document.getElementById('admin-vip-apply-deductions-btn');
-                    const statusEl = document.getElementById('admin-vip-apply-status');
-                    if (!btn) return;
-                    btn.onclick = function() {
-                        if (btn.disabled) return;
-                        btn.disabled = true;
-                        if (statusEl) statusEl.textContent = 'Applying…';
-                        firebase.functions().httpsCallable('applyVipDeductionsNow')({ apiKey: apiKey })
-                            .then(function(result) {
-                                const n = (result && result.data && result.data.updated) || 0;
-                                if (statusEl) statusEl.textContent = 'Updated ' + n + ' player(s). Refreshing…';
-                                return fn({ apiKey: apiKey });
-                            })
-                            .then(function(res) {
-                                const balances2 = (res && res.data && res.data.balances) || [];
-                                if (balances2.length === 0) {
-                                    contentEl.innerHTML = toolbarHtml + '<p style="color: #888;">No VIP balances yet.</p>';
-                                    btn.disabled = false;
-                                    if (statusEl) statusEl.textContent = '';
-                                    attachApplyDeductionsListener();
-                                    attachResetClockListener();
-                                    wireAdminVipToolbarButtons();
-                                    return;
-                                }
-                                const sorted2 = balances2.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
-                                let tableHtml2 = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
-                                sorted2.forEach(function(row) {
-                                    var nextDedCell = adminVipNextDeductionCellForRow(row);
-                                    const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
-                                    tableHtml2 += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
-                                        '<td>' + String(row.playerId) + '</td>' +
-                                        '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
-                                        '<td>' + (row.factionName || (userStats[row.playerName] && userStats[row.playerName].factionName) || '—') + '</td>' +
-                                        '<td class="admin-vip-total-sent">' + (row.totalXanaxSent ?? 0) + '</td>' +
-                                        '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
-                                        '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
-                                        '<td class="admin-next-deduction-cell">' + nextDedCell + '</td>' +
-                                        '<td>' + lastLog + '</td>' +
-                                        '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
-                                });
-                                tableHtml2 += '</tbody></table>';
-                                contentEl.innerHTML = toolbarHtml + tableHtml2;
-                                if (statusEl) statusEl.textContent = '';
-                                btn.disabled = false;
-                                contentEl.querySelectorAll('.admin-vip-edit-btn').forEach(function(editBtn) {
-                                    (function bindEdit(btnEl, sortedArr) {
-                                        btnEl.addEventListener('click', function() {
-                                            const tr = btnEl.closest('tr');
-                                            const playerId = tr.getAttribute('data-player-id');
-                                            const row = sortedArr.find(function(r) { return String(r.playerId) === playerId; });
-                                            if (!row) return;
-                                            const totalSentInput = document.getElementById('admin-vip-edit-total-sent');
-                                            const balanceInput = document.getElementById('admin-vip-edit-balance');
-                                            if (!totalSentInput || !balanceInput) return;
-                                            totalSentInput.value = row.totalXanaxSent ?? 0;
-                                            balanceInput.value = row.currentBalance ?? 0;
-                                            vipEditOverlay.style.display = 'flex';
-                                            vipEditOverlay.setAttribute('aria-hidden', 'false');
-                                            totalSentInput.focus();
-                                            function closeModal() {
-                                                vipEditOverlay.style.display = 'none';
-                                                vipEditOverlay.setAttribute('aria-hidden', 'true');
-                                            }
-                                            function doSave() {
-                                                const totalSent = parseInt(totalSentInput.value, 10);
-                                                const num = parseInt(balanceInput.value, 10);
-                                                if (isNaN(totalSent) || totalSent < 0) { alert('Total sent must be a non-negative number.'); return; }
-                                                if (isNaN(num) || num < 0) { alert('Current balance must be a non-negative number.'); return; }
-                                                const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
-                                                btnEl.disabled = true;
-                                                firebase.functions().httpsCallable('updateVipBalance')({
-                                                    playerId: row.playerId, playerName: row.playerName, factionName: row.factionName, factionId: row.factionId,
-                                                    totalXanaxSent: totalSent, currentBalance: num, lastDeductionDate: new Date().toISOString(), vipLevel: newLevel, lastLoginDate: row.lastLoginDate
-                                                }).then(function() {
-                                                    tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
-                                                    tr.querySelector('.admin-vip-balance').textContent = num;
-                                                    tr.querySelector('td:nth-child(6)').textContent = 'VIP ' + newLevel;
-                                                    row.totalXanaxSent = totalSent; row.currentBalance = num; row.vipLevel = newLevel;
-                                                    closeModal();
-                                                    clearVipCache(row.playerId);
-                                                    const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
-                                                    if (apiKey2 && apiKey2.length === 16) {
-                                                        getUserData(apiKey2).then(function(ud) {
-                                                            if (ud && String(ud.playerId) === String(row.playerId)) updateWelcomeMessage();
-                                                        });
-                                                    }
-                                                }).catch(function(e) { console.error(e); alert('Update failed: ' + (e.message || e)); }).finally(function() { btnEl.disabled = false; });
-                                            }
-                                            vipEditOverlay.querySelector('#admin-vip-edit-save').onclick = doSave;
-                                            vipEditOverlay.querySelector('#admin-vip-edit-modal-close').onclick = closeModal;
-                                            vipEditOverlay.querySelector('#admin-vip-edit-cancel').onclick = closeModal;
-                                        });
-                                    })(editBtn, sorted2);
-                                });
-                                contentEl.querySelectorAll('.admin-vip-history-btn').forEach(function(historyBtn) {
-                                    historyBtn.addEventListener('click', function() {
-                                        const playerId = historyBtn.getAttribute('data-player-id');
-                                        const playerName = historyBtn.getAttribute('data-player-name');
-                                        const titleEl = document.getElementById('admin-vip-history-modal-title');
-                                        const bodyEl = document.getElementById('admin-vip-history-modal-body');
-                                        if (!titleEl || !bodyEl) return;
-                                        titleEl.textContent = 'Xanax history — ' + playerName;
-                                        bodyEl.innerHTML = '<p style="color: #888;">Loading...</p>';
-                                        vipHistoryOverlay.style.display = 'flex';
-                                        vipHistoryOverlay.setAttribute('aria-hidden', 'false');
-                                        const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
-                                        if (!apiKey2 || apiKey2.length !== 16) {
-                                            bodyEl.innerHTML = '<p style="color: #c0392b;">Enter your API key in the sidebar to load history.</p>';
-                                            return;
-                                        }
-                                        firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey2, playerId: playerId })
-                                            .then(function(result) {
-                                                const transactions = result.data && result.data.transactions ? result.data.transactions : [];
-                                                if (transactions.length === 0) { bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>'; return; }
-                                                let tableHtml3 = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
-                                                transactions.forEach(function(t) {
-                                                    const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
-                                                    tableHtml3 += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
-                                                });
-                                                tableHtml3 += '</tbody></table>';
-                                                bodyEl.innerHTML = tableHtml3;
-                                            })
-                                            .catch(function(e) { console.error(e); bodyEl.innerHTML = '<p style="color: #c0392b;">Failed to load history. ' + (e.message || e.code || '') + '</p>'; });
-                                    });
-                                });
-                                attachApplyDeductionsListener();
-                                attachResetClockListener();
-                                wireAdminVipToolbarButtons();
-                            })
-                            .catch(function(e) {
-                                console.error(e);
-                                if (statusEl) statusEl.textContent = 'Failed: ' + (e.message || e.code || '');
-                                btn.disabled = false;
-                            });
-                    };
-                }
-                attachApplyDeductionsListener();
-                function attachResetClockListener() {
-                    const resetBtn = document.getElementById('admin-vip-reset-clock-btn');
-                    const statusEl = document.getElementById('admin-vip-apply-status');
-                    if (!resetBtn) return;
-                    resetBtn.onclick = function() {
-                        if (resetBtn.disabled) return;
-                        resetBtn.disabled = true;
-                        if (statusEl) statusEl.textContent = 'Resetting clock…';
-                        firebase.functions().httpsCallable('resetVipDeductionClock')({ apiKey: apiKey })
-                            .then(function(result) {
-                                const n = (result && result.data && result.data.reset) || 0;
-                                if (statusEl) statusEl.textContent = 'Reset ' + n + ' player(s). Refreshing…';
-                                return fn({ apiKey: apiKey });
-                            })
-                            .then(function(res) {
-                                const balances2 = (res && res.data && res.data.balances) || [];
-                                if (balances2.length === 0) {
-                                    resetBtn.disabled = false;
-                                    if (statusEl) statusEl.textContent = '';
-                                    return;
-                                }
-                                const sorted2 = balances2.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
-                                let tableHtml2 = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
-                                sorted2.forEach(function(row) {
-                                    var nextDedCell = adminVipNextDeductionCellForRow(row);
-                                    const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
-                                    tableHtml2 += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
-                                        '<td>' + String(row.playerId) + '</td>' +
-                                        '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
-                                        '<td>' + (row.factionName || (userStats[row.playerName] && userStats[row.playerName].factionName) || '—') + '</td>' +
-                                        '<td class="admin-vip-total-sent">' + (row.totalXanaxSent ?? 0) + '</td>' +
-                                        '<td class="admin-vip-balance">' + (row.currentBalance ?? 0) + '</td>' +
-                                        '<td>VIP ' + (row.vipLevel ?? 0) + '</td>' +
-                                        '<td class="admin-next-deduction-cell">' + nextDedCell + '</td>' +
-                                        '<td>' + lastLog + '</td>' +
-                                        '<td><button type="button" class="fetch-button admin-vip-edit-btn" style="padding: 4px 10px; font-size: 12px;">Edit</button></td></tr>';
-                                });
-                                tableHtml2 += '</tbody></table>';
-                                contentEl.innerHTML = toolbarHtml + tableHtml2;
-                                if (statusEl) statusEl.textContent = '';
-                                resetBtn.disabled = false;
-                                contentEl.querySelectorAll('.admin-vip-edit-btn').forEach(function(editBtn) {
-                                    (function bindEdit(btnEl, sortedArr) {
-                                        btnEl.addEventListener('click', function() {
-                                            const tr = btnEl.closest('tr');
-                                            const playerId = tr.getAttribute('data-player-id');
-                                            const row = sortedArr.find(function(r) { return String(r.playerId) === playerId; });
-                                            if (!row) return;
-                                            const totalSentInput = document.getElementById('admin-vip-edit-total-sent');
-                                            const balanceInput = document.getElementById('admin-vip-edit-balance');
-                                            if (!totalSentInput || !balanceInput) return;
-                                            totalSentInput.value = row.totalXanaxSent ?? 0;
-                                            balanceInput.value = row.currentBalance ?? 0;
-                                            vipEditOverlay.style.display = 'flex';
-                                            vipEditOverlay.setAttribute('aria-hidden', 'false');
-                                            totalSentInput.focus();
-                                            function closeModal() {
-                                                vipEditOverlay.style.display = 'none';
-                                                vipEditOverlay.setAttribute('aria-hidden', 'true');
-                                            }
-                                            function doSave() {
-                                                const totalSent = parseInt(totalSentInput.value, 10);
-                                                const num = parseInt(balanceInput.value, 10);
-                                                if (isNaN(totalSent) || totalSent < 0) { alert('Total sent must be a non-negative number.'); return; }
-                                                if (isNaN(num) || num < 0) { alert('Current balance must be a non-negative number.'); return; }
-                                                const newLevel = num >= 100 ? 3 : num >= 50 ? 2 : num >= 10 ? 1 : 0;
-                                                btnEl.disabled = true;
-                                                firebase.functions().httpsCallable('updateVipBalance')({
-                                                    playerId: row.playerId, playerName: row.playerName, factionName: row.factionName, factionId: row.factionId,
-                                                    totalXanaxSent: totalSent, currentBalance: num, lastDeductionDate: new Date().toISOString(), vipLevel: newLevel, lastLoginDate: row.lastLoginDate
-                                                }).then(function() {
-                                                    tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
-                                                    tr.querySelector('.admin-vip-balance').textContent = num;
-                                                    tr.querySelector('td:nth-child(6)').textContent = 'VIP ' + newLevel;
-                                                    row.totalXanaxSent = totalSent; row.currentBalance = num; row.vipLevel = newLevel;
-                                                    closeModal();
-                                                    clearVipCache(row.playerId);
-                                                    const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
-                                                    if (apiKey2 && apiKey2.length === 16) {
-                                                        getUserData(apiKey2).then(function(ud) {
-                                                            if (ud && String(ud.playerId) === String(row.playerId)) updateWelcomeMessage();
-                                                        });
-                                                    }
-                                                }).catch(function(e) { console.error(e); alert('Update failed: ' + (e.message || e)); }).finally(function() { btnEl.disabled = false; });
-                                            }
-                                            vipEditOverlay.querySelector('#admin-vip-edit-save').onclick = doSave;
-                                            vipEditOverlay.querySelector('#admin-vip-edit-modal-close').onclick = closeModal;
-                                            vipEditOverlay.querySelector('#admin-vip-edit-cancel').onclick = closeModal;
-                                        });
-                                    })(editBtn, sorted2);
-                                });
-                                contentEl.querySelectorAll('.admin-vip-history-btn').forEach(function(historyBtn) {
-                                    historyBtn.addEventListener('click', function() {
-                                        const playerId = historyBtn.getAttribute('data-player-id');
-                                        const playerName = historyBtn.getAttribute('data-player-name');
-                                        const titleEl = document.getElementById('admin-vip-history-modal-title');
-                                        const bodyEl = document.getElementById('admin-vip-history-modal-body');
-                                        if (!titleEl || !bodyEl) return;
-                                        titleEl.textContent = 'Xanax history — ' + playerName;
-                                        bodyEl.innerHTML = '<p style="color: #888;">Loading...</p>';
-                                        vipHistoryOverlay.style.display = 'flex';
-                                        vipHistoryOverlay.setAttribute('aria-hidden', 'false');
-                                        const apiKey2 = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
-                                        if (!apiKey2 || apiKey2.length !== 16) {
-                                            bodyEl.innerHTML = '<p style="color: #c0392b;">Enter your API key in the sidebar to load history.</p>';
-                                            return;
-                                        }
-                                        firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey2, playerId: playerId })
-                                            .then(function(result) {
-                                                const transactions = result.data && result.data.transactions ? result.data.transactions : [];
-                                                if (transactions.length === 0) { bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>'; return; }
-                                                let tableHtml3 = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
-                                                transactions.forEach(function(t) {
-                                                    const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
-                                                    tableHtml3 += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
-                                                });
-                                                tableHtml3 += '</tbody></table>';
-                                                bodyEl.innerHTML = tableHtml3;
-                                            })
-                                            .catch(function(e) { console.error(e); bodyEl.innerHTML = '<p style="color: #c0392b;">Failed to load history. ' + (e.message || e.code || '') + '</p>'; });
-                                    });
-                                });
-                                attachApplyDeductionsListener();
-                                attachResetClockListener();
-                                wireAdminVipToolbarButtons();
-                            })
-                            .catch(function(e) {
-                                console.error(e);
-                                if (statusEl) statusEl.textContent = 'Failed: ' + (e.message || e.code || '');
-                                resetBtn.disabled = false;
-                            });
-                    };
-                }
-                attachResetClockListener();
                 wireAdminVipToolbarButtons();
                 window._adminVipCountdownInterval = setInterval(function() {
                     const panel = document.getElementById('admin-tab-vip');
@@ -2742,7 +2920,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             window._adminVipOverduePullAt = t;
                             window.__adminVipPullBalancesAndRender();
                         }
-                        // Scheduler often lags; after ~8s overdue run same logic as "Apply deductions now" once
+                        // Scheduler often lags; after ~8s overdue trigger applyVipDeductionsNow once
                         if (!window._adminVipOverdueSince) window._adminVipOverdueSince = t;
                         const overdueFor = t - window._adminVipOverdueSince;
                         const adminK = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
@@ -2758,7 +2936,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 })
                                 .catch(function(e) {
                                     console.error('Auto VIP deduction failed', e);
-                                    if (st) st.textContent = (e && e.message) || 'Auto apply failed — use button';
+                                    if (st) st.textContent = (e && e.message) || 'Auto apply failed';
                                 })
                                 .finally(function() {
                                     window._adminVipAutoDeductionInFlight = false;
@@ -2772,7 +2950,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }, 1000);
                 var _adminVipPullInFlight = false;
                 var _adminVipPullQueued = false;
-                // No periodic VIP refetch — balances change on ~48h deductions; use "Refresh list" or actions below.
+                // No periodic VIP refetch — balances change on ~48h deductions; use "Refresh list" or wait for auto-apply when overdue.
                 function adminVipPullBalancesAndRender() {
                     const panel = document.getElementById('admin-tab-vip');
                     if (!panel || panel.style.display === 'none') return;
@@ -2830,7 +3008,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                         btnEl.disabled = true;
                                         firebase.functions().httpsCallable('updateVipBalance')({
                                             playerId: row.playerId, playerName: row.playerName, factionName: row.factionName, factionId: row.factionId,
-                                            totalXanaxSent: totalSent, currentBalance: num, lastDeductionDate: new Date().toISOString(), vipLevel: newLevel, lastLoginDate: row.lastLoginDate
+                                            totalXanaxSent: totalSent, currentBalance: num, lastDeductionDate: new Date().toISOString(), vipLevel: newLevel, lastLoginDate: row.lastLoginDate,
+                                            adminEditLog: true, apiKey: apiKey
                                         }).then(function() {
                                             tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
                                             tr.querySelector('.admin-vip-balance').textContent = num;
@@ -2871,20 +3050,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                 firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey2, playerId: playerId })
                                     .then(function(result) {
                                         const transactions = result.data && result.data.transactions ? result.data.transactions : [];
-                                        if (transactions.length === 0) { bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>'; return; }
-                                        let tableHtml3 = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
-                                        transactions.forEach(function(t) {
-                                            const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
-                                            tableHtml3 += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
-                                        });
-                                        tableHtml3 += '</tbody></table>';
-                                        bodyEl.innerHTML = tableHtml3;
+                                        renderAdminVipHistoryModalTransactions(bodyEl, transactions);
                                     })
                                     .catch(function(e) { console.error(e); bodyEl.innerHTML = '<p style="color: #c0392b;">Failed to load history. ' + (e.message || e.code || '') + '</p>'; });
                             });
                         });
-                        attachApplyDeductionsListener();
-                        attachResetClockListener();
                         wireAdminVipToolbarButtons();
                         getUserData(apiKey).then(function(ud) {
                             if (ud && ud.playerId) clearVipCache(ud.playerId);
@@ -2944,12 +3114,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     vipHistoryOverlay.className = 'app-modal-overlay';
                     vipHistoryOverlay.setAttribute('aria-hidden', 'true');
                     vipHistoryOverlay.style.display = 'none';
-                    vipHistoryOverlay.innerHTML = '<div class="app-modal" role="dialog" style="max-width: 480px;" aria-labelledby="admin-vip-history-modal-title">' +
+                    vipHistoryOverlay.innerHTML = '<div class="app-modal" role="dialog" style="max-width: 560px;" aria-labelledby="admin-vip-history-modal-title">' +
                         '<div class="app-modal-header">' +
                         '<h2 id="admin-vip-history-modal-title">Xanax history</h2>' +
                         '<button type="button" class="app-modal-close" id="admin-vip-history-modal-close" aria-label="Close">×</button>' +
                         '</div>' +
-                        '<div class="app-modal-body" id="admin-vip-history-modal-body"><p style="color: #888;">Loading...</p></div></div>';
+                        '<div class="app-modal-body" id="admin-vip-history-modal-body" style="max-height:min(78vh,620px);overflow-y:auto;"><p style="color: #888;">Loading...</p></div></div>';
                     document.body.appendChild(vipHistoryOverlay);
                     function closeVipHistoryModal() {
                         vipHistoryOverlay.style.display = 'none';
@@ -2979,17 +3149,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         firebase.functions().httpsCallable('getVipTransactionsForAdmin')({ apiKey: apiKey, playerId: playerId })
                             .then(function(result) {
                                 const transactions = result.data && result.data.transactions ? result.data.transactions : [];
-                                if (transactions.length === 0) {
-                                    bodyEl.innerHTML = '<p style="color: #888;">No transactions yet.</p>';
-                                    return;
-                                }
-                                let tableHtml = '<table class="admin-table" style="font-size: 0.9rem;"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>';
-                                transactions.forEach(function(t) {
-                                    const dateStr = t.timestamp ? new Date(t.timestamp).toLocaleString() : '—';
-                                    tableHtml += '<tr><td>' + dateStr + '</td><td>' + (t.transactionType || 'Sent') + '</td><td>' + (t.amount ?? 0) + '</td><td>' + (t.balanceAfter ?? 0) + '</td></tr>';
-                                });
-                                tableHtml += '</tbody></table>';
-                                bodyEl.innerHTML = tableHtml;
+                                renderAdminVipHistoryModalTransactions(bodyEl, transactions);
                             })
                             .catch(function(e) {
                                 console.error(e);
@@ -3037,7 +3197,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 currentBalance: num,
                                 lastDeductionDate: new Date().toISOString(),
                                 vipLevel: newLevel,
-                                lastLoginDate: row.lastLoginDate
+                                lastLoginDate: row.lastLoginDate,
+                                adminEditLog: true, apiKey: apiKey
                             }).then(function() {
                                 tr.querySelector('.admin-vip-total-sent').textContent = totalSent;
                                 tr.querySelector('.admin-vip-balance').textContent = num;
@@ -3608,7 +3769,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- GLOBAL API KEY HANDLING ---
     // Function to update welcome message
     let welcomeMessageTimeout = null;
-    const WELCOME_REFRESH_COOLDOWN_MS = 30 * 1000;
+    const WELCOME_REFRESH_COOLDOWN_SEC = 5;
     async function updateWelcomeMessage() {
         const welcomeMessage = document.getElementById('welcomeMessage');
         const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
@@ -3762,28 +3923,68 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Welcome refresh button: recheck VIP status and new Xanax sent (with cooldown)
+    function clearWelcomeRefreshCooldown(btn) {
+        if (!btn) return;
+        if (btn._welcomeRefreshCooldownTimer) {
+            clearInterval(btn._welcomeRefreshCooldownTimer);
+            btn._welcomeRefreshCooldownTimer = null;
+        }
+    }
+
+    /** After a recheck finishes: show 5…1 on the button, then re-enable (clear visual “still working” vs cooldown). */
+    function startWelcomeRefreshButtonCooldown(btn) {
+        clearWelcomeRefreshCooldown(btn);
+        let n = WELCOME_REFRESH_COOLDOWN_SEC;
+        btn.textContent = String(n);
+        btn.title = 'Recheck available in ' + n + 's';
+        btn.disabled = true;
+        btn._welcomeRefreshCooldownTimer = setInterval(function () {
+            n -= 1;
+            if (n <= 0) {
+                clearWelcomeRefreshCooldown(btn);
+                btn.textContent = '↻';
+                btn.title = 'Recheck VIP status and new Xanax sent';
+                btn.disabled = false;
+            } else {
+                btn.textContent = String(n);
+                btn.title = 'Recheck available in ' + n + 's';
+            }
+        }, 1000);
+    }
+
+    // Welcome refresh button: recheck VIP + incoming Xanax; keep welcome panel as-is while working, then 5s numeric cooldown on the button
     const welcomeRefreshBtn = document.getElementById('welcomeRefreshBtn');
     if (welcomeRefreshBtn) {
-        welcomeRefreshBtn.addEventListener('click', async function() {
+        welcomeRefreshBtn.addEventListener('click', async function () {
             if (this.disabled) return;
             const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
             if (!apiKey || apiKey.length !== 16) return;
             const welcomeMessage = document.getElementById('welcomeMessage');
             if (!welcomeMessage) return;
-            this.disabled = true;
-            this.textContent = '…';
-            this.title = 'Checking...';
+            const btnEl = this;
+            clearWelcomeRefreshCooldown(btnEl);
+            btnEl.disabled = true;
+            btnEl.textContent = '↻';
+            btnEl.title = 'Updating VIP status…';
             try {
                 const userData = await getUserData(apiKey);
                 if (!userData || !userData.name) {
-                    this.textContent = '↻';
-                    this.title = 'Recheck VIP status and new Xanax sent';
-                    this.disabled = false;
                     return;
                 }
                 clearVipCache(userData.playerId);
-                welcomeMessage.innerHTML = '<span style="color: #888;">Checking...</span>';
+                try {
+                    const syncRes = await firebase.functions().httpsCallable('syncVipIncomingXanaxNow')({ apiKey: apiKey });
+                    const sd = syncRes && syncRes.data;
+                    if (sd && sd.skipped && sd.reason === 'poll_not_registered') {
+                        console.warn(
+                            '[VIP] Incoming event sync skipped: use an admin API key, or open Admin → VIP → Register server Xanax poller.'
+                        );
+                    } else if (sd && sd.skipped && sd.retryAfterSec) {
+                        console.warn('[VIP] Incoming event sync skipped (debounced), retry in ~' + sd.retryAfterSec + 's');
+                    }
+                } catch (syncErr) {
+                    console.warn('[VIP] syncVipIncomingXanaxNow', syncErr && syncErr.message);
+                }
                 const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
                 const welcomeHtml = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
                 welcomeMessage.innerHTML = welcomeHtml;
@@ -3808,13 +4009,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error('Welcome refresh failed:', e);
                 welcomeMessage.innerHTML = '<span style="color: #c0392b;">Refresh failed. Try again.</span>';
                 welcomeMessage.classList.remove('welcome-vip-pulse');
+            } finally {
+                startWelcomeRefreshButtonCooldown(btnEl);
             }
-            this.textContent = '↻';
-            this.title = 'Recheck VIP status and new Xanax sent';
-            this.disabled = true;
-            setTimeout(function() {
-                welcomeRefreshBtn.disabled = false;
-            }, WELCOME_REFRESH_COOLDOWN_MS);
         });
     }
 

@@ -1724,7 +1724,7 @@ function updateConsumptionUI(members, totalTime, cacheStats, wasCached, itemValu
                        : `<span class="item-total">Total: ${itemTotal}</span>
                           <span class="item-value">Value: $${itemValue.toLocaleString()}</span>
                           <span class="item-price">Price: $${itemPrice.toLocaleString()}</span>`;
-
+                   
                    const showWarChain = false;
                    const useMinRule = consumptionGetXanaxFlagUseMinHits();
                    const usePerRule = consumptionGetXanaxFlagUsePerXanax();
@@ -2169,7 +2169,7 @@ function exportPlayersToCSV() {
     }
     
     const { members, itemValues, fromTimestamp, toTimestamp } = consumptionTrackerData;
-
+    
                // Define columns
            const columns = [
                { id: 'xanax', label: 'Xanax', itemName: 'Xanax' },

@@ -332,6 +332,12 @@ const VIP_BALANCES_COLLECTION = 'vipBalances';
 const VIP_TRANSACTIONS_COLLECTION = 'vipTransactions';
 /** One doc per credited Torn event: doc id `${playerId}_${tornEventId}` — prevents double-count on VIP refresh. */
 const VIP_TORN_EVENT_CLAIMS_COLLECTION = 'vipTornEventClaims';
+/** One doc per Torn event id — incoming Xanax seen on recipient’s feed (scheduled poller). */
+const VIP_INCOMING_XANAX_LOG_COLLECTION = 'vipIncomingXanaxLog';
+/** Single-doc poll cursor: `state` doc holds `lastEventsFromUnix`. */
+const VIP_INCOMING_XANAX_POLL_COLLECTION = 'vipIncomingXanaxPoll';
+/** Never request Torn events older than this many seconds behind "now" (bounds first run + pagination). */
+const VIP_INCOMING_MAX_LOOKBACK_SEC = 24 * 3600;
 
 function vipLevelFromBalance(balance) {
   const b = Number(balance) || 0;
@@ -341,109 +347,94 @@ function vipLevelFromBalance(balance) {
   return 0;
 }
 
+/** Milliseconds for sorting vipTransactions (timestamp may be ISO string or Firestore Timestamp). */
+function vipTransactionTimestampMs(v) {
+  if (v == null) return 0;
+  if (typeof v === 'number' && Number.isFinite(v)) return v < 1e12 ? v * 1000 : v;
+  if (typeof v === 'string') {
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? ms : 0;
+  }
+  if (typeof v === 'object') {
+    if (typeof v.toDate === 'function') {
+      try {
+        return v.toDate().getTime();
+      } catch (_) {
+        return 0;
+      }
+    }
+    if (typeof v.toMillis === 'function') {
+      try {
+        return v.toMillis();
+      } catch (_) {
+        return 0;
+      }
+    }
+    if (v.seconds != null) return Number(v.seconds) * 1000 + Math.floor(Number(v.nanoseconds || 0) / 1e6);
+  }
+  return 0;
+}
+
 function vipTornEventClaimDocId(playerId, tornEventId) {
   const safe = String(tornEventId).replace(/[^a-zA-Z0-9_-]/g, '_');
   return `${String(playerId)}_${safe}`;
 }
 
-/** Get VIP balance by playerId or playerName. Returns same shape as Apps Script (playerId, playerName, totalXanaxSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) or null. */
-exports.getVipBalance = onCall(
-  callableOpts({ maxInstances: 10 }),
-  async (request) => {
-    const { playerId, playerName } = request.data || {};
-    if (playerId) {
-      const doc = await db.collection(VIP_BALANCES_COLLECTION).doc(String(playerId)).get();
-      if (!doc.exists) return null;
-      const d = doc.data();
-      return {
-        playerId: d.playerId,
-        playerName: d.playerName,
-        totalXanaxSent: d.totalXanaxSent ?? 0,
-        currentBalance: d.currentBalance ?? 0,
-        lastDeductionDate: d.lastDeductionDate ?? null,
-        vipLevel: d.vipLevel ?? 0,
-        lastLoginDate: d.lastLoginDate ?? null,
-      };
-    }
-    if (playerName) {
-      const snap = await db.collection(VIP_BALANCES_COLLECTION).where('playerName', '==', String(playerName)).limit(1).get();
-      if (snap.empty) return null;
-      const d = snap.docs[0].data();
-      return {
-        playerId: d.playerId,
-        playerName: d.playerName,
-        totalXanaxSent: d.totalXanaxSent ?? 0,
-        currentBalance: d.currentBalance ?? 0,
-        lastDeductionDate: d.lastDeductionDate ?? null,
-        vipLevel: d.vipLevel ?? 0,
-        lastLoginDate: d.lastLoginDate ?? null,
-      };
-    }
-    throw new HttpsError('invalid-argument', 'playerId or playerName required');
-  }
-);
+/**
+ * Parse "You were sent Nx Xanax from …" from the recipient's event feed (admin key).
+ * Torn HTML varies (spaces in href, duplicate URLs); resolve XID from query string and name from anchor or plain text.
+ * @returns {{ amount: number, playerId: number, playerName: string } | null}
+ */
+function parseIncomingXanaxEventHtml(eventHtml) {
+  const s = String(eventHtml || '');
+  if (!s.includes('You were sent') || !/xanax/i.test(s)) return null;
+  const xanaxMatch = s.match(/You were sent (\d+)x Xanax from/i);
+  if (!xanaxMatch) return null;
+  const amount = parseInt(xanaxMatch[1], 10);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
 
-/** Update or create VIP balance row. */
-exports.updateVipBalance = onCall(
-  callableOpts({ maxInstances: 10 }),
-  async (request) => {
-    const data = request.data || {};
-    const playerId = data.playerId != null ? String(data.playerId) : '';
-    const playerName = data.playerName != null ? String(data.playerName) : '';
-    if (!playerId) throw new HttpsError('invalid-argument', 'playerId required');
-    const ref = db.collection(VIP_BALANCES_COLLECTION).doc(playerId);
-    const doc = {
-      playerId: data.playerId,
-      playerName: playerName,
-      totalXanaxSent: data.totalXanaxSent ?? 0,
-      currentBalance: data.currentBalance ?? 0,
-      lastDeductionDate: data.lastDeductionDate ?? null,
-      vipLevel: data.vipLevel ?? 0,
-      lastLoginDate: data.lastLoginDate ?? null,
-    };
-    if (data.factionName != null && data.factionName !== '') doc.factionName = data.factionName;
-    if (data.factionId != null && data.factionId !== '') doc.factionId = String(data.factionId);
-    await ref.set(doc, { merge: true });
-    return { success: true };
+  let playerId = null;
+  for (const re of [/[?&]XID=(\d+)\b/i, /\bXID\s*=\s*(\d+)/i]) {
+    const m = s.match(re);
+    if (m) {
+      const id = parseInt(m[1], 10);
+      if (Number.isFinite(id) && id > 0) {
+        playerId = id;
+        break;
+      }
+    }
   }
-);
+  if (!playerId) return null;
 
-/** Log one VIP transaction. */
-exports.logVipTransaction = onCall(
-  callableOpts({ maxInstances: 10 }),
-  async (request) => {
-    const data = request.data || {};
-    const row = {
-      timestamp: data.timestamp || new Date().toISOString(),
-      playerId: data.playerId != null ? String(data.playerId) : '',
-      playerName: data.playerName != null ? String(data.playerName) : '',
-      amount: data.amount ?? 0,
-      transactionType: data.transactionType ?? 'Sent',
-      balanceAfter: data.balanceAfter ?? 0,
-    };
-    if (data.tornEventId != null && String(data.tornEventId).trim() !== '') {
-      row.tornEventId = String(data.tornEventId);
-    }
-    if (data.tornEventTimestamp != null && Number.isFinite(Number(data.tornEventTimestamp))) {
-      row.tornEventTimestamp = Number(data.tornEventTimestamp);
-    }
-    await db.collection(VIP_TRANSACTIONS_COLLECTION).add(row);
-    return { success: true };
+  let playerName = '';
+  const fromAnchor = s.match(/You were sent \d+x Xanax from\s*(?:<a\b[^>]*>)([\s\S]*?)<\/a>/i);
+  if (fromAnchor) {
+    playerName = String(fromAnchor[1] || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
-);
+  if (!playerName) {
+    const plain = s.match(/You were sent \d+x Xanax from\s+([^<\n][^<]{0,80})/i);
+    if (plain) playerName = String(plain[1] || '').trim();
+  }
+  if (!playerName) playerName = `Player ${playerId}`;
+
+  return {
+    amount,
+    playerId,
+    playerName,
+  };
+}
 
 /**
- * Apply Xanax credits from Torn event IDs idempotently (dedupe on refresh).
- * Each credit: { tornEventId, tornEventTimestamp (unix sec), amount }.
+ * Idempotent VIP credits from Torn events (same logic as applyVipTornXanaxCredits callable).
+ * @param {string} playerId
+ * @param {string} playerName
+ * @param {{ tornEventId: string, tornEventTimestamp: number, amount: number }[]} credits
+ * @param {{ factionName?: string, factionId?: string }} opts
  */
-exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
-  const data = request.data || {};
-  const playerId = data.playerId != null ? String(data.playerId).trim() : '';
-  const playerName = data.playerName != null ? String(data.playerName) : '';
-  const credits = Array.isArray(data.credits) ? data.credits : [];
-  if (!playerId) throw new HttpsError('invalid-argument', 'playerId required');
-  if (credits.length === 0) return { appliedCount: 0, deltaXanax: 0, balance: null };
-
+async function applyVipTornXanaxCreditsInternal(playerId, playerName, credits, opts) {
   const normalized = [];
   for (const c of credits) {
     const id = c.tornEventId != null ? String(c.tornEventId).trim() : '';
@@ -456,7 +447,7 @@ exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), as
 
   const balanceRef = db.collection(VIP_BALANCES_COLLECTION).doc(playerId);
 
-  const result = await db.runTransaction(async (transaction) => {
+  return db.runTransaction(async (transaction) => {
     const balSnap = await transaction.get(balanceRef);
     let d = balSnap.exists ? balSnap.data() : {};
     const baseTotal = Number(d.totalXanaxSent) || 0;
@@ -514,7 +505,7 @@ exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), as
         playerId,
         playerName,
         amount: c.amount,
-        transactionType: 'Sent',
+        transactionType: 'Incoming Xanax',
         balanceAfter: runBalance,
       });
     }
@@ -523,7 +514,7 @@ exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), as
     const newCurrent = baseCurrent + delta;
     const vipLevel = vipLevelFromBalance(newCurrent);
     const docUpdate = {
-      playerId: data.playerId,
+      playerId,
       playerName: playerName || d.playerName || '',
       totalXanaxSent: newTotal,
       currentBalance: newCurrent,
@@ -531,11 +522,11 @@ exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), as
       vipLevel,
       lastLoginDate: d.lastLoginDate ?? null,
     };
-    if (data.factionName != null && String(data.factionName).trim() !== '') {
-      docUpdate.factionName = String(data.factionName);
+    if (opts.factionName != null && String(opts.factionName).trim() !== '') {
+      docUpdate.factionName = String(opts.factionName);
     }
-    if (data.factionId != null && String(data.factionId).trim() !== '') {
-      docUpdate.factionId = String(data.factionId);
+    if (opts.factionId != null && String(opts.factionId).trim() !== '') {
+      docUpdate.factionId = String(opts.factionId);
     }
     transaction.set(balanceRef, docUpdate, { merge: true });
 
@@ -553,8 +544,155 @@ exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), as
       },
     };
   });
+}
 
-  return result;
+/**
+ * Build getVipBalance response. When ≥2 VIP rows share the same factionId, vipLevel uses combined currentBalance.
+ */
+async function buildVipBalanceResponseFromDocData(d) {
+  const personalBal = Number(d.currentBalance) || 0;
+  const personalLevel = vipLevelFromBalance(personalBal);
+  const fid = d.factionId != null ? String(d.factionId).trim() : '';
+  let factionCombinedBalance = null;
+  let factionMemberCount = 0;
+  let effectiveLevel = personalLevel;
+
+  if (fid) {
+    const poolSnap = await db.collection(VIP_BALANCES_COLLECTION).where('factionId', '==', fid).get();
+    factionMemberCount = poolSnap.size;
+    let sum = 0;
+    poolSnap.forEach((doc) => {
+      sum += Number(doc.data().currentBalance) || 0;
+    });
+    if (factionMemberCount >= 2) {
+      factionCombinedBalance = sum;
+      effectiveLevel = vipLevelFromBalance(sum);
+    }
+  }
+
+  const out = {
+    playerId: d.playerId,
+    playerName: d.playerName,
+    totalXanaxSent: d.totalXanaxSent ?? 0,
+    currentBalance: personalBal,
+    lastDeductionDate: d.lastDeductionDate ?? null,
+    vipLevel: effectiveLevel,
+    lastLoginDate: d.lastLoginDate ?? null,
+  };
+  if (d.factionName != null && String(d.factionName) !== '') out.factionName = String(d.factionName);
+  if (fid) out.factionId = fid;
+  if (factionCombinedBalance != null) out.factionCombinedBalance = factionCombinedBalance;
+  if (factionMemberCount >= 2) out.factionMemberCount = factionMemberCount;
+  return out;
+}
+
+/** Get VIP balance by playerId or playerName. Returns same shape as Apps Script (playerId, playerName, totalXanaxSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) or null. */
+exports.getVipBalance = onCall(
+  callableOpts({ maxInstances: 10 }),
+  async (request) => {
+    const { playerId, playerName } = request.data || {};
+    if (playerId) {
+      const doc = await db.collection(VIP_BALANCES_COLLECTION).doc(String(playerId)).get();
+      if (!doc.exists) return null;
+      return buildVipBalanceResponseFromDocData(doc.data());
+    }
+    if (playerName) {
+      const snap = await db.collection(VIP_BALANCES_COLLECTION).where('playerName', '==', String(playerName)).limit(1).get();
+      if (snap.empty) return null;
+      return buildVipBalanceResponseFromDocData(snap.docs[0].data());
+    }
+    throw new HttpsError('invalid-argument', 'playerId or playerName required');
+  }
+);
+
+/** Update or create VIP balance row. */
+exports.updateVipBalance = onCall(
+  callableOpts({ maxInstances: 10 }),
+  async (request) => {
+    const data = request.data || {};
+    const playerId = data.playerId != null ? String(data.playerId) : '';
+    const playerName = data.playerName != null ? String(data.playerName) : '';
+    if (!playerId) throw new HttpsError('invalid-argument', 'playerId required');
+    const ref = db.collection(VIP_BALANCES_COLLECTION).doc(playerId);
+    const prevSnap = await ref.get();
+    const prev = prevSnap.exists ? prevSnap.data() : {};
+    const oldBal = Number(prev.currentBalance) || 0;
+    const oldSent = Number(prev.totalXanaxSent) || 0;
+    const doc = {
+      playerId: data.playerId,
+      playerName: playerName,
+      totalXanaxSent: data.totalXanaxSent ?? 0,
+      currentBalance: data.currentBalance ?? 0,
+      lastDeductionDate: data.lastDeductionDate ?? null,
+      vipLevel: data.vipLevel ?? 0,
+      lastLoginDate: data.lastLoginDate ?? null,
+    };
+    if (data.factionName != null && data.factionName !== '') doc.factionName = data.factionName;
+    if (data.factionId != null && data.factionId !== '') doc.factionId = String(data.factionId);
+    await ref.set(doc, { merge: true });
+    const newBal = Number(doc.currentBalance) || 0;
+    const newSent = Number(doc.totalXanaxSent) || 0;
+    const dBal = newBal - oldBal;
+    const dSent = newSent - oldSent;
+    const wantAdminLog = data.adminEditLog === true;
+    const adminKey = String(data.apiKey || '')
+      .trim()
+      .replace(/[^A-Za-z0-9]/g, '');
+    if (wantAdminLog && (dBal !== 0 || dSent !== 0) && (await validateAdminApiKey(adminKey))) {
+      const logRow = {
+        timestamp: new Date().toISOString(),
+        playerId,
+        playerName: playerName || String(prev.playerName || ''),
+        transactionType: 'Admin adjustment',
+        amount: dBal,
+        balanceAfter: newBal,
+      };
+      if (dSent !== 0) logRow.deltaTotalXanaxSent = dSent;
+      await db.collection(VIP_TRANSACTIONS_COLLECTION).add(logRow);
+    }
+    return { success: true };
+  }
+);
+
+/** Log one VIP transaction. */
+exports.logVipTransaction = onCall(
+  callableOpts({ maxInstances: 10 }),
+  async (request) => {
+    const data = request.data || {};
+    const row = {
+      timestamp: data.timestamp || new Date().toISOString(),
+      playerId: data.playerId != null ? String(data.playerId) : '',
+      playerName: data.playerName != null ? String(data.playerName) : '',
+      amount: data.amount ?? 0,
+      transactionType: data.transactionType ?? 'Sent',
+      balanceAfter: data.balanceAfter ?? 0,
+    };
+    if (data.tornEventId != null && String(data.tornEventId).trim() !== '') {
+      row.tornEventId = String(data.tornEventId);
+    }
+    if (data.tornEventTimestamp != null && Number.isFinite(Number(data.tornEventTimestamp))) {
+      row.tornEventTimestamp = Number(data.tornEventTimestamp);
+    }
+    await db.collection(VIP_TRANSACTIONS_COLLECTION).add(row);
+    return { success: true };
+  }
+);
+
+/**
+ * Apply Xanax credits from Torn event IDs idempotently (dedupe on refresh).
+ * Each credit: { tornEventId, tornEventTimestamp (unix sec), amount }.
+ */
+exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
+  const data = request.data || {};
+  const playerId = data.playerId != null ? String(data.playerId).trim() : '';
+  const playerName = data.playerName != null ? String(data.playerName) : '';
+  const credits = Array.isArray(data.credits) ? data.credits : [];
+  if (!playerId) throw new HttpsError('invalid-argument', 'playerId required');
+  if (credits.length === 0) return { appliedCount: 0, deltaXanax: 0, balance: null };
+
+  const factionName = data.factionName != null ? String(data.factionName) : '';
+  const factionId = data.factionId != null ? String(data.factionId) : '';
+  return applyVipTornXanaxCreditsInternal(playerId, playerName, credits, { factionName, factionId });
 });
 
 /** Admin-only: return all VIP balance documents. Caller must pass apiKey; we validate against Torn and allow only admin user IDs. */
@@ -601,6 +739,50 @@ async function validateAdminApiKey(apiKey) {
   }
 }
 
+/**
+ * Load display name and faction from Torn `user/{id}?selections=profile` (name + faction.faction_name / faction_id).
+ * @returns {{ playerName: string, factionName: string, factionId: string, factionPatch: 'set'|'clear'|'omit' }}
+ */
+async function fetchTornPlayerNameAndFactionForVip(keyClean, pid) {
+  let playerName = '';
+  let factionName = '';
+  let factionId = '';
+  const res = await fetch(
+    `https://api.torn.com/user/${pid}?selections=profile&key=${encodeURIComponent(keyClean)}`
+  );
+  const data = await res.json();
+  if (data.error) {
+    const err = data.error;
+    const msg =
+      typeof err === 'object' && err != null && err.error != null
+        ? String(err.error)
+        : typeof err === 'string'
+          ? err
+          : 'Torn lookup failed';
+    throw new HttpsError('failed-precondition', msg);
+  }
+  if (data.name) playerName = String(data.name).trim();
+  const fac = data.faction;
+  let factionPatch = 'omit';
+  if (fac && typeof fac === 'object') {
+    if (fac.faction_name != null && String(fac.faction_name).trim() !== '') {
+      factionName = String(fac.faction_name).trim();
+    }
+    if (fac.faction_id != null && String(fac.faction_id).trim() !== '') {
+      factionId = String(fac.faction_id).trim();
+    }
+    if (factionName || factionId) {
+      factionPatch = 'set';
+    } else {
+      factionPatch = 'clear';
+    }
+  } else if (fac === null || fac === '') {
+    factionPatch = 'clear';
+  }
+  if (!playerName) playerName = `Player ${pid}`;
+  return { playerName, factionName, factionId, factionPatch };
+}
+
 exports.getVipBalancesForAdmin = onCall(
   callableOpts({ maxInstances: 10 }),
   async (request) => {
@@ -627,6 +809,98 @@ exports.getVipBalancesForAdmin = onCall(
   }
 );
 
+/**
+ * Admin-only: save the Torn API key used by the scheduled job `syncVipIncomingXanaxFromEvents` to poll your event feed.
+ * Stored at vipIncomingXanaxPoll/settings (same key you use here — must pass validateAdminApiKey).
+ */
+exports.registerVipIncomingXanaxPollKey = onCall(callableOpts({ maxInstances: 3 }), async (request) => {
+  const { apiKey } = request.data || {};
+  const ok = await validateAdminApiKey(apiKey);
+  if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+  const key = String(apiKey || '')
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, '');
+  if (key.length !== 16) throw new HttpsError('invalid-argument', 'Valid 16-character Torn API key required');
+  await db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('settings').set(
+    {
+      apiKey: key,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  return { success: true };
+});
+
+/** Admin-only: recent incoming Xanax rows from the server poller (vipIncomingXanaxLog). */
+const VIP_INCOMING_SCHEDULE_MINUTES = 10;
+
+exports.getVipIncomingXanaxLogForAdmin = onCall(
+  callableOpts({ maxInstances: 10 }),
+  async (request) => {
+    const { apiKey, limit } = request.data || {};
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+    const lim = Math.min(200, Math.max(1, parseInt(String(limit != null ? limit : 100), 10) || 100));
+    const logRef = db.collection(VIP_INCOMING_XANAX_LOG_COLLECTION).orderBy('tornEventTimestamp', 'desc').limit(lim);
+    const stateRef = db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('state');
+    const [snap, stateSnap] = await Promise.all([logRef.get(), stateRef.get()]);
+
+    const entries = [];
+    snap.docs.forEach((doc) => {
+      const d = doc.data();
+      entries.push({
+        tornEventId: d.tornEventId != null ? String(d.tornEventId) : doc.id,
+        tornEventTimestamp: d.tornEventTimestamp != null ? Number(d.tornEventTimestamp) : null,
+        senderPlayerId: d.senderPlayerId != null ? String(d.senderPlayerId) : '',
+        senderName: d.senderName != null ? String(d.senderName) : '',
+        amount: d.amount != null ? Number(d.amount) : 0,
+        recipientPlayerId: d.recipientPlayerId != null ? String(d.recipientPlayerId) : '',
+      });
+    });
+
+    const pollInfo = {
+      lastPollAtMs: null,
+      nextSyncApproxMs: null,
+      lastEventsFromUnix: null,
+      lastEventCount: null,
+      lastPollPages: null,
+      lastPollSource: null,
+      lastPulledNewestEventId: null,
+      lastPulledNewestEventTimestamp: null,
+      lastPulledNewestEventPreview: null,
+      scheduleIntervalMinutes: VIP_INCOMING_SCHEDULE_MINUTES,
+    };
+    if (stateSnap.exists) {
+      const d = stateSnap.data();
+      if (d.lastPollAt && typeof d.lastPollAt.toMillis === 'function') {
+        pollInfo.lastPollAtMs = d.lastPollAt.toMillis();
+        pollInfo.nextSyncApproxMs = pollInfo.lastPollAtMs + VIP_INCOMING_SCHEDULE_MINUTES * 60 * 1000;
+      }
+      if (d.lastEventsFromUnix != null && Number.isFinite(Number(d.lastEventsFromUnix))) {
+        pollInfo.lastEventsFromUnix = Number(d.lastEventsFromUnix);
+      }
+      if (d.lastEventCount != null && Number.isFinite(Number(d.lastEventCount))) {
+        pollInfo.lastEventCount = Number(d.lastEventCount);
+      }
+      if (d.lastPollPages != null && Number.isFinite(Number(d.lastPollPages))) {
+        pollInfo.lastPollPages = Number(d.lastPollPages);
+      }
+      if (d.lastPollSource != null) pollInfo.lastPollSource = String(d.lastPollSource);
+      if (d.lastPulledNewestEventId != null && String(d.lastPulledNewestEventId).trim() !== '') {
+        pollInfo.lastPulledNewestEventId = String(d.lastPulledNewestEventId);
+      }
+      if (d.lastPulledNewestEventTimestamp != null && Number.isFinite(Number(d.lastPulledNewestEventTimestamp))) {
+        pollInfo.lastPulledNewestEventTimestamp = Number(d.lastPulledNewestEventTimestamp);
+      }
+      if (d.lastPulledNewestEventPreview != null && String(d.lastPulledNewestEventPreview).trim() !== '') {
+        pollInfo.lastPulledNewestEventPreview = String(d.lastPulledNewestEventPreview);
+      }
+    }
+
+    return { entries, pollInfo };
+  }
+);
+
 /** Admin-only: add/update VIP row from player ID + balance (missed events, free trials). Resolves name via Torn API. */
 exports.adminAddVipPlayer = onCall(
   callableOpts({ maxInstances: 5 }),
@@ -645,26 +919,17 @@ exports.adminAddVipPlayer = onCall(
       const t = Number(totalXanaxSent);
       if (!Number.isNaN(t) && t >= 0 && Math.floor(t) === t) sent = t;
     }
-    const key = String(apiKey || '').trim();
+    const keyClean = String(apiKey || '')
+      .trim()
+      .replace(/[^A-Za-z0-9]/g, '');
     let playerName = '';
     let factionName = '';
     let factionId = '';
     try {
-      const res = await fetch(`https://api.torn.com/user/${pid}?selections=basic&key=${key}`);
-      const data = await res.json();
-      if (data.error) {
-        throw new HttpsError('failed-precondition', String(data.error.error || data.error || 'Torn lookup failed'));
-      }
-      if (data.name) playerName = String(data.name);
-      const resF = await fetch(
-        `https://api.torn.com/user/${pid}?selections=faction&key=${encodeURIComponent(key)}`
-      );
-      const facData = await resF.json();
-      if (!facData.error && facData.faction && typeof facData.faction === 'object') {
-        const fac = facData.faction;
-        if (fac.faction_name) factionName = String(fac.faction_name);
-        if (fac.faction_id != null) factionId = String(fac.faction_id);
-      }
+      const prof = await fetchTornPlayerNameAndFactionForVip(keyClean, pid);
+      playerName = prof.playerName;
+      factionName = prof.factionName;
+      factionId = prof.factionId;
     } catch (e) {
       if (e instanceof HttpsError) throw e;
     }
@@ -680,8 +945,10 @@ exports.adminAddVipPlayer = onCall(
       vipLevel,
       lastLoginDate: nowIso,
     };
-    if (factionName) doc.factionName = factionName;
-    if (factionId) doc.factionId = factionId;
+    if (factionName || factionId) {
+      doc.factionName = factionName;
+      doc.factionId = factionId;
+    }
     await db.collection(VIP_BALANCES_COLLECTION).doc(pid).set(doc, { merge: true });
     await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
       timestamp: nowIso,
@@ -695,6 +962,79 @@ exports.adminAddVipPlayer = onCall(
   }
 );
 
+/**
+ * Admin-only: re-fetch every VIP balance row’s player name and faction from Torn (`selections=profile`) and merge.
+ * Clears stored faction only when the profile response explicitly indicates no faction (never on missing/ambiguous faction).
+ */
+exports.refreshVipProfilesFromTorn = onCall(
+  callableOpts({ maxInstances: 2, timeoutSeconds: 300 }),
+  async (request) => {
+    const { apiKey } = request.data || {};
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
+    const keyClean = String(apiKey || '')
+      .trim()
+      .replace(/[^A-Za-z0-9]/g, '');
+    if (keyClean.length !== 16) {
+      throw new HttpsError('invalid-argument', 'Valid 16-character Torn API key required');
+    }
+
+    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const failed = [];
+    let updated = 0;
+    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    let n = 0;
+    for (const doc of snap.docs) {
+      const pid = doc.id;
+      if (n++ > 0) await delay(150);
+      try {
+        const { playerName, factionName, factionId, factionPatch } =
+          await fetchTornPlayerNameAndFactionForVip(keyClean, pid);
+        const patch = {
+          playerName,
+          lastProfileRefreshAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        if (factionPatch === 'set') {
+          patch.factionName = factionName;
+          patch.factionId = factionId;
+        } else if (factionPatch === 'clear') {
+          patch.factionName = admin.firestore.FieldValue.delete();
+          patch.factionId = admin.firestore.FieldValue.delete();
+        }
+        await doc.ref.set(patch, { merge: true });
+        updated++;
+      } catch (e) {
+        const msg =
+          e instanceof HttpsError
+            ? e.message
+            : e && e.message
+              ? String(e.message)
+              : String(e);
+        failed.push({ playerId: pid, error: msg.slice(0, 240) });
+      }
+    }
+
+    await db.collection('vipAdminMeta').doc('lastProfileRefresh').set(
+      {
+        at: admin.firestore.FieldValue.serverTimestamp(),
+        total: snap.size,
+        updated,
+        failedCount: failed.length,
+      },
+      { merge: true }
+    );
+
+    return {
+      success: true,
+      total: snap.size,
+      updated,
+      failedCount: failed.length,
+      failed: failed.slice(0, 40),
+    };
+  }
+);
+
 /** Admin-only: return VIP transactions for a player (when they sent xanax / deductions). */
 exports.getVipTransactionsForAdmin = onCall(
   callableOpts({ maxInstances: 10 }),
@@ -704,34 +1044,44 @@ exports.getVipTransactionsForAdmin = onCall(
     if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
     const pid = String(playerId ?? '');
     if (!pid) throw new HttpsError('invalid-argument', 'playerId required');
-    const snap = await db.collection(VIP_TRANSACTIONS_COLLECTION)
-      .where('playerId', '==', pid)
-      .orderBy('timestamp', 'desc')
-      .limit(200)
-      .get();
-    const list = [];
-    snap.docs.forEach((doc) => {
+    // Equality-only query: avoids composite index (where + orderBy would need playerId+timestamp index).
+    const snap = await db.collection(VIP_TRANSACTIONS_COLLECTION).where('playerId', '==', pid).get();
+    const list = snap.docs.map((doc) => {
       const d = doc.data();
-      list.push({
+      const row = {
+        _ts: vipTransactionTimestampMs(d.timestamp),
         timestamp: d.timestamp ?? null,
         transactionType: d.transactionType ?? 'Sent',
         amount: d.amount ?? 0,
         balanceAfter: d.balanceAfter ?? 0,
-      });
+      };
+      if (d.tornEventId != null && String(d.tornEventId).trim() !== '') row.tornEventId = String(d.tornEventId);
+      if (d.deltaTotalXanaxSent != null && Number.isFinite(Number(d.deltaTotalXanaxSent))) {
+        row.deltaTotalXanaxSent = Number(d.deltaTotalXanaxSent);
+      }
+      return row;
     });
-    return { transactions: list };
+    list.sort((a, b) => b._ts - a._ts);
+    const transactions = list.slice(0, 200).map((row) => {
+      const out = {
+        timestamp: row.timestamp,
+        transactionType: row.transactionType,
+        amount: row.amount,
+        balanceAfter: row.balanceAfter,
+      };
+      if (row.tornEventId != null && String(row.tornEventId).trim() !== '') {
+        out.tornEventId = String(row.tornEventId);
+      }
+      if (row.deltaTotalXanaxSent != null && Number.isFinite(Number(row.deltaTotalXanaxSent))) {
+        out.deltaTotalXanaxSent = Number(row.deltaTotalXanaxSent);
+      }
+      return out;
+    });
+    return { transactions };
   }
 );
 
 /** One-off import: set VIP balances from a list of { playerId, playerName, amount }. Assumes all sent today; logs one "Sent" transaction per player. */
-function vipLevelFromBalance(balance) {
-  const b = Number(balance) || 0;
-  if (b >= 100) return 3;
-  if (b >= 50) return 2;
-  if (b >= 10) return 1;
-  return 0;
-}
-
 exports.importVipBalances = onCall(
   callableOpts({ maxInstances: 1 }),
   async (request) => {
@@ -871,6 +1221,399 @@ exports.applyVipDeductions = onSchedule(
       }
     }
     console.log('[applyVipDeductions] done updated=', updated, 'errors=', errors);
+  }
+);
+
+function tornEventTimestamp(ev) {
+  const ts = typeof ev.timestamp === 'number' ? ev.timestamp : parseInt(ev.timestamp, 10);
+  return Number.isFinite(ts) ? ts : NaN;
+}
+
+/** One page of user events. Optional sort (e.g. DESC), limit (max 100), to (unix upper bound inclusive per Torn docs). */
+async function fetchTornUserEventsPage(apiKey, fromUnix, opts) {
+  const optsIn = opts || {};
+  const from = Math.floor(Number(fromUnix) || 0);
+  const q = [`selections=events`, `from=${from}`, `key=${encodeURIComponent(apiKey)}`];
+  if (optsIn.sort) q.push(`sort=${encodeURIComponent(String(optsIn.sort))}`);
+  if (optsIn.limit != null) {
+    const lim = Math.min(100, Math.max(1, Math.floor(Number(optsIn.limit))));
+    q.push(`limit=${lim}`);
+  }
+  if (optsIn.to != null && Number.isFinite(Number(optsIn.to))) {
+    q.push(`to=${Math.floor(Number(optsIn.to))}`);
+  }
+  const url = `https://api.torn.com/user/?${q.join('&')}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.error) throw new Error(String(data.error.error || data.error));
+  const ev = data.events;
+  return ev && typeof ev === 'object' ? ev : {};
+}
+
+/**
+ * Walk the feed in windows until a page has fewer than 100 events (or empty), merging by event id.
+ * Uses from + to + sort=DESC + limit=100 when supported; falls back to a single legacy request on error.
+ * @returns {Promise<{ eventsObj: Record<string, unknown>, pages: number }>}
+ */
+async function collectEventsSince(apiKey, requestFrom) {
+  const merged = new Map();
+  let toBound = null;
+  let pages = 0;
+  let usedPlainFallback = false;
+
+  for (let guard = 0; guard < 100; guard++) {
+    pages += 1;
+    let batch;
+    try {
+      const opts = usedPlainFallback
+        ? {}
+        : {
+            sort: 'DESC',
+            limit: 100,
+            ...(toBound != null ? { to: toBound } : {}),
+          };
+      batch = await fetchTornUserEventsPage(apiKey, requestFrom, opts);
+    } catch (e) {
+      if (!usedPlainFallback && pages === 1) {
+        usedPlainFallback = true;
+        batch = await fetchTornUserEventsPage(apiKey, requestFrom, {});
+        for (const [id, ev] of Object.entries(batch)) merged.set(id, ev);
+        break;
+      }
+      console.warn('[collectEventsSince] page error', pages, e && e.message);
+      break;
+    }
+
+    const entries = Object.entries(batch);
+    if (entries.length === 0) break;
+
+    for (const [id, ev] of entries) merged.set(id, ev);
+
+    if (usedPlainFallback || entries.length < 100) break;
+
+    const timestamps = entries.map(([, ev]) => tornEventTimestamp(ev)).filter(Number.isFinite);
+    if (timestamps.length === 0) break;
+    const minTs = Math.min(...timestamps);
+    const nextTo = minTs - 1;
+    if (nextTo < requestFrom) break;
+    toBound = nextTo;
+  }
+
+  const eventsObj = {};
+  merged.forEach((v, k) => {
+    eventsObj[k] = v;
+  });
+  return { eventsObj, pages };
+}
+
+const VIP_INCOMING_MANUAL_DEBOUNCE_MS = 45 * 1000;
+
+function stripHtmlToPlainPreview(html, maxLen) {
+  const s = String(html || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+/**
+ * Newest Torn event in merged feed (any category), by timestamp then event id.
+ * @param {[string, unknown][]} entriesPairs from Object.entries(eventsObj)
+ */
+function pickNewestFeedEvent(entriesPairs) {
+  let bestId = '';
+  let bestTs = -Infinity;
+  let bestPreview = '';
+  for (const [eventId, ev] of entriesPairs) {
+    if (!ev || typeof ev !== 'object') continue;
+    const ts = tornEventTimestamp(ev);
+    if (!Number.isFinite(ts)) continue;
+    const idStr = String(eventId);
+    if (ts > bestTs || (ts === bestTs && idStr > bestId)) {
+      bestTs = ts;
+      bestId = idStr;
+      const raw = ev && typeof ev === 'object' && 'event' in ev ? String(/** @type {{ event?: unknown }} */ (ev).event ?? '') : '';
+      bestPreview = stripHtmlToPlainPreview(raw, 900);
+    }
+  }
+  if (!Number.isFinite(bestTs) || bestTs === -Infinity) {
+    return { tornEventId: '', tornEventTimestamp: null, preview: '' };
+  }
+  return {
+    tornEventId: bestId,
+    tornEventTimestamp: Math.floor(bestTs),
+    preview: bestPreview,
+  };
+}
+
+/**
+ * Shared VIP incoming-Xanax poll (scheduled + optional manual callable).
+ * @param {string} source 'schedule' | 'manual'
+ * @param {{ overrideApiKey?: string, persistPollKeyIfMissing?: boolean }} [opts]
+ * @returns {Promise<{ ok: boolean, reason?: string, totalEvents?: number, pages?: number, xanaxSenders?: number, nextCursor?: number }>}
+ */
+async function runVipIncomingXanaxPollCore(source, opts) {
+  const optsIn = opts || {};
+  const override = String(optsIn.overrideApiKey || '')
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, '');
+
+  let apiKey = '';
+  let persistPollKeyAfterSuccess = false;
+
+  if (override.length === 16) {
+    const adminOk = await validateAdminApiKey(override);
+    if (!adminOk) {
+      console.error(`[runVipIncomingXanaxPollCore:${source}] override API key is not an admin player id`);
+      return { ok: false, reason: 'invalid_admin_key' };
+    }
+    apiKey = override;
+    if (optsIn.persistPollKeyIfMissing === true) {
+      const settingsSnapEarly = await db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('settings').get();
+      const storedEarly = settingsSnapEarly.exists
+        ? String(settingsSnapEarly.data().apiKey || '')
+            .trim()
+            .replace(/[^A-Za-z0-9]/g, '')
+        : '';
+      if (!storedEarly || storedEarly.length !== 16) persistPollKeyAfterSuccess = true;
+    }
+  } else {
+    const settingsSnap = await db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('settings').get();
+    apiKey = settingsSnap.exists
+      ? String(settingsSnap.data().apiKey || '')
+          .trim()
+          .replace(/[^A-Za-z0-9]/g, '')
+      : '';
+    if (!apiKey || apiKey.length !== 16) {
+      console.warn(
+        `[runVipIncomingXanaxPollCore:${source}] No apiKey in vipIncomingXanaxPoll/settings — admin can run Recheck VIP once to save it, or use Register server Xanax poller`
+      );
+      return { ok: false, reason: 'no_settings' };
+    }
+    const ok = await validateAdminApiKey(apiKey);
+    if (!ok) {
+      console.error(`[runVipIncomingXanaxPollCore:${source}] poll key is not an admin player id`);
+      return { ok: false, reason: 'invalid_admin_key' };
+    }
+  }
+
+  let recipientPid = '';
+  try {
+    recipientPid = await fetchTornPlayerIdFromApiKey(apiKey);
+  } catch (e) {
+    console.error(`[runVipIncomingXanaxPollCore:${source}] profile`, e && e.message);
+    return { ok: false, reason: 'profile_error' };
+  }
+
+  const stateRef = db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('state');
+  const stateSnap = await stateRef.get();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const floorFrom = Math.max(0, nowSec - VIP_INCOMING_MAX_LOOKBACK_SEC);
+  const prev = stateSnap.exists ? Number(stateSnap.data().lastEventsFromUnix) : NaN;
+  let requestFrom =
+    Number.isFinite(prev) && prev > 0 ? prev : floorFrom;
+  requestFrom = Math.max(requestFrom, floorFrom);
+
+  let eventsObj;
+  let pages = 1;
+  try {
+    const collected = await collectEventsSince(apiKey, requestFrom);
+    eventsObj = collected.eventsObj;
+    pages = collected.pages;
+  } catch (e) {
+    console.error(`[runVipIncomingXanaxPollCore:${source}] Torn events`, e.message);
+    return { ok: false, reason: 'torn_error' };
+  }
+
+  const entries = Object.entries(eventsObj);
+  let nextCursor = requestFrom;
+  for (const [, ev] of entries) {
+    const ts = tornEventTimestamp(ev);
+    if (Number.isFinite(ts)) nextCursor = Math.max(nextCursor, ts);
+  }
+
+  const bySender = new Map();
+
+  for (const [eventId, ev] of entries) {
+    if (!ev || !ev.event) continue;
+    const html = String(ev.event);
+    if (!html.includes('You were sent') || !/xanax/i.test(html)) continue;
+    const parsed = parseIncomingXanaxEventHtml(html);
+    if (!parsed || !parsed.playerId) continue;
+
+    const ts = tornEventTimestamp(ev);
+    if (!Number.isFinite(ts)) continue;
+
+    const senderPid = String(parsed.playerId);
+    const tornEventId = String(eventId);
+
+    await db
+      .collection(VIP_INCOMING_XANAX_LOG_COLLECTION)
+      .doc(tornEventId)
+      .set(
+        {
+          tornEventId,
+          tornEventTimestamp: ts,
+          recipientPlayerId: recipientPid,
+          senderPlayerId: senderPid,
+          senderName: parsed.playerName,
+          amount: parsed.amount,
+          rawEventSnippet: html.length > 500 ? html.slice(0, 500) : html,
+          seenAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+    if (!bySender.has(senderPid)) bySender.set(senderPid, []);
+    bySender.get(senderPid).push({
+      tornEventId,
+      tornEventTimestamp: ts,
+      amount: parsed.amount,
+      senderName: parsed.playerName,
+    });
+  }
+
+  for (const [senderPid, rows] of bySender) {
+    const firstName = rows[0].senderName;
+    const creditObjs = rows.map((r) => ({
+      tornEventId: r.tornEventId,
+      tornEventTimestamp: r.tornEventTimestamp,
+      amount: r.amount,
+    }));
+    try {
+      await applyVipTornXanaxCreditsInternal(senderPid, firstName, creditObjs, {});
+    } catch (e) {
+      console.error(`[runVipIncomingXanaxPollCore:${source}] apply sender`, senderPid, e && e.message);
+    }
+  }
+
+  let newestMeta = pickNewestFeedEvent(entries);
+  if (entries.length === 0) {
+    newestMeta = {
+      tornEventId: '',
+      tornEventTimestamp: null,
+      preview: 'No Torn events returned this run (empty window or nothing new in range).',
+    };
+  } else if (!newestMeta.tornEventId && !newestMeta.preview) {
+    newestMeta = {
+      tornEventId: '',
+      tornEventTimestamp: null,
+      preview: `${entries.length} raw event(s) merged but none had a readable timestamp (unexpected Torn response shape).`,
+    };
+  }
+
+  await stateRef.set(
+    {
+      lastEventsFromUnix: nextCursor,
+      lastPollAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastEventCount: entries.length,
+      lastPollPages: pages,
+      lastPollSource: source,
+      recipientPlayerId: recipientPid,
+      lastPulledNewestEventId: newestMeta.tornEventId || null,
+      lastPulledNewestEventTimestamp:
+        newestMeta.tornEventTimestamp != null ? newestMeta.tornEventTimestamp : null,
+      lastPulledNewestEventPreview: newestMeta.preview || null,
+    },
+    { merge: true }
+  );
+
+  if (persistPollKeyAfterSuccess) {
+    await db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('settings').set(
+      {
+        apiKey,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    console.log(`[runVipIncomingXanaxPollCore:${source}] saved poll API key to vipIncomingXanaxPoll/settings (first admin sync)`);
+  }
+
+  console.log(
+    `[runVipIncomingXanaxPollCore:${source}] events=${entries.length} pages=${pages} xanaxSenders=${bySender.size} nextCursor=${nextCursor}`
+  );
+
+  return {
+    ok: true,
+    totalEvents: entries.length,
+    pages,
+    xanaxSenders: bySender.size,
+    nextCursor,
+  };
+}
+
+/**
+ * Every 10 minutes: read the recipient’s Torn event feed (stored poll key), multi-page until backlog drained,
+ * log Xanax lines, credit senders, advance lastEventsFromUnix.
+ */
+exports.syncVipIncomingXanaxFromEvents = onSchedule(
+  {
+    schedule: 'every 10 minutes',
+    timeZone: 'UTC',
+    timeoutSeconds: 540,
+    memory: '512MiB',
+  },
+  async () => {
+    await runVipIncomingXanaxPollCore('schedule', {});
+  }
+);
+
+/**
+ * Any user with a valid Torn key can trigger the same poll as the scheduler (debounced globally ~45s).
+ * Lets the welcome “recheck VIP” path refresh all senders without waiting 10 minutes.
+ */
+exports.syncVipIncomingXanaxNow = onCall(
+  callableOpts({ maxInstances: 5, timeoutSeconds: 540 }),
+  async (request) => {
+    const { apiKey } = request.data || {};
+    try {
+      await fetchTornPlayerIdFromApiKey(apiKey);
+    } catch {
+      throw new HttpsError('invalid-argument', 'Valid Torn API key required');
+    }
+
+    const keyNorm = String(apiKey || '')
+      .trim()
+      .replace(/[^A-Za-z0-9]/g, '');
+
+    const settingsSnap = await db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('settings').get();
+    const pollKey = settingsSnap.exists
+      ? String(settingsSnap.data().apiKey || '')
+          .trim()
+          .replace(/[^A-Za-z0-9]/g, '')
+      : '';
+
+    let pollOpts = {};
+    if (!pollKey || pollKey.length !== 16) {
+      const adminOk = await validateAdminApiKey(keyNorm);
+      if (!adminOk) {
+        return { ok: true, skipped: true, reason: 'poll_not_registered' };
+      }
+      pollOpts = { overrideApiKey: keyNorm, persistPollKeyIfMissing: true };
+    }
+
+    const stateRef = db.collection(VIP_INCOMING_XANAX_POLL_COLLECTION).doc('state');
+    const debounce = await db.runTransaction(async (t) => {
+      const snap = await t.get(stateRef);
+      const last = snap.exists ? Number(snap.data().lastManualSyncMs) || 0 : 0;
+      const now = Date.now();
+      if (now - last < VIP_INCOMING_MANUAL_DEBOUNCE_MS) {
+        return {
+          skip: true,
+          retryAfterSec: Math.ceil((VIP_INCOMING_MANUAL_DEBOUNCE_MS - (now - last)) / 1000),
+        };
+      }
+      t.set(stateRef, { lastManualSyncMs: now }, { merge: true });
+      return { skip: false };
+    });
+
+    if (debounce.skip) {
+      return { ok: true, skipped: true, retryAfterSec: debounce.retryAfterSec };
+    }
+
+    const result = await runVipIncomingXanaxPollCore('manual', pollOpts);
+    return { ok: true, skipped: false, ...result };
   }
 );
 
