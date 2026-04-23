@@ -547,12 +547,68 @@ async function applyVipTornXanaxCreditsInternal(playerId, playerName, credits, o
 }
 
 /**
- * Build getVipBalance response. When ≥2 VIP rows share the same factionId, vipLevel uses combined currentBalance.
+ * True if this Torn key belongs to the given player (key owner id from user/?selections=basic).
  */
-async function buildVipBalanceResponseFromDocData(d) {
+async function verifyTornApiKeyMatchesPlayerId(apiKeyClean, playerId) {
+  try {
+    const res = await fetch(
+      `https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(apiKeyClean)}`
+    );
+    const data = await res.json();
+    if (data.error) return false;
+    const owner =
+      data.player_id != null
+        ? String(data.player_id)
+        : data.id != null
+          ? String(data.id)
+          : '';
+    return owner !== '' && owner === String(playerId);
+  } catch {
+    return false;
+  }
+}
+
+/** Name + faction from user/{id}?selections=profile (caller must have verified key matches playerId). */
+async function fetchTornPlayerProfileForVipPoolSafe(apiKeyClean, playerId) {
+  try {
+    const res = await fetch(
+      `https://api.torn.com/user/${playerId}?selections=profile&key=${encodeURIComponent(apiKeyClean)}`
+    );
+    const data = await res.json();
+    if (data.error) return null;
+    let playerName = data.name != null ? String(data.name).trim() : '';
+    let factionName = '';
+    let factionId = '';
+    const fac = data.faction;
+    if (fac && typeof fac === 'object') {
+      if (fac.faction_name != null && String(fac.faction_name).trim() !== '') {
+        factionName = String(fac.faction_name).trim();
+      }
+      if (fac.faction_id != null && String(fac.faction_id).trim() !== '') {
+        factionId = String(fac.faction_id).trim();
+      }
+    }
+    if (!playerName) playerName = `Player ${playerId}`;
+    return { playerName, factionName, factionId };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build getVipBalance response. When poolQueryFactionId (or doc.factionId) matches any VIP row(s),
+ * vipLevel uses the sum of their currentBalance — even for a single payer and a zero-balance self row.
+ * @param {object} d vipBalances document fields
+ * @param {string} [poolQueryFactionId] Torn-verified faction id for the pool query (preferred over stale doc.factionId)
+ */
+async function buildVipBalanceResponseFromDocData(d, poolQueryFactionId = '') {
   const personalBal = Number(d.currentBalance) || 0;
   const personalLevel = vipLevelFromBalance(personalBal);
-  const fid = d.factionId != null ? String(d.factionId).trim() : '';
+  const docFid = d.factionId != null ? String(d.factionId).trim() : '';
+  const fid =
+    poolQueryFactionId != null && String(poolQueryFactionId).trim() !== ''
+      ? String(poolQueryFactionId).trim()
+      : docFid;
   let factionCombinedBalance = null;
   let factionMemberCount = 0;
   let effectiveLevel = personalLevel;
@@ -564,7 +620,7 @@ async function buildVipBalanceResponseFromDocData(d) {
     poolSnap.forEach((doc) => {
       sum += Number(doc.data().currentBalance) || 0;
     });
-    if (factionMemberCount >= 2) {
+    if (factionMemberCount >= 1) {
       factionCombinedBalance = sum;
       effectiveLevel = vipLevelFromBalance(sum);
     }
@@ -582,19 +638,69 @@ async function buildVipBalanceResponseFromDocData(d) {
   if (d.factionName != null && String(d.factionName) !== '') out.factionName = String(d.factionName);
   if (fid) out.factionId = fid;
   if (factionCombinedBalance != null) out.factionCombinedBalance = factionCombinedBalance;
-  if (factionMemberCount >= 2) out.factionMemberCount = factionMemberCount;
+  if (factionMemberCount >= 1 && factionCombinedBalance != null) out.factionMemberCount = factionMemberCount;
   return out;
 }
 
-/** Get VIP balance by playerId or playerName. Returns same shape as Apps Script (playerId, playerName, totalXanaxSent, currentBalance, lastDeductionDate, vipLevel, lastLoginDate) or null. */
+/** Get VIP balance by playerId or playerName. Optional apiKey (16-char): must match playerId so we can read Torn faction and grant pooled VIP when there is no vipBalances row yet. */
 exports.getVipBalance = onCall(
   callableOpts({ maxInstances: 10 }),
   async (request) => {
-    const { playerId, playerName } = request.data || {};
+    const { playerId, playerName, apiKey } = request.data || {};
+    const apiKeyClean = String(apiKey || '')
+      .trim()
+      .replace(/[^A-Za-z0-9]/g, '');
+
     if (playerId) {
-      const doc = await db.collection(VIP_BALANCES_COLLECTION).doc(String(playerId)).get();
-      if (!doc.exists) return null;
-      return buildVipBalanceResponseFromDocData(doc.data());
+      const pid = String(playerId);
+      const docRef = db.collection(VIP_BALANCES_COLLECTION).doc(pid);
+      const docSnap = await docRef.get();
+
+      let tornProf = null;
+      if (apiKeyClean.length === 16) {
+        const keyOk = await verifyTornApiKeyMatchesPlayerId(apiKeyClean, pid);
+        if (keyOk) {
+          tornProf = await fetchTornPlayerProfileForVipPoolSafe(apiKeyClean, pid);
+        }
+      }
+      const tornFid = tornProf && tornProf.factionId ? String(tornProf.factionId).trim() : '';
+
+      if (!docSnap.exists) {
+        if (!tornFid) return null;
+        const poolSnap = await db.collection(VIP_BALANCES_COLLECTION).where('factionId', '==', tornFid).get();
+        if (poolSnap.empty) return null;
+        let sum = 0;
+        poolSnap.forEach((doc) => {
+          sum += Number(doc.data().currentBalance) || 0;
+        });
+        const effectiveLevel = vipLevelFromBalance(sum);
+        const name = tornProf ? tornProf.playerName : `Player ${pid}`;
+        const out = {
+          playerId: pid,
+          playerName: name,
+          totalXanaxSent: 0,
+          currentBalance: 0,
+          lastDeductionDate: null,
+          vipLevel: effectiveLevel,
+          lastLoginDate: null,
+          factionId: tornFid,
+          factionCombinedBalance: sum,
+          factionMemberCount: poolSnap.size,
+        };
+        if (tornProf && tornProf.factionName) out.factionName = tornProf.factionName;
+        return out;
+      }
+
+      const d = docSnap.data();
+      const docFid = d.factionId != null ? String(d.factionId).trim() : '';
+      const poolQueryFactionId = tornFid || docFid;
+      const merged = { ...d, playerId: pid };
+      if (tornProf) {
+        if (tornProf.playerName) merged.playerName = tornProf.playerName;
+        if (tornProf.factionName) merged.factionName = tornProf.factionName;
+        if (tornFid) merged.factionId = tornFid;
+      }
+      return buildVipBalanceResponseFromDocData(merged, poolQueryFactionId);
     }
     if (playerName) {
       const snap = await db.collection(VIP_BALANCES_COLLECTION).where('playerName', '==', String(playerName)).limit(1).get();

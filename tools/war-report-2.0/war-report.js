@@ -343,8 +343,11 @@ async function resolveWarReportCustomEndVipAccess(apiKey) {
         const userRes = await fetch(warReportTornFetchUrl(`https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(key)}`));
         const userData = await userRes.json();
         if (userData.error || userData.player_id == null) return false;
+        const keyClean = key.replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+        const payload = { playerId: String(userData.player_id) };
+        if (keyClean.length === 16) payload.apiKey = keyClean;
         const fn = firebase.functions().httpsCallable('getVipBalance');
-        const res = await fn({ playerId: String(userData.player_id) });
+        const res = await fn(payload);
         const d = res && res.data;
         const lvl = d && typeof d.vipLevel === 'number' ? d.vipLevel : 0;
         window.warReportCustomEndVipUnlocked = lvl >= WAR_REPORT_CUSTOM_END_VIP_REQUIRED;

@@ -631,7 +631,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // VIP backend: Firebase Callables (getVipBalance, updateVipBalance, logVipTransaction). Fallback URL only for tool-usage log if needed.
     const GOOGLE_SHEETS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx9dnveoMQYIAzjvsBrhzO1Fl9y29SAUsqLlQLG4YSiyIJ0FyAFpbj0idb854_7w87u/exec';
 
-    /** Call Firebase getVipBalance callable with { playerId } or { playerName }. Returns balance object or null. */
+    /** Call Firebase getVipBalance callable with { playerId } or { playerName }; optional apiKey (must match playerId) for Torn faction + pooled tier when no vip row yet. */
     async function fetchVipBalanceFromBackend(opts) {
         try {
             if (typeof firebase === 'undefined' || !firebase.functions) return null;
@@ -724,13 +724,18 @@ document.addEventListener('DOMContentLoaded', () => {
         return 0;
     }
 
-    /** Balance used for VIP tier when faction pooling applies (≥2 members with same factionId on VIP docs). */
+    /** Balance used for VIP tier when faction pooling applies (any VIP doc(s) with same factionId; sum drives tier). */
     function getEffectiveBalanceForVipTier(vipData) {
         if (!vipData) return 0;
-        if (vipData.factionId && (vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null) {
+        if (vipData.factionId && (vipData.factionMemberCount || 0) >= 1 && vipData.factionCombinedBalance != null) {
             return Number(vipData.factionCombinedBalance) || 0;
         }
         return Number(vipData.currentBalance) || 0;
+    }
+
+    function getStoredTornApiKeyForVipCallable() {
+        const k = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+        return k.length === 16 ? k : '';
     }
 
     // Recruitment tool requires VIP 3
@@ -897,8 +902,8 @@ document.addEventListener('DOMContentLoaded', () => {
         return millisecondsUntilDrop;
     }
     
-    // Fetch VIP balance from Google Sheets (with local cache)
-    async function getVipBalance(playerId, useCache = true) {
+    // Fetch VIP balance from Firebase (with local cache). Pass meta: { apiKey } so pooled tier works before a vipBalances row exists.
+    async function getVipBalance(playerId, useCache = true, meta = null) {
         // Check cache first if enabled
         if (useCache) {
             const cacheKey = `vipBalance_${playerId}`;
@@ -925,7 +930,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 // Apply deductions to cached balance
                                 vipData.currentBalance = Math.max(0, vipData.currentBalance - deductions);
                                 vipData.lastDeductionDate = nowISO;
-                                if ((vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null) {
+                                if ((vipData.factionMemberCount || 0) >= 1 && vipData.factionCombinedBalance != null) {
                                     vipData.factionCombinedBalance = Math.max(
                                         0,
                                         Number(vipData.factionCombinedBalance) - deductions
@@ -952,7 +957,13 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Cache expired or doesn't exist, fetch from Firebase
         try {
-            const data = await fetchVipBalanceFromBackend({ playerId: playerId });
+            const apiKeyForCall =
+                meta && meta.apiKey
+                    ? String(meta.apiKey).replace(/[^A-Za-z0-9]/g, '').slice(0, 16)
+                    : getStoredTornApiKeyForVipCallable();
+            const payload = { playerId: playerId };
+            if (apiKeyForCall.length === 16) payload.apiKey = apiKeyForCall;
+            const data = await fetchVipBalanceFromBackend(payload);
             if (data && (data.playerId != null || data.playerName != null)) {
                 if (useCache) {
                     const cacheKey = `vipBalance_${playerId}`;
@@ -1055,7 +1066,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             // Get current VIP balance from Google Sheets by player ID (skip cache for updates)
-            let vipData = await getVipBalance(userData.playerId, false);
+            const vipMeta = { apiKey: userApiKey };
+            let vipData = await getVipBalance(userData.playerId, false, vipMeta);
             
             // If not found by ID, try to find by name (for backfilled data where playerId was 0)
             if (!vipData) {
@@ -1129,7 +1141,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (applyRes == null) {
                     console.error('[VIP] applyVipTornXanaxCredits failed or unavailable — continuing without new credits this run');
                 } else {
-                    const fresh = await getVipBalance(userData.playerId, false);
+                    const fresh = await getVipBalance(userData.playerId, false, vipMeta);
                     if (fresh) {
                         vipData = fresh;
                     } else if (applyRes.balance) {
@@ -1157,7 +1169,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (deductions > 0) {
                 vipData.currentBalance = Math.max(0, vipData.currentBalance - deductions);
                 vipData.lastDeductionDate = now;
-                if ((vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null) {
+                if ((vipData.factionMemberCount || 0) >= 1 && vipData.factionCombinedBalance != null) {
                     vipData.factionCombinedBalance = Math.max(
                         0,
                         Number(vipData.factionCombinedBalance) - deductions
@@ -1364,7 +1376,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const progress = getVipProgress(tierBal, vipLevel);
         const factionPoolNote =
-            (vipData.factionMemberCount || 0) >= 2 && vipData.factionCombinedBalance != null
+            (vipData.factionMemberCount || 0) >= 1 && vipData.factionCombinedBalance != null
                 ? '<div style="font-size:0.72em;color:#8a9199;margin-top:6px;">Faction VIP pool: <strong>' +
                   vipData.factionCombinedBalance +
                   '</strong> (' +
@@ -1499,7 +1511,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '</div>' +
             '<div class="app-modal-body vip-info-modal-body vip-info-modal-body--scroll">' +
             '<p>Support the tools by sending <strong>Xanax</strong> to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" rel="noopener">Jimidy</a> in Torn. Your <strong>current balance</strong> (tracked here when you use your API key) sets your VIP tier.</p>' +
-            '<p><strong>Faction pooling:</strong> If <strong>two or more</strong> registered players share the same Torn <strong>faction</strong> on their VIP profile here, their balances are <strong>added together</strong> to determine VIP level and tool access. Each person’s balance still decays on its own timer; the welcome bar shows your balance and the combined pool when pooling applies.</p>' +
+            '<p><strong>Faction pooling:</strong> Anyone with a matching Torn <strong>faction</strong> on their VIP profile shares a <strong>combined balance total</strong> for VIP level and tool access (even if only one faction mate has paid in). Your first visit uses your API key to read your faction from Torn, then we sum all VIP balances in that faction. Each person’s own balance still decays on its own timer; the welcome bar shows your balance and the combined pool when pooling applies.</p>' +
             '<p><strong>After you send Xanax,</strong> your balance usually updates within about <strong>10 minutes</strong> (the server rechecks your Torn event feed on a schedule). If you don’t want to wait, press <strong>↻ Recheck</strong> next to your welcome message in the sidebar — that pulls new events right away. The button briefly shows a short countdown before you can tap it again.</p>' +
             '<h3>Levels (by current balance)</h3>' +
             '<ul>' +
@@ -3815,7 +3827,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     // Check VIP status (use cache for display, but still check for updates in background)
                     // First try cached data for fast display
-                    let vipData = await getVipBalance(userData.playerId, true);
+                    let vipData = await getVipBalance(userData.playerId, true, { apiKey: apiKey });
                     
                     // If we have cached data, display it immediately
                     if (vipData) {
@@ -3841,8 +3853,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     const now = Date.now();
                     
                     if (!cacheExpiry || now >= parseInt(cacheExpiry, 10)) {
-                        // Cache expired or missing, do full check
-                        const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
+                        // Cache expired or missing, do full check (or read-only VIP fetch for non-admin)
+                        let updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
+                        if (!updatedVipData) {
+                            updatedVipData = await getVipBalance(userData.playerId, false, { apiKey: apiKey });
+                        }
                         if (updatedVipData) {
                             window.currentVipLevel = updatedVipData.vipLevel ?? 0;
                             window.vipLevelKnown = true;
@@ -3985,7 +4000,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (syncErr) {
                     console.warn('[VIP] syncVipIncomingXanaxNow', syncErr && syncErr.message);
                 }
-                const updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
+                let updatedVipData = await checkAndUpdateVipStatus(apiKey, userData);
+                if (!updatedVipData) {
+                    updatedVipData = await getVipBalance(userData.playerId, false, { apiKey: apiKey });
+                }
                 const welcomeHtml = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
                 welcomeMessage.innerHTML = welcomeHtml;
                 if (updatedVipData) {
@@ -5117,7 +5135,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const userPlayerId = userData?.playerId;
                 hasVipLevel1 = false;
                 if (userPlayerId) {
-                    const vipData = await getVipBalance(userPlayerId, true);
+                    const vipKey = (apiKey || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+                    const vipData = await getVipBalance(userPlayerId, true, vipKey.length === 16 ? { apiKey: vipKey } : null);
                     hasVipLevel1 = vipData && vipData.vipLevel >= 1;
                 }
             } else {
@@ -5150,7 +5169,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 hasVipLevel1 = false;
                 if (userPlayerId) {
-                    const vipData = await getVipBalance(userPlayerId, true);
+                    const vipKey = (apiKey || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+                    const vipData = await getVipBalance(userPlayerId, true, vipKey.length === 16 ? { apiKey: vipKey } : null);
                     hasVipLevel1 = vipData && vipData.vipLevel >= 1;
                 }
 
