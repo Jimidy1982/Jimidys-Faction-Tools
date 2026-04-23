@@ -786,6 +786,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         });
+        try {
+            window.dispatchEvent(
+                new CustomEvent('tornToolsVipChanged', { detail: { level: window.currentVipLevel ?? 0 } })
+            );
+        } catch (e) {
+            /* ignore */
+        }
     }
 
     /** After VIP level is known, kick restricted hashes to home (no-op if hash is allowed). */

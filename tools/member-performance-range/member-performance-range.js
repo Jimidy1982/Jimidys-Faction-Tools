@@ -826,9 +826,22 @@
         if (root) root.dataset.mprTctPopulated = '1';
     }
 
+    /** Same threshold as consumption tracker exact times (VIP 1+); do not depend on loading consumption-tracker.js. */
+    const MPR_EXACT_RANGE_TIMES_VIP_REQUIRED = 1;
+
+    function mprExactRangeTimesVipUnlocked() {
+        if (window.vipLevelKnown === true && typeof window.currentVipLevel === 'number') {
+            return window.currentVipLevel >= MPR_EXACT_RANGE_TIMES_VIP_REQUIRED;
+        }
+        if (typeof window.consumptionExactWarTimesVipUnlocked === 'boolean') {
+            return window.consumptionExactWarTimesVipUnlocked;
+        }
+        return (window.currentVipLevel ?? 0) >= MPR_EXACT_RANGE_TIMES_VIP_REQUIRED;
+    }
+
     function mprUseExactTimesDesired() {
         const cb = document.getElementById('mprExactRangeTimes');
-        return !!(cb && cb.checked && window.consumptionExactWarTimesVipUnlocked);
+        return !!(cb && cb.checked && mprExactRangeTimesVipUnlocked());
     }
 
     function mprSyncHmsSectionVisibility() {
@@ -848,7 +861,13 @@
         const en = document.getElementById('mprExactTimesEnabled');
         const cb = document.getElementById('mprExactRangeTimes');
         if (en) en.style.display = 'block';
-        if (cb) cb.disabled = false;
+        const ok = mprExactRangeTimesVipUnlocked();
+        if (cb) {
+            cb.disabled = !ok;
+            if (!ok) {
+                cb.checked = false;
+            }
+        }
         mprSyncHmsSectionVisibility();
     }
 
@@ -2901,6 +2920,10 @@
             window.addEventListener('toolsMemberIdDisplayChanged', () => {
                 mprRenderTable(mprLastRows);
             });
+        }
+        if (!window._mprVipChangedListener) {
+            window._mprVipChangedListener = true;
+            window.addEventListener('tornToolsVipChanged', () => mprUpdateExactTimesVipUI());
         }
 
         setTimeout(() => {
