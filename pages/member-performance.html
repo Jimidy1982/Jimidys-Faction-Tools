@@ -1,0 +1,407 @@
+<style>
+    .mpr-checklist { list-style: none; padding: 0; margin: 14px 0 0; font-size: 13px; color: #bbb; line-height: 1.55; }
+    .mpr-checklist li { padding: 3px 0 3px 22px; position: relative; }
+    .mpr-checklist li::before { position: absolute; left: 0; top: 3px; width: 16px; text-align: center; font-weight: bold; }
+    .mpr-check--pending::before { content: "○"; color: #666; }
+    .mpr-check--active::before { content: "…"; color: var(--accent-color, #ffd700); }
+    .mpr-check--done::before { content: "✓"; color: var(--accent-color, #ffd700); }
+    .mpr-check--error::before { content: "✗"; color: #ff6b6b; }
+    .mpr-table-options { padding: 10px 12px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid rgba(255,215,0,0.15); }
+    #mprResultsSection { min-width: 0; }
+    .mpr-dual-hscroll {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        min-width: 0;
+    }
+    #mprTableScrollTop.mpr-table-hscroll-top {
+        overflow-x: auto;
+        overflow-y: hidden;
+        width: 100%;
+        max-height: 22px;
+        line-height: 0;
+        margin: 0 0 4px 0;
+        border-radius: 6px 6px 0 0;
+    }
+    #mprTableScrollTopInner.mpr-table-hscroll-top-inner {
+        height: 1px;
+        pointer-events: none;
+    }
+    #mprResultsSection #mprTableScrollMain {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: visible;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior-x: contain;
+    }
+    #mprResultsSection #mprTableScrollMain #mprTableWrap {
+        display: block;
+        width: max-content;
+        max-width: none;
+    }
+    #mprTableScrollMain.mpr-table-hscroll--grab {
+        cursor: grab;
+    }
+    #mprTableScrollMain.mpr-table-hscroll--grabbing {
+        cursor: grabbing;
+    }
+    .mpr-col-toggles-root {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px 14px;
+        align-items: start;
+    }
+    @media (max-width: 1024px) {
+        .mpr-col-toggles-root {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+    @media (max-width: 520px) {
+        .mpr-col-toggles-root {
+            grid-template-columns: 1fr;
+        }
+    }
+    .mpr-col-group {
+        min-width: 0;
+        padding: 10px 12px;
+        background: rgba(0,0,0,0.18);
+        border-radius: 6px;
+        border: 1px solid rgba(255,215,0,0.08);
+        display: flex;
+        flex-direction: column;
+    }
+    .mpr-col-group-title {
+        color: var(--accent-color, #ffd700);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        margin-bottom: 10px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(255,215,0,0.12);
+        text-transform: uppercase;
+        cursor: help;
+    }
+    .mpr-col-group-toggles {
+        display: flex;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        align-items: flex-start;
+        gap: 8px;
+    }
+    .mpr-col-toggle-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        cursor: help;
+        color: #ccc;
+        font-size: 13px;
+        user-select: none;
+    }
+    .mpr-col-toggle-label input { accent-color: var(--accent-color, #ffd700); }
+    .mpr-col-group .mpr-oc-faction-cut-wrap {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255,215,0,0.12);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-start;
+        width: 100%;
+        min-width: 0;
+    }
+    .mpr-oc-faction-cut-wrap .mpr-oc-cut-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+    }
+    #mprTableOptionsInner > .mpr-oc-faction-cut-wrap {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: none;
+    }
+    .mpr-display-options {
+        padding-top: 12px;
+        border-top: 1px solid rgba(255,215,0,0.12);
+    }
+    .mpr-display-options-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 8px;
+    }
+    .mpr-display-opt-label {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        cursor: pointer;
+        color: #ccc;
+        font-size: 13px;
+        line-height: 1.4;
+        user-select: none;
+    }
+    .mpr-display-opt-label input {
+        accent-color: var(--accent-color, #ffd700);
+        margin-top: 2px;
+        flex-shrink: 0;
+    }
+    .mpr-overall-ranking-wrap {
+        padding-top: 12px;
+        border-top: 1px solid rgba(255,215,0,0.12);
+    }
+    .mpr-overall-ranking-checks {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-start;
+        margin-top: 8px;
+    }
+    #mprResultsSection .mpr-table-hscroll.mpr-sticky-member-on .mpr-roster-table {
+        border-collapse: separate;
+        border-spacing: 0;
+    }
+    #mprResultsSection .mpr-table-hscroll.mpr-sticky-member-on .mpr-roster-table thead th:first-child,
+    #mprResultsSection .mpr-table-hscroll.mpr-sticky-member-on .mpr-roster-table tbody td:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background: var(--secondary-color);
+        box-shadow: 4px 0 10px -3px rgba(0, 0, 0, 0.55);
+        min-width: 10.5rem;
+        max-width: 16rem;
+    }
+    #mprResultsSection .mpr-table-hscroll.mpr-sticky-member-on .mpr-roster-table thead th:first-child {
+        z-index: 4;
+    }
+    /* Full width of .input-section; avoids global .welcome-message narrow centered column */
+    .mpr-page-intro {
+        margin: 0 0 20px 0;
+        padding: 0 0 18px 0;
+        border-bottom: 1px solid rgba(255, 215, 0, 0.22);
+        line-height: 1.55;
+        font-size: 1.05rem;
+        color: var(--text-color);
+        text-align: left;
+        max-width: none;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .mpr-page-intro code { font-size: 0.95em; }
+    .mpr-activity-loading { display: inline-flex; align-items: center; gap: 8px; color: #bbb; font-size: 13px; }
+    .mpr-activity-loading .mpr-activity-spinner {
+        width: 16px; height: 16px; margin: 0;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        border-radius: 50%;
+        border-top-color: var(--accent-color, #ffd700);
+        animation: spin 1s ease-in-out infinite;
+        flex-shrink: 0;
+    }
+    /* Overrides .date-range-section grid so start, end, and quick buttons sit in one row (wraps on small screens). */
+    .mpr-date-row {
+        display: flex !important;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: flex-end;
+        justify-content: flex-start;
+    }
+    .mpr-quick-range {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .mpr-quick-range-label { color: #888; font-size: 12px; white-space: nowrap; margin-right: 2px; }
+    /* Exact TCT row: global .date-range-section is 1fr 1fr grid — pulls start/end time blocks to far edges. */
+    #mprHmsRow.mpr-hms-row.date-range-section {
+        display: flex !important;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: flex-start;
+        gap: 1rem 2rem;
+        grid-template-columns: unset;
+    }
+    #mprHmsRow.mpr-hms-row .consumption-range-col {
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 0;
+    }
+    /* Exact-times checkbox: same accent / label rhythm as Table options (not default browser gray). */
+    #mprExactTimesEnabled.consumption-war-preset-check label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 0;
+        color: #ccc;
+        font-size: 13px;
+        font-weight: normal;
+        line-height: 1.4;
+        cursor: pointer;
+        user-select: none;
+    }
+    #mprExactTimesEnabled.consumption-war-preset-check input[type="checkbox"] {
+        width: 1.05rem;
+        height: 1.05rem;
+        flex-shrink: 0;
+        margin: 0;
+        accent-color: var(--accent-color, #ffd700);
+        cursor: pointer;
+    }
+</style>
+<div class="container">
+    <h1>Member Performance</h1>
+
+    <div class="input-section">
+        <p class="mpr-page-intro">
+            Pick a start and end date (TCT), then <strong>Fetch report</strong>.
+        </p>
+        <div id="mprTctTimesRoot" class="consumption-datetime-stack">
+            <div class="date-range-section consumption-date-only-section mpr-date-row">
+                <div class="date-input">
+                    <label for="mprStartDate">Start date</label>
+                    <input type="text" id="mprStartDate" placeholder="YYYY-MM-DD" autocomplete="off">
+                </div>
+                <div class="date-input">
+                    <label for="mprEndDate">End date</label>
+                    <input type="text" id="mprEndDate" placeholder="YYYY-MM-DD" autocomplete="off">
+                </div>
+                <div id="mprQuickRangeBtns" class="mpr-quick-range" role="group" aria-label="Quick date range">
+                    <span class="mpr-quick-range-label">Quick</span>
+                    <button type="button" data-mpr-range-days="7">1 week</button>
+                    <button type="button" data-mpr-range-days="14">2 weeks</button>
+                    <button type="button" data-mpr-range-days="30">30 days</button>
+                </div>
+            </div>
+            <div class="consumption-exact-times-row">
+                <div id="mprExactTimesEnabled" class="consumption-war-preset-check">
+                    <label>
+                        <input type="checkbox" id="mprExactRangeTimes" />
+                        <span>Use exact start &amp; end times</span>
+                    </label>
+                </div>
+            </div>
+            <div id="mprExactTimesDetail" class="consumption-exact-times-detail" hidden>
+                <div id="mprHmsRow" class="date-range-section consumption-hms-section mpr-hms-row">
+                    <div class="consumption-range-col">
+                        <div class="consumption-tct-block">
+                            <label for="mprStartHourTCT" title="Torn City Time = UTC">Start time (TCT)</label>
+                            <div class="consumption-tct-hms" role="group" aria-label="Start time hour minute second TCT">
+                                <select id="mprStartHourTCT" title="Hour"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="mprStartMinTCT" title="Minute"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="mprStartSecTCT" title="Second"></select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="consumption-range-col">
+                        <div class="consumption-tct-block">
+                            <label for="mprEndHourTCT" title="Torn City Time = UTC">End time (TCT)</label>
+                            <div class="consumption-tct-hms" role="group" aria-label="End time hour minute second TCT">
+                                <select id="mprEndHourTCT" title="Hour"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="mprEndMinTCT" title="Minute"></select>
+                                <span class="consumption-tct-hms-sep" aria-hidden="true">:</span>
+                                <select id="mprEndSecTCT" title="Second"></select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <p class="consumption-tct-hint" id="mprTctExactHint">
+                    All times use <strong>Torn City Time</strong> (same as <strong>UTC</strong>). <strong>Exact mode</strong> uses the <strong>H:M:S</strong> values below. Uncheck the box above to use full calendar days (<strong>00:00:00</strong>–<strong>23:59:59</strong>).
+                </p>
+            </div>
+        </div>
+        <div class="fetch-container" style="margin-top: 12px;">
+            <button type="button" id="mprFetchBtn">Fetch report</button>
+            <div id="mprLoadingSpinner" class="loading-spinner-inline" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Shown during fetch; stays visible above the table while timeplayed (activity) completes -->
+    <div id="mprProgressContainer" class="progress-container" style="display: none; margin-bottom: 20px;">
+        <div class="progress-info">
+            <span id="mprProgressMessage">Working…</span>
+            <span id="mprProgressPercentage">0%</span>
+        </div>
+        <div class="progress-bar">
+            <div id="mprProgressFill" class="progress-fill"></div>
+        </div>
+        <div class="progress-details">
+            <span id="mprProgressDetails"></span>
+        </div>
+        <ul id="mprChecklist" class="mpr-checklist" aria-label="Fetch steps"></ul>
+    </div>
+
+    <div id="mprResultsSection" class="results-section" style="display: none;">
+        <p id="mprRangeSummary" style="color: #ccc; font-size: 0.95rem; margin-bottom: 12px;"></p>
+        <div id="mprWarChainNote" style="display: none; color: #ffb74d; font-size: 0.9rem; margin-bottom: 10px;"></div>
+        <div id="mprFfScouterNote" style="display: none; color: #ffb74d; font-size: 0.9rem; margin-bottom: 10px; line-height: 1.45;"></div>
+        <div id="mprCopyTableRow" style="display: none; margin-bottom: 12px;">
+            <button type="button" id="mprCopyTableBtn" class="btn" style="background-color: rgba(42, 42, 42, 0.9); color: #ccc; border: 1px solid #555; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Copy table for Torn faction mail — includes faction name, Member Performance, and TCT range (HTML + tab-separated)">📋 Copy table</button>
+        </div>
+        <div id="mprTableOptions" class="mpr-table-options" style="display: none;">
+            <details>
+                <summary style="cursor: pointer; color: var(--accent-color); font-weight: 600;">Table options</summary>
+                <div id="mprTableOptionsInner" style="margin-top: 12px; display: flex; flex-direction: column; gap: 16px;">
+                    <div>
+                        <div id="mprColumnVisibilityHeading" style="color: #999; font-size: 12px; margin-bottom: 8px; font-weight: 600;">Column visibility</div>
+                        <div id="mprColumnToggles" class="mpr-col-toggles-root"></div>
+                    </div>
+                    <div class="mpr-display-options">
+                        <div id="mprDisplayOptionsHeading" style="color: #999; font-size: 12px; font-weight: 600;">Display</div>
+                        <div class="mpr-display-options-rows">
+                            <label class="mpr-display-opt-label" id="mprOptStickyMemberLabel">
+                                <input type="checkbox" id="mprOptStickyMember" checked />
+                                <span>Sticky <strong>Member</strong> column while scrolling horizontally</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div id="mprOverallRankingWrap" class="mpr-overall-ranking-wrap">
+                        <div id="mprOverallRankingHeading" style="color: #999; font-size: 12px; margin-bottom: 4px; font-weight: 600;">Apply to Overall Ranking</div>
+                        <p id="mprOverallRankingHelp" style="color: #888; font-size: 12px; line-height: 1.45; margin: 0 0 10px 0;">
+                            Choose what goes into the <strong>overall score</strong>. The rank column can show how you place in each area.
+                        </p>
+                        <div class="mpr-overall-ranking-checks">
+                            <label class="mpr-col-toggle-label" title="War and outside hits in the range.">
+                                <input type="checkbox" data-mpr-ranking-metric="totalHits" checked />
+                                <span>Total hits</span>
+                            </label>
+                            <label class="mpr-col-toggle-label" title="OC score for the range.">
+                                <input type="checkbox" data-mpr-ranking-metric="crimeScore" checked />
+                                <span>Crime score</span>
+                            </label>
+                            <label class="mpr-col-toggle-label" title="Hours played in the range.">
+                                <input type="checkbox" data-mpr-ranking-metric="activityHours" checked />
+                                <span>Activity</span>
+                            </label>
+                            <label class="mpr-col-toggle-label" title="FF Scouter estimate.">
+                                <input type="checkbox" data-mpr-ranking-metric="battleStats" checked />
+                                <span>Battle stats</span>
+                            </label>
+                            <label class="mpr-col-toggle-label" title="Respect per hit (war and chain).">
+                                <input type="checkbox" data-mpr-ranking-metric="avgRespectWarChain" checked />
+                                <span>Average respect per hit (war &amp; chain)</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div id="mprOcFactionCutWrap" class="mpr-oc-faction-cut-wrap" style="display: none;">
+                        <div class="mpr-oc-cut-row">
+                            <label id="mprFactionCutLabel" for="mprFactionCutPercent" style="color: #ccc; font-size: 13px;">OC faction cut %</label>
+                            <input type="number" id="mprFactionCutPercent" min="0" max="100" step="1" value="20" style="width: 4rem; padding: 4px 8px;" />
+                        </div>
+                        <span id="mprFactionCutHelp" style="color: #888; font-size: 12px; line-height: 1.45;">Used for <strong>OC est. earnings</strong> and <strong>OC faction cut (est.)</strong> only. <strong>OC score</strong> (parts) is unchanged. Reward items only count in $ when the name matches the item market list from this fetch.</span>
+                    </div>
+                </div>
+            </details>
+        </div>
+        <div class="mpr-dual-hscroll" id="mprDualHscrollRoot">
+            <div id="mprTableScrollTop" class="mpr-table-hscroll-top" aria-hidden="true">
+                <div id="mprTableScrollTopInner" class="mpr-table-hscroll-top-inner"></div>
+            </div>
+            <div id="mprTableScrollMain" class="table-scroll-wrapper mpr-table-hscroll mpr-table-hscroll-main">
+                <div id="mprTableWrap"></div>
+            </div>
+        </div>
+    </div>
+</div>

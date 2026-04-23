@@ -4,6 +4,53 @@
     --accent-color: #ffd700;
     --text-color: #ffffff;
     --border-color: #404040;
+    /* Themed scrollbars (app-wide + optional .scroll-brand): track / thumb */
+    --scroll-brand-track: rgba(0, 0, 0, 0.38);
+    --scroll-brand-thumb: #c9a000;
+}
+
+/**
+ * App-wide scrollbars — vertical and horizontal on any overflow:auto|scroll
+ * region (main content, nav, tables, modals, textareas, etc.).
+ * Firefox: scrollbar-color inherits from html. WebKit: *::-webkit-scrollbar
+ * applies per scroll container (non-inherited).
+ */
+html {
+    scrollbar-width: auto;
+    scrollbar-color: var(--accent-color, #ffd700) var(--scroll-brand-track);
+}
+
+*::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
+}
+
+*::-webkit-scrollbar-track {
+    background: var(--scroll-brand-track);
+    border-radius: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--accent-color, #ffd700), var(--scroll-brand-thumb));
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.22);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--accent-color, #ffd700);
+}
+
+*::-webkit-scrollbar-corner {
+    background: var(--scroll-brand-track);
+}
+
+/**
+ * Optional: add where you want the same Firefox inheritance on a subtree
+ * without relying on html (rare). WebKit still uses global * rules above.
+ */
+.scroll-brand {
+    scrollbar-width: auto;
+    scrollbar-color: var(--accent-color, #ffd700) var(--scroll-brand-track);
 }
 
 * {
@@ -4126,6 +4173,32 @@ th small {
     
     .dashboard-layout nav .api-key-item input {
         width: 100%;
+    }
+
+    /* Sidebar welcome: global touch-friendly `button` rules blow up VIP row — reset + extra foot room */
+    .dashboard-layout nav .welcome-box-wrapper .welcome-message {
+        padding-bottom: 68px;
+        margin-bottom: 0;
+    }
+
+    .dashboard-layout nav .vip-info-btn {
+        left: 14px;
+        bottom: 10px;
+        min-height: 0;
+        padding: 6px 10px;
+        font-size: 0.75rem;
+        line-height: 1.25;
+        max-width: calc(100% - 52px);
+    }
+
+    .dashboard-layout nav .welcome-refresh-btn {
+        bottom: 10px;
+        right: 10px;
+        min-height: 0;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        font-size: 1.05rem;
     }
 }
 

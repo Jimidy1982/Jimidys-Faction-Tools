@@ -750,7 +750,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const hasMemberPerformance = level >= MEMBER_PERFORMANCE_VIP_REQUIRED;
         const mprTooltip =
             'Requires VIP 1. Send Xanax to Jimidy to unlock — open “How VIP works” in the sidebar for balance and tiers.';
-        document.querySelectorAll('#mainNav a[href="#member-performance-range"]').forEach((a) => {
+        document.querySelectorAll('#mainNav a[href="#member-performance"]').forEach((a) => {
             if (hasMemberPerformance) {
                 a.classList.remove('vip-locked');
                 a.removeAttribute('title');
@@ -760,7 +760,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         document.querySelectorAll(
-            'a.tool-card[href="#member-performance-range"], .tool-cards-grid a[href="#member-performance-range"]'
+            'a.tool-card[href="#member-performance"], .tool-cards-grid a[href="#member-performance"]'
         ).forEach((a) => {
             if (hasMemberPerformance) {
                 a.classList.remove('vip-locked');
@@ -796,7 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
             window.location.hash = 'home';
             return;
         }
-        if (page === 'member-performance-range' && (window.currentVipLevel ?? 0) < MEMBER_PERFORMANCE_VIP_REQUIRED) {
+        if (page === 'member-performance' && (window.currentVipLevel ?? 0) < MEMBER_PERFORMANCE_VIP_REQUIRED) {
             window.location.hash = 'home';
         }
     }
@@ -3883,12 +3883,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 };
                 document.head.appendChild(script);
-            } else if (page.includes('member-performance-range')) {
-                const oldScript = document.getElementById('member-performance-range-script');
+            } else if (page.includes('pages/member-performance.html')) {
+                const oldScript = document.getElementById('member-performance-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
                 script.src = './tools/member-performance-range/member-performance-range.js';
-                script.id = 'member-performance-range-script';
+                script.id = 'member-performance-script';
                 script.onload = () => {
                     console.log('[APP] member-performance-range.js loaded');
                     if (typeof initMemberPerformanceRange === 'function') {
@@ -4004,8 +4004,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const router = () => {
         setNavActive();
         const hash = window.location.hash.substring(1) || 'home';
-        const pageName = `${hash.split('/')[0]}`;
-        
+        let pageName = `${hash.split('/')[0]}`;
+        if (pageName === 'member-performance-range') {
+            window.location.replace(`${window.location.pathname}${window.location.search}#member-performance`);
+            return;
+        }
+
         // Handle admin dashboard specially (no HTML file needed)
         if (pageName === 'admin-dashboard') {
             loadPage('admin-dashboard');
@@ -4020,7 +4024,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (
-            pageName === 'member-performance-range' &&
+            pageName === 'member-performance' &&
             window.vipLevelKnown &&
             (window.currentVipLevel ?? 0) < MEMBER_PERFORMANCE_VIP_REQUIRED
         ) {
@@ -4668,11 +4672,70 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const BATTLE_STATS_COPY_BTN_STYLE = 'background-color: rgba(42, 42, 42, 0.9); color: #ccc; border: 1px solid #555; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; opacity: 0.7; transition: opacity 0.2s;';
 
+    function battleStatsEscapeHtmlForCopy(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    /**
+     * Preamble before cloned table HTML. If options.copyMeta has any of factionName, toolName, dateRange,
+     * renders a stacked header (Member Performance, etc.). Otherwise uses legacy single-line factionTitle.
+     */
+    function battleStatsBuildCopyPreamble(options) {
+        const meta = options.copyMeta && typeof options.copyMeta === 'object' ? options.copyMeta : null;
+        if (meta) {
+            const f = meta.factionName != null ? String(meta.factionName).trim() : '';
+            const t = meta.toolName != null ? String(meta.toolName).trim() : '';
+            const d = meta.dateRange != null ? String(meta.dateRange).trim() : '';
+            if (f || t || d) {
+                const esc = battleStatsEscapeHtmlForCopy;
+                const htmlParts = [];
+                if (f) {
+                    htmlParts.push(
+                        '<div style="font-size:20px;font-weight:700;line-height:1.25;margin:0 0 8px 0;color:#111;">' +
+                            esc(f) +
+                            '</div>'
+                    );
+                }
+                if (t) {
+                    htmlParts.push(
+                        '<div style="font-size:15px;font-weight:600;line-height:1.35;margin:0 0 6px 0;color:#333;letter-spacing:0.02em;">' +
+                            esc(t) +
+                            '</div>'
+                    );
+                }
+                if (d) {
+                    htmlParts.push(
+                        '<div style="font-size:13px;line-height:1.5;margin:0 0 14px 0;color:#444;">' + esc(d) + '</div>'
+                    );
+                }
+                const html =
+                    '<div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;margin:0 0 4px 0;padding:2px 0;">' +
+                    htmlParts.join('') +
+                    '</div><div style="height:8px"></div>';
+                const textLines = [f, t, d].filter(Boolean);
+                const text = textLines.join('\n') + '\n\n';
+                return { html, text };
+            }
+        }
+        const factionTitle = options.factionTitle != null ? String(options.factionTitle) : 'Faction';
+        return {
+            html:
+                '<div><span style="font-size: 18px;"><strong>' +
+                battleStatsEscapeHtmlForCopy(factionTitle) +
+                ':</strong></span></div><div>&nbsp;</div>',
+            text: factionTitle + '\n\n'
+        };
+    }
+
     /**
      * Copy a battle-stats table (current DOM order). Excludes listed data-column keys (default FF Score).
+     * Optional options.copyMeta: { factionName?, toolName?, dateRange? } for a multi-line paste header.
      */
     async function battleStatsCopyTableToClipboard(copyBtn, tableEl, options = {}) {
-        const factionTitle = options.factionTitle != null ? String(options.factionTitle) : 'Faction';
         const excludeColumns = options.excludeColumns !== undefined ? options.excludeColumns : ['ffscore'];
         const excludeSet = new Set(excludeColumns);
         if (!tableEl) {
@@ -4698,20 +4761,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (col && excludeSet.has(col)) cell.remove();
             });
             tableClone.querySelectorAll('thead th').forEach(th => {
-                const indicator = th.querySelector('.sort-indicator');
-                if (indicator) indicator.remove();
+                th.querySelectorAll('.sort-indicator, .tools-member-id-cb-label').forEach(el => el.remove());
             });
-            const htmlTable = `
-                            <div>
-                                <span style="font-size: 18px;"><strong>${factionTitle}:</strong></span>
-                            </div>
-                            <div>&nbsp;</div>
-                            ${tableClone.outerHTML}
-                        `;
+            const preamble = battleStatsBuildCopyPreamble(options);
+            const htmlTable = preamble.html + tableClone.outerHTML;
 
             const headerCells = Array.from(tableEl.querySelectorAll('thead th[data-column]'))
                 .filter(th => !excludeSet.has(th.getAttribute('data-column')));
-            const headers = headerCells.map(th => th.textContent.replace(/[↑↓\s]+$/, '').replace(/\s+/g, ' ').trim());
+            const headers = headerCells.map(th => {
+                const c = th.cloneNode(true);
+                c.querySelectorAll('.sort-indicator, .tools-member-id-cb-label').forEach(el => el.remove());
+                return c.textContent.replace(/\s+/g, ' ').trim();
+            });
 
             const rows = Array.from(tableEl.querySelectorAll('tbody tr'));
             const rowData = rows.map(row => {
@@ -4725,7 +4786,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
             });
 
-            let textTable = `${factionTitle}\n\n`;
+            let textTable = preamble.text;
             textTable += headers.join('\t') + '\n';
             rowData.forEach(row => {
                 textTable += row.join('\t') + '\n';
@@ -4742,7 +4803,11 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const headerCells = Array.from(tableEl.querySelectorAll('thead th[data-column]'))
                     .filter(th => !excludeSet.has(th.getAttribute('data-column')));
-                const headers = headerCells.map(th => th.textContent.replace(/[↑↓\s]+$/, '').replace(/\s+/g, ' ').trim());
+                const headers = headerCells.map(th => {
+                    const c = th.cloneNode(true);
+                    c.querySelectorAll('.sort-indicator, .tools-member-id-cb-label').forEach(el => el.remove());
+                    return c.textContent.replace(/\s+/g, ' ').trim();
+                });
                 const rows = Array.from(tableEl.querySelectorAll('tbody tr'));
                 const rowData = rows.map(row => {
                     return Array.from(row.querySelectorAll('td[data-column]'))
@@ -4754,7 +4819,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             return text;
                         });
                 });
-                let textTable = `${factionTitle}\n\n`;
+                const preambleFb = battleStatsBuildCopyPreamble(options);
+                let textTable = preambleFb.text;
                 textTable += headers.join('\t') + '\n';
                 rowData.forEach(row => {
                     textTable += row.join('\t') + '\n';
@@ -4767,6 +4833,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     }
+
+    window.battleStatsCopyTableToClipboard = battleStatsCopyTableToClipboard;
 
     const fetchInChunks = async (url, items, chunkSize) => {
         let results = [];
