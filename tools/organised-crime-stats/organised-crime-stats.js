@@ -6,6 +6,70 @@ const OC_STATS_PULL_META_KEY = 'organisedCrimeStats_apiPullMeta_v1';
 const OC_STATS_ALLOWED_PRESETS = new Set(['all', '7', '14', '30', '90', '365', 'custom']);
 const OC_STATS_ALLOWED_UNITS = new Set(['days', 'months', 'years']);
 
+/**
+ * Read the visible date filter for a section from the DOM (source of truth for what the user sees).
+ * Falls back to ocStatsData.activeFilters if the select is missing (e.g. before first paint).
+ */
+function getOcStatsSectionDateFilterFromDom(section) {
+    const id = section === 'difficulty' ? 'difficultyDateFilter' : 'playerDateFilter';
+    const el = document.getElementById(id);
+    const v = el && el.value != null ? String(el.value) : '';
+    if (OC_STATS_ALLOWED_PRESETS.has(v)) return v;
+    const fb =
+        typeof ocStatsData !== 'undefined' && ocStatsData.activeFilters
+            ? ocStatsData.activeFilters[section]
+            : 'all';
+    const s = fb != null ? String(fb) : 'all';
+    return OC_STATS_ALLOWED_PRESETS.has(s) ? s : 'all';
+}
+
+/** Sync in-memory filters from the live dropdowns (export + getCurrentFilteredData use DOM-first). */
+function syncOcStatsActiveFiltersFromDom() {
+    if (typeof ocStatsData === 'undefined' || !ocStatsData.activeFilters) return;
+    ocStatsData.activeFilters.difficulty = getOcStatsSectionDateFilterFromDom('difficulty');
+    ocStatsData.activeFilters.player = getOcStatsSectionDateFilterFromDom('player');
+}
+
+/**
+ * Human-readable date filter for CSV (matches dropdown labels: "Last 30 days", "All Time", etc.).
+ */
+function getOcStatsDateFilterHumanLabel(section) {
+    const id = section === 'difficulty' ? 'difficultyDateFilter' : 'playerDateFilter';
+    const el = document.getElementById(id);
+    if (!el || el.value == null || el.value === '') return 'All Time';
+    const val = String(el.value);
+    if (val === 'custom') {
+        const amtId = section === 'difficulty' ? 'difficultyCustomAmount' : 'playerCustomAmount';
+        const unitId = section === 'difficulty' ? 'difficultyCustomUnit' : 'playerCustomUnit';
+        const amt = Math.max(1, parseInt(document.getElementById(amtId)?.value, 10) || 30);
+        const unit = document.getElementById(unitId)?.value || 'days';
+        const u =
+            unit === 'months'
+                ? amt === 1
+                    ? 'month'
+                    : 'months'
+                : unit === 'years'
+                  ? amt === 1
+                      ? 'year'
+                      : 'years'
+                  : amt === 1
+                    ? 'day'
+                    : 'days';
+        return `Last ${amt} ${u}`;
+    }
+    const opt = el.options[el.selectedIndex];
+    if (opt && String(opt.text || '').trim()) return String(opt.text).trim();
+    const presetLabels = {
+        all: 'All Time',
+        '7': 'Last 7 days',
+        '14': 'Last 14 days',
+        '30': 'Last 30 days',
+        '90': 'Last 90 days',
+        '365': 'Last Year',
+    };
+    return presetLabels[val] != null ? presetLabels[val] : val;
+}
+
 /** Stable fingerprint for the API key (never store the raw key in the crimes cache payload beyond this). */
 function ocStatsApiKeyFingerprint(apiKey) {
     const s = String(apiKey || '');
@@ -552,11 +616,18 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Parse crime.rewards (money and/or items) into { money, itemCount, items }
+// Parse crime.rewards (money, items, and respect from API rewards object)
 function parseCrimeRewards(rewards) {
-    if (!rewards) return { money: 0, itemCount: 0, items: [] };
-    if (typeof rewards === 'number') return { money: rewards, itemCount: 0, items: [] };
+    if (!rewards) return { money: 0, itemCount: 0, items: [], respect: 0 };
+    if (typeof rewards === 'number') return { money: rewards, itemCount: 0, items: [], respect: 0 };
     const money = typeof rewards.money === 'number' ? rewards.money : 0;
+    const respectRaw = rewards.respect;
+    const respect =
+        typeof respectRaw === 'number' && !Number.isNaN(respectRaw)
+            ? respectRaw
+            : typeof respectRaw === 'string' && respectRaw.trim() !== '' && !Number.isNaN(Number(respectRaw))
+              ? Number(respectRaw)
+              : 0;
     const rawItems = Array.isArray(rewards.items) ? rewards.items : [];
     let itemCount = 0;
     const items = rawItems.map(it => {
@@ -566,7 +637,7 @@ function parseCrimeRewards(rewards) {
         const name = it.name || it.label || `Item #${id}`;
         return { id, name, quantity: qty };
     });
-    return { money, itemCount, items };
+    return { money, itemCount, items, respect };
 }
 
 /**
@@ -811,6 +882,16 @@ function getTotalCostValue(difficultyStats) {
     }, 0);
 }
 
+/** Sum `rewards.respect` from successful crimes (per difficulty stat rows). */
+function getTotalRespectValue(difficultyStats) {
+    return (difficultyStats || []).reduce((sum, stat) => sum + (Number(stat.totalRewardRespect) || 0), 0);
+}
+
+function formatRespect(n) {
+    const x = Math.round(Number(n) || 0);
+    return x.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
 function getDifficultyStatRewardValue(stat) {
     const itemsMap = ocStatsData.itemsMap || {};
     return (stat.totalRewardMoney || 0) + getTotalItemsValue(stat.rewardItemsBreakdown, itemsMap);
@@ -995,6 +1076,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             successRate: 0,
             totalRewardMoney: 0,
             totalRewardItemCount: 0,
+            totalRewardRespect: 0,
             rewardItemsBreakdown: {},
             totalCostMoney: 0,
             costItemsBreakdown: {},
@@ -1047,7 +1129,10 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
         }
         
         // Rewards only for successful crimes
-        const rewardParsed = (status === 'Successful' && crime.rewards) ? parseCrimeRewards(crime.rewards) : { money: 0, itemCount: 0, items: [] };
+        const rewardParsed =
+            status === 'Successful' && crime.rewards
+                ? parseCrimeRewards(crime.rewards)
+                : { money: 0, itemCount: 0, items: [], respect: 0 };
         
         // Count current members in this crime (for splitting player share)
         let participantsInCrime = 0;
@@ -1068,6 +1153,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                     difficultyMap[difficulty].successful++;
                     difficultyMap[difficulty].totalRewardMoney += rewardParsed.money;
                     difficultyMap[difficulty].totalRewardItemCount += rewardParsed.itemCount;
+                    difficultyMap[difficulty].totalRewardRespect += rewardParsed.respect || 0;
                     mergeItemBreakdown(difficultyMap[difficulty].rewardItemsBreakdown, rewardParsed.items);
                 } else {
                     difficultyMap[difficulty].failed++;
@@ -1082,6 +1168,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                         failed: 0,
                         totalRewardMoney: 0,
                         totalRewardItemCount: 0,
+                        totalRewardRespect: 0,
                         rewardItemsBreakdown: {},
                         totalCostMoney: 0,
                         costItemsBreakdown: {},
@@ -1094,6 +1181,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                     ct.successful++;
                     ct.totalRewardMoney += rewardParsed.money;
                     ct.totalRewardItemCount += rewardParsed.itemCount;
+                    ct.totalRewardRespect += rewardParsed.respect || 0;
                     mergeItemBreakdown(ct.rewardItemsBreakdown, rewardParsed.items);
                 } else {
                     ct.failed++;
@@ -1228,6 +1316,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
     const totalValue = getTotalRewardValue(difficultyStats);
     const totalCostValue = getTotalCostValue(difficultyStats);
     const netProfitValue = totalValue - totalCostValue;
+    const totalRespect = getTotalRespectValue(difficultyStats);
     const factionCutVal = (document.getElementById('ocFactionCutPercent') && document.getElementById('ocFactionCutPercent').value !== '') ? document.getElementById('ocFactionCutPercent').value : '20';
     
     // Update difficulty stats table with summary
@@ -1258,6 +1347,10 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                         <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
                     </div>
                     <div class="summary-item">
+                        <span class="summary-label">Total respect (from rewards):</span>
+                        <span class="summary-value" style="color: #c8a882;" title="Sum of rewards.respect on successful crimes (API values).">${formatRespect(totalRespect)}</span>
+                    </div>
+                    <div class="summary-item">
                         <span class="summary-label">Total cost:</span>
                         <span class="summary-value" style="color: #ffab91;">${formatDollars(totalCostValue)}</span>
                     </div>
@@ -1280,6 +1373,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                         <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
                         <li>Reward and consumed-item values use current market value, not the value at the time of the crime.</li>
                         <li>Cost = Current Market Value of consumed items</li>
+                        <li>Respect total = sum of rewards.respect on successful crimes (not split per player).</li>
                     </ul>
                 </div>
             </div>
@@ -1667,13 +1761,24 @@ function updatePlayerSortIndicators() {
     });
 }
 
+/**
+ * OC difficulty label for CSV only. Values like "1/10" are opened as dates in Excel/Sheets; use "N of 10" instead.
+ */
+function formatOcDifficultyForCsv(n) {
+    const d = Number(n);
+    if (!Number.isFinite(d) || d < 1) return '';
+    return `${Math.round(Math.min(10, Math.max(1, d)))} of 10`;
+}
+
 function exportOCStatsToCSV() {
     if (!ocStatsData || !ocStatsData.difficultyStats || !ocStatsData.playerStats) {
         alert('No data to export. Please fetch data first.');
         return;
     }
-    
-    // Get filtered data (same as what's displayed in the table)
+
+    syncOcStatsActiveFiltersFromDom();
+
+    // Get filtered data (same as what's displayed in the table — uses DOM filter values)
     const filteredDifficultyStats = getCurrentFilteredData('difficulty');
     const filteredPlayerStats = getCurrentFilteredData('player');
     
@@ -1715,39 +1820,45 @@ function exportOCStatsToCSV() {
     const csvRewardTotal = getTotalRewardValue(sortedDifficultyStats);
     const csvCostTotal = getTotalCostValue(sortedDifficultyStats);
     const csvNetTotal = csvRewardTotal - csvCostTotal;
+    const csvRespectTotal = getTotalRespectValue(sortedDifficultyStats);
+    const diffFilterLabel = getOcStatsDateFilterHumanLabel('difficulty');
+    const playFilterLabel = getOcStatsDateFilterHumanLabel('player');
     let csvContent = 'Organised Crime Statistics\n\n';
-    csvContent += `Total Crimes Analyzed: ${totalCrimes}\n`;
+    csvContent += `Difficulty table filter: ${diffFilterLabel}\n`;
+    csvContent += `Player table filter: ${playFilterLabel}\n`;
+    csvContent += `Total Crimes Analyzed (difficulty section scope): ${totalCrimes}\n`;
     csvContent += `Total Rewards (filtered): ${formatDollars(csvRewardTotal)}\n`;
     csvContent += `Total Cost (filtered): ${formatDollars(csvCostTotal)}\n`;
-    csvContent += `Net Profit (filtered): ${formatDollars(csvNetTotal)}\n\n`;
+    csvContent += `Net Profit (filtered): ${formatDollars(csvNetTotal)}\n`;
+    csvContent += `Total respect from successful crimes (rewards.respect): ${formatRespect(csvRespectTotal)}\n\n`;
     
-    // Difficulty stats (using filtered and sorted data)
+    // Difficulty stats (using filtered and sorted data). Difficulty uses "N of 10" so Excel/Sheets do not parse it as a date.
     csvContent += 'SUCCESS RATES BY DIFFICULTY\n';
-    csvContent += 'Difficulty,Total Crimes,Successful,Failed,Success Rate,Rewards ($),Cost ($),Net ($)\n';
+    csvContent += 'Difficulty (of 10 max),Total Crimes,Successful,Failed,Success Rate,Rewards ($),Cost ($),Net ($)\n';
     sortedDifficultyStats.forEach(stat => {
         const r = getDifficultyStatRewardValue(stat);
         const c = getDifficultyStatCostValue(stat);
         const n = getDifficultyStatNetValue(stat);
-        csvContent += `${stat.difficulty}/10,${stat.total},${stat.successful},${stat.failed},${stat.successRate}%,"${formatDollars(r)}","${formatDollars(c)}","${formatDollars(n)}"\n`;
+        csvContent += `${formatOcDifficultyForCsv(stat.difficulty)},${stat.total},${stat.successful},${stat.failed},${stat.successRate}%,"${formatDollars(r)}","${formatDollars(c)}","${formatDollars(n)}"\n`;
     });
     
     csvContent += '\n\nPLAYER PARTICIPATION STATS\n';
-    csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate,Highest difficulty succeeded (1-10),Rewards\n';
+    csvContent += 'Player Name,Player ID,Total Participations,Score,Successful,Failed,Success Rate,Highest difficulty (of 10 max),Rewards\n';
     sortedPlayerStats.forEach(player => {
         const hiD = Number(player.highestDifficultySucceeded) || 0;
-        const hiDcsv = hiD >= 1 ? `${hiD}/10` : '';
+        const hiDcsv = hiD >= 1 ? formatOcDifficultyForCsv(hiD) : '';
         csvContent += `${window.toolsCsvMemberCell(player)},${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%,${hiDcsv},"${Array.isArray(player.rewardParticipations) ? formatDollars(getPlayerTotalRewardValue(player)) : formatRewardsSummary(player)}"\n`;
     });
     
     csvContent += '\n\nPLAYER DIFFICULTY BREAKDOWN\n';
-    csvContent += 'Player Name,Difficulty,Total,Successful,Failed,Success Rate\n';
+    csvContent += 'Player Name,Difficulty (of 10 max),Total,Successful,Failed,Success Rate\n';
     sortedPlayerStats.forEach(player => {
         if (player.totalParticipations > 0) {
             for (let diff = 1; diff <= 10; diff++) {
                 const breakdown = player.difficultyBreakdown[diff];
                 if (breakdown && breakdown.total > 0) {
                     const diffSuccessRate = Math.round((breakdown.successful / breakdown.total) * 100);
-                    csvContent += `${window.toolsCsvMemberCell(player)},${diff}/10,${breakdown.total},${breakdown.successful},${breakdown.failed},${diffSuccessRate}%\n`;
+                    csvContent += `${window.toolsCsvMemberCell(player)},${formatOcDifficultyForCsv(diff)},${breakdown.total},${breakdown.successful},${breakdown.failed},${diffSuccessRate}%\n`;
                 }
             }
         }
@@ -1879,8 +1990,8 @@ function filterDataByDateRange(cutoffDate) {
 
 // Helper function to get the current filtered data for a section
 function getCurrentFilteredData(section) {
-    const activeFilter = ocStatsData.activeFilters[section];
-    
+    const activeFilter = getOcStatsSectionDateFilterFromDom(section);
+
     if (activeFilter === 'all') {
         return section === 'difficulty' ? ocStatsData.difficultyStats : ocStatsData.playerStats;
     } else {
@@ -1905,6 +2016,7 @@ function updateDifficultyStatsUI(difficultyStats) {
         const totalValue = getTotalRewardValue(difficultyStats);
         const totalCostValue = getTotalCostValue(difficultyStats);
         const netProfitValue = totalValue - totalCostValue;
+        const totalRespect = getTotalRespectValue(difficultyStats);
         const factionCutVal = (document.getElementById('ocFactionCutPercent') && document.getElementById('ocFactionCutPercent').value !== '') ? document.getElementById('ocFactionCutPercent').value : '20';
         
         let html = `
@@ -1933,6 +2045,10 @@ function updateDifficultyStatsUI(difficultyStats) {
                         <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
                     </div>
                     <div class="summary-item">
+                        <span class="summary-label">Total respect (from rewards):</span>
+                        <span class="summary-value" style="color: #c8a882;" title="Sum of rewards.respect on successful crimes (API values).">${formatRespect(totalRespect)}</span>
+                    </div>
+                    <div class="summary-item">
                         <span class="summary-label">Total cost:</span>
                         <span class="summary-value" style="color: #ffab91;">${formatDollars(totalCostValue)}</span>
                     </div>
@@ -1955,6 +2071,7 @@ function updateDifficultyStatsUI(difficultyStats) {
                         <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
                         <li>Reward and consumed-item values use current market value, not the value at the time of the crime.</li>
                         <li>Cost = Current Market Value of consumed items</li>
+                        <li>Respect total = sum of rewards.respect on successful crimes (not split per player).</li>
                     </ul>
                 </div>
             </div>
