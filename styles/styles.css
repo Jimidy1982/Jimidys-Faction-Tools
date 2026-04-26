@@ -2603,7 +2603,106 @@ th small {
   text-align: left;
 }
 
+/* Organised Crime Stats — planned / recruiting OC missing items */
+.oc-planned-missing-panel.summary-section {
+  margin-bottom: 0;
+}
+
+.oc-planned-missing-panel > summary.oc-planned-missing-summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--text-color);
+  font-weight: bold;
+  font-size: 1.35rem;
+  line-height: 1.3;
+  margin: 0 0 12px 0;
+  padding: 0;
+  user-select: none;
+}
+
+.oc-planned-missing-panel > summary.oc-planned-missing-summary::-webkit-details-marker {
+  display: none;
+}
+
+.oc-planned-missing-panel > summary.oc-planned-missing-summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 10px;
+  margin-bottom: 3px;
+  border-style: solid;
+  border-width: 5px 0 5px 7px;
+  border-color: transparent transparent transparent var(--accent-color);
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+  vertical-align: middle;
+}
+
+.oc-planned-missing-panel[open] > summary.oc-planned-missing-summary::before {
+  transform: rotate(90deg);
+}
+
+.oc-planned-missing-panel .oc-planned-missing-note,
+.oc-planned-missing-panel .oc-planned-missing-warn {
+  color: #888;
+  font-size: 0.9em;
+  line-height: 1.45;
+}
+
+.oc-planned-missing-panel .oc-planned-missing-note {
+  margin: 0 0 8px 0;
+}
+
+.oc-planned-missing-panel .oc-planned-missing-warn {
+  margin: 10px 0 0 0;
+  font-size: 0.82em;
+}
+
+.oc-planned-missing-panel code {
+  font-size: 0.88em;
+  background-color: var(--primary-color);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+}
+
+.oc-planned-missing-panel .oc-planned-missing-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.oc-planned-missing-panel table.oc-planned-missing-table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+}
+
+.oc-planned-missing-panel table.oc-planned-missing-table th {
+  padding: 12px;
+  text-align: left;
+  background-color: var(--secondary-color);
+  color: var(--accent-color);
+  border-bottom: 1px solid var(--border-color);
+  font-weight: bold;
+  transition: background-color 0.2s;
+}
+
+.oc-planned-missing-panel table.oc-planned-missing-table th:hover {
+  background-color: var(--border-color);
+}
+
+.oc-planned-missing-panel table.oc-planned-missing-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-color);
+}
+
 @media (max-width: 768px) {
+  .oc-planned-missing-panel > summary.oc-planned-missing-summary {
+    font-size: 1.2rem;
+  }
+
   .summary-grid {
     grid-template-columns: 1fr;
     gap: 10px;
@@ -4256,6 +4355,27 @@ th small {
     margin-bottom: 0;
 }
 
+/* Same on-brand checkbox as war preset panel / Member Performance exact-times row */
+.consumption-exact-times-row .consumption-war-preset-check label {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 0;
+    color: var(--accent-color);
+    font-weight: normal;
+    cursor: pointer;
+    user-select: none;
+}
+
+.consumption-exact-times-row .consumption-war-preset-check input[type="checkbox"] {
+    width: 1.05rem;
+    height: 1.05rem;
+    margin-top: 4px;
+    flex-shrink: 0;
+    accent-color: var(--accent-color, #ffd700);
+    cursor: pointer;
+}
+
 .consumption-exact-times-detail {
     margin-top: 12px;
 }
@@ -5832,6 +5952,48 @@ button.consumption-war-preset-btn:disabled {
 
 .war-report-custom-end-vip-locked {
     cursor: help;
+}
+
+/* War report surrender time input: same branded dark/gold style used across tools */
+.war-report-surrender-block {
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px solid rgba(255, 215, 0, 0.3);
+    border-radius: 6px;
+    background: rgba(255, 215, 0, 0.05);
+}
+
+.war-report-surrender-block > label {
+    display: block;
+    color: var(--accent-color, #ffd700);
+    margin-bottom: 6px;
+}
+
+.war-report-surrender-input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #404040;
+    border-radius: 4px;
+    background: #1a1a1a;
+    color: #fff;
+}
+
+.war-report-surrender-input::-webkit-calendar-picker-indicator {
+    filter: invert(1) brightness(1.25);
+    cursor: pointer;
+    opacity: 0.95;
+}
+
+.war-report-surrender-input::-moz-calendar-picker-indicator {
+    filter: invert(1) brightness(1.25);
+    cursor: pointer;
+    opacity: 0.95;
+}
+
+.war-report-surrender-hint {
+    margin: 6px 0 0;
+    color: #b8b8b8;
+    font-size: 12px;
 }
 
 /* War Report 2.0: gold vertical rules at grouped column boundaries (Respect / Support / Other / totals) */

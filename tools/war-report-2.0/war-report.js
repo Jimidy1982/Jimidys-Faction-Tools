@@ -80,7 +80,9 @@ if (!window.warReportData) {
     allAttacks: [],
     sortState: { column: 'warScore', direction: 'desc' },
     payoutSortState: { column: 'totalPayout', direction: 'desc' },
-    respectPayoutSortState: { column: 'totalPayout', direction: 'desc' }
+    respectPayoutSortState: { column: 'totalPayout', direction: 'desc' },
+    hitManualBonuses: {},
+    respectManualBonuses: {}
 };
 }
 // Create local reference for convenience (use var to allow redeclaration on script reload)
@@ -112,6 +114,234 @@ var WAR_PAYOUT_CUSTOM_END_TOOLTIP =
 
 /** Minimum VIP tier to use Custom payout end (synced with Firebase vipBalances). */
 var WAR_REPORT_CUSTOM_END_VIP_REQUIRED = 1;
+
+/** 24h local cache for Torn API pulls used by War Payout Calculator. */
+const WAR_REPORT_API_CACHE_PREFIX = 'war_report_api_cache_v1:';
+const WAR_REPORT_API_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const WAR_REPORT_RESULT_CACHE_PREFIX = 'war_report_result_cache_v1:';
+const WAR_REPORT_CACHE_DB_NAME = 'warReportApiCacheDb';
+const WAR_REPORT_CACHE_DB_VERSION = 1;
+const WAR_REPORT_CACHE_STORE = 'entries';
+
+function warReportApiKeyFingerprint(key) {
+    const s = String(key || '');
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h.toString(16);
+}
+
+function warReportCacheKeyForUrl(url) {
+    try {
+        const u = new URL(String(url || ''), typeof location !== 'undefined' ? location.origin : 'https://api.torn.com');
+        const keyRaw = u.searchParams.get('key') || '';
+        const keyFp = warReportApiKeyFingerprint(keyRaw);
+        if (keyRaw) u.searchParams.set('key', '__API_KEY__');
+        return WAR_REPORT_API_CACHE_PREFIX + u.toString() + '|kfp=' + keyFp;
+    } catch (e) {
+        return WAR_REPORT_API_CACHE_PREFIX + String(url || '');
+    }
+}
+
+function warReportCacheRead(url) {
+    try {
+        const k = warReportCacheKeyForUrl(url);
+        const raw = localStorage.getItem(k);
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (!obj || typeof obj !== 'object' || typeof obj.savedAt !== 'number') {
+            localStorage.removeItem(k);
+            return null;
+        }
+        if (Date.now() - obj.savedAt > WAR_REPORT_API_CACHE_TTL_MS) {
+            localStorage.removeItem(k);
+            return null;
+        }
+        return obj.data != null ? obj.data : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function warReportCacheWrite(url, data) {
+    try {
+        const k = warReportCacheKeyForUrl(url);
+        localStorage.setItem(k, JSON.stringify({ savedAt: Date.now(), data }));
+    } catch (e) {
+        // Ignore quota/storage failures; live fetch still works.
+    }
+}
+
+function warReportOpenCacheDb() {
+    return new Promise((resolve) => {
+        try {
+            const req = indexedDB.open(WAR_REPORT_CACHE_DB_NAME, WAR_REPORT_CACHE_DB_VERSION);
+            req.onupgradeneeded = function () {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(WAR_REPORT_CACHE_STORE)) {
+                    db.createObjectStore(WAR_REPORT_CACHE_STORE, { keyPath: 'key' });
+                }
+            };
+            req.onsuccess = function () {
+                resolve(req.result);
+            };
+            req.onerror = function () {
+                resolve(null);
+            };
+        } catch (e) {
+            resolve(null);
+        }
+    });
+}
+
+async function warReportCacheReadIdb(url) {
+    const db = await warReportOpenCacheDb();
+    if (!db) return null;
+    const key = warReportCacheKeyForUrl(url);
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction(WAR_REPORT_CACHE_STORE, 'readonly');
+            const store = tx.objectStore(WAR_REPORT_CACHE_STORE);
+            const req = store.get(key);
+            req.onsuccess = function () {
+                const obj = req.result;
+                if (!obj || typeof obj.savedAt !== 'number') return resolve(null);
+                if (Date.now() - obj.savedAt > WAR_REPORT_API_CACHE_TTL_MS) return resolve(null);
+                resolve(obj.data != null ? obj.data : null);
+            };
+            req.onerror = function () { resolve(null); };
+        } catch (e) {
+            resolve(null);
+        }
+    });
+}
+
+async function warReportCacheWriteIdb(url, data) {
+    const db = await warReportOpenCacheDb();
+    if (!db) return false;
+    const key = warReportCacheKeyForUrl(url);
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction(WAR_REPORT_CACHE_STORE, 'readwrite');
+            const store = tx.objectStore(WAR_REPORT_CACHE_STORE);
+            store.put({ key, savedAt: Date.now(), data });
+            tx.oncomplete = function () { resolve(true); };
+            tx.onerror = function () { resolve(false); };
+        } catch (e) {
+            resolve(false);
+        }
+    });
+}
+
+async function warReportClearExpiredIdbCache() {
+    const db = await warReportOpenCacheDb();
+    if (!db) return;
+    try {
+        const now = Date.now();
+        const tx = db.transaction(WAR_REPORT_CACHE_STORE, 'readwrite');
+        const store = tx.objectStore(WAR_REPORT_CACHE_STORE);
+        const req = store.openCursor();
+        req.onsuccess = function () {
+            const cursor = req.result;
+            if (!cursor) return;
+            const v = cursor.value;
+            if (!v || typeof v.savedAt !== 'number' || now - v.savedAt > WAR_REPORT_API_CACHE_TTL_MS) {
+                cursor.delete();
+            }
+            cursor.continue();
+        };
+    } catch (e) {
+        // ignore
+    }
+}
+
+function warReportClearExpiredApiCache() {
+    try {
+        const now = Date.now();
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (!k || (!k.startsWith(WAR_REPORT_API_CACHE_PREFIX) && !k.startsWith(WAR_REPORT_RESULT_CACHE_PREFIX))) continue;
+            try {
+                const raw = localStorage.getItem(k);
+                const obj = raw ? JSON.parse(raw) : null;
+                if (!obj || typeof obj.savedAt !== 'number' || now - obj.savedAt > WAR_REPORT_API_CACHE_TTL_MS) {
+                    localStorage.removeItem(k);
+                }
+            } catch (e2) {
+                localStorage.removeItem(k);
+            }
+        }
+    } catch (e) {
+        // Ignore storage issues.
+    }
+}
+
+async function warReportFetchJsonWithCache(url, opts = {}) {
+    const cachedLs = warReportCacheRead(url);
+    if (cachedLs != null) return cachedLs;
+    const cachedIdb = await warReportCacheReadIdb(url);
+    if (cachedIdb != null) return cachedIdb;
+
+    let data;
+    if (opts.useRateLimit && typeof window.fetchWithRateLimit === 'function') {
+        data = await window.fetchWithRateLimit(url, {
+            progressMessage: opts.progressMessage,
+            progressDetails: opts.progressDetails
+        });
+    } else {
+        const response = await fetch(warReportTornFetchUrl(url));
+        data = await response.json();
+    }
+    if (!(data && data.error)) {
+        warReportCacheWrite(url, data);
+        const idbOk = await warReportCacheWriteIdb(url, data);
+        if (!idbOk) {
+            console.warn('[WAR REPORT 2.0] API page cache write failed (IndexedDB)');
+        }
+    }
+    return data;
+}
+
+function warReportResultCacheKey(apiKey, factionId, warId, includeChain, customEndUnix) {
+    return (
+        WAR_REPORT_RESULT_CACHE_PREFIX +
+        `kfp=${warReportApiKeyFingerprint(apiKey)}|f=${String(factionId)}|w=${String(warId)}|c=${includeChain ? 1 : 0}|ce=${customEndUnix != null ? String(customEndUnix) : ''}`
+    );
+}
+
+function warReportReadResultCache(apiKey, factionId, warId, includeChain, customEndUnix) {
+    try {
+        const k = warReportResultCacheKey(apiKey, factionId, warId, includeChain, customEndUnix);
+        const raw = localStorage.getItem(k);
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (!obj || typeof obj.savedAt !== 'number') {
+            localStorage.removeItem(k);
+            return null;
+        }
+        if (Date.now() - obj.savedAt > WAR_REPORT_API_CACHE_TTL_MS) {
+            localStorage.removeItem(k);
+            return null;
+        }
+        if (!obj.data || typeof obj.data !== 'object') return null;
+        return obj.data;
+    } catch (e) {
+        return null;
+    }
+}
+
+function warReportWriteResultCache(apiKey, factionId, warId, includeChain, customEndUnix, data) {
+    try {
+        const k = warReportResultCacheKey(apiKey, factionId, warId, includeChain, customEndUnix);
+        localStorage.setItem(k, JSON.stringify({ savedAt: Date.now(), data }));
+        return true;
+    } catch (e) {
+        console.warn('[WAR REPORT 2.0] Result cache write failed:', e);
+        return false;
+    }
+}
 
 /** Payout tables: optional Other attacks breakdown sub-columns (stored preference). */
 var STORAGE_OTHER_ATTACKS_BREAKDOWN = 'war_report_other_attacks_breakdown';
@@ -190,7 +420,7 @@ function warReportPlayerOutsideHitsCount(player) {
  * Hit-threshold minimum count: war hits always, plus assists and/or outside hits when those options are on.
  */
 function warReportPlayerHitThresholdCount(player, includeAssists, includeOutside) {
-    let n = player.warHits || 0;
+    let n = player.warHitsForPayout != null ? player.warHitsForPayout : (player.warHits || 0);
     if (includeAssists) n += player.warAssists || 0;
     if (includeOutside) n += warReportPlayerOutsideHitsCount(player);
     return n;
@@ -208,6 +438,45 @@ function warReportPlayerRespectCombinedHitsCount(player, warHitsForRespect, incl
     if (includeOutside) n += warReportPlayerOutsideHitsCount(player);
     if (includeAssists) n += player.warAssists || 0;
     return n;
+}
+
+function warReportParseSurrenderTimeUtc(inputValue) {
+    const s = String(inputValue || '').trim();
+    if (!s) return null;
+    const asUtc = new Date(s + 'Z').getTime();
+    if (!Number.isFinite(asUtc)) return null;
+    return Math.floor(asUtc / 1000);
+}
+
+function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix) {
+    const map = new Map();
+    if (!Array.isArray(allAttacks) || !factionIdStr || !Number.isFinite(surrenderUnix)) return map;
+    allAttacks.forEach((attack) => {
+        if (!attack || !attack.attacker || !attack.attacker.faction) return;
+        if (String(attack.attacker.faction.id) !== String(factionIdStr)) return;
+        if (attack.is_interrupted) return;
+        if (!(attack.modifiers && attack.modifiers.war === 2)) return;
+        if (!(attack.started > surrenderUnix)) return;
+        const pid = String(attack.attacker.id || '');
+        if (!pid) return;
+        map.set(pid, (map.get(pid) || 0) + 1);
+    });
+    return map;
+}
+
+function warReportSyncSurrenderInputs(sourceId, targetId) {
+    const src = document.getElementById(sourceId);
+    const dst = document.getElementById(targetId);
+    if (!src || !dst) return;
+    if (dst.value !== src.value) dst.value = src.value;
+}
+
+function warReportGetRealWarFactor(enabledInputId, factorInputId) {
+    const enabled = document.getElementById(enabledInputId)?.checked === true;
+    if (!enabled) return 1;
+    const raw = parseFloat(document.getElementById(factorInputId)?.value || '2');
+    if (!Number.isFinite(raw) || raw <= 0) return 1;
+    return raw;
 }
 
 /**
@@ -340,8 +609,7 @@ async function resolveWarReportCustomEndVipAccess(apiKey) {
         if (typeof firebase === 'undefined' || !firebase.functions) {
             return false;
         }
-        const userRes = await fetch(warReportTornFetchUrl(`https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(key)}`));
-        const userData = await userRes.json();
+        const userData = await warReportFetchJsonWithCache(`https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(key)}`);
         if (userData.error || userData.player_id == null) return false;
         const keyClean = key.replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
         const payload = { playerId: String(userData.player_id) };
@@ -568,7 +836,9 @@ function saveRespectPayoutSettings() {
         minThreshold: document.getElementById('respectMinThreshold')?.value || '100',
         maxThreshold: document.getElementById('respectMaxThreshold')?.value || '300',
         payoutMode: document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio',
-        ignoreChainDeductions: document.getElementById('respectIgnoreChainDeductions')?.checked || false
+        ignoreChainDeductions: document.getElementById('respectIgnoreChainDeductions')?.checked || false,
+        applyRealWarFactor: document.getElementById('respectApplyRealWarFactor')?.checked === true,
+        realWarFactor: document.getElementById('respectRealWarFactor')?.value || '2'
     };
     localStorage.setItem('respectPayoutSettings', JSON.stringify(settings));
 
@@ -594,7 +864,9 @@ function saveHitPayoutSettings() {
         maxThreshold: document.getElementById('hitMaxThreshold')?.value || '50',
         payoutMode: document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio',
         thresholdIncludeAssists: document.getElementById('hitThresholdIncludeAssists')?.checked !== false,
-        thresholdIncludeOutsideHits: document.getElementById('hitThresholdIncludeOutsideHits')?.checked === true
+        thresholdIncludeOutsideHits: document.getElementById('hitThresholdIncludeOutsideHits')?.checked === true,
+        applyRealWarFactor: document.getElementById('hitApplyRealWarFactor')?.checked === true,
+        realWarFactor: document.getElementById('hitRealWarFactor')?.value || '2'
     };
     localStorage.setItem('hitPayoutSettings', JSON.stringify(settings));
 
@@ -632,6 +904,14 @@ function loadHitPayoutSettings() {
             if (settings.thresholdIncludeOutsideHits !== undefined) {
                 const el = document.getElementById('hitThresholdIncludeOutsideHits');
                 if (el) el.checked = settings.thresholdIncludeOutsideHits;
+            }
+            if (settings.applyRealWarFactor !== undefined) {
+                const el = document.getElementById('hitApplyRealWarFactor');
+                if (el) el.checked = settings.applyRealWarFactor;
+            }
+            if (settings.realWarFactor !== undefined) {
+                const el = document.getElementById('hitRealWarFactor');
+                if (el) el.value = settings.realWarFactor;
             }
 
         } catch (error) {
@@ -747,6 +1027,14 @@ function loadRespectPayoutSettings() {
                 const payoutModeRadio = document.querySelector(`input[name="respectPayoutMode"][value="${settings.payoutMode}"]`);
                 if (payoutModeRadio) payoutModeRadio.checked = true;
             }
+            if (settings.applyRealWarFactor !== undefined) {
+                const el = document.getElementById('respectApplyRealWarFactor');
+                if (el) el.checked = settings.applyRealWarFactor;
+            }
+            if (settings.realWarFactor !== undefined) {
+                const el = document.getElementById('respectRealWarFactor');
+                if (el) el.value = settings.realWarFactor;
+            }
             
             // Load chain group linked state
             if (settings.chainGroupLinked !== undefined) {
@@ -779,6 +1067,8 @@ var tabsInitialized = false;
 
 function initWarReport2() {
     console.log('[WAR REPORT 2.0] initWarReport2 CALLED');
+    warReportClearExpiredApiCache();
+    warReportClearExpiredIdbCache();
 
     // Per-DOM guard (SPA replaces #appContent; globals alone are not enough — stale guard blocked re-init)
     const warListContainer = document.getElementById('warListContainer');
@@ -879,8 +1169,7 @@ function initWarReport2() {
         if (apiKey && factionIdInput) {
             try {
                 console.log('[WAR REPORT 2.0] Fetching user profile...');
-                const response = await fetch(warReportTornFetchUrl(`https://api.torn.com/user/?selections=profile&key=${apiKey}`));
-                const data = await response.json();
+                const data = await warReportFetchJsonWithCache(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
                 
                 if (data.error) {
                     console.error('API Error fetching user data:', data.error);
@@ -1035,8 +1324,7 @@ function initWarReport2() {
     const fetchChainData = async (factionId, apiKey) => {
         try {
             const url = `https://api.torn.com/faction/?selections=chains&key=${apiKey}`;
-            const response = await fetch(warReportTornFetchUrl(url));
-            const data = await response.json();
+            const data = await warReportFetchJsonWithCache(url);
             
             if (data.error) {
                 console.error('API Error fetching chains:', data.error);
@@ -1095,13 +1383,11 @@ function initWarReport2() {
             warListContainer.style.display = 'block';
             
             console.log('[WAR REPORT 2.0] Fetching wars, chains, and VIP (custom end gate)...');
-            const [warsResponse, chainsData] = await Promise.all([
-                fetch(warReportTornFetchUrl(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`)),
+            const [warsData, chainsData] = await Promise.all([
+                warReportFetchJsonWithCache(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`),
                 fetchChainData(factionId, apiKey),
                 resolveWarReportCustomEndVipAccess(apiKey)
             ]);
-            
-            const warsData = await warsResponse.json();
             
             if (warsData.error) {
                 console.error('API Error fetching wars:', warsData.error);
@@ -1265,6 +1551,24 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
         alert('Please enter all required fields: API Key, select a War, and Faction ID.');
         return;
     }
+    const customEndUnixForCache =
+        fetchOptions && fetchOptions.customEndUnix != null && Number.isFinite(Number(fetchOptions.customEndUnix))
+            ? Number(fetchOptions.customEndUnix)
+            : null;
+    const cachedResult = warReportReadResultCache(apiKey, factionId, warId, includeChain, customEndUnixForCache);
+    if (cachedResult && cachedResult.playerStats && cachedResult.warInfo && Array.isArray(cachedResult.allAttacks)) {
+        console.log('[WAR REPORT 2.0] Using cached war result snapshot');
+        updateWarReportUI(
+            cachedResult.playerStats,
+            cachedResult.warInfo,
+            cachedResult.allAttacks,
+            0
+        );
+        if (warListContainer) {
+            warListContainer.style.display = 'none';
+        }
+        return;
+    }
 
     // Hide the war list when fetching a specific war
     if (warListContainer) {
@@ -1300,8 +1604,7 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
         }
         
         const warInfoUrl = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
-        const warInfoResponse = await fetch(warReportTornFetchUrl(warInfoUrl));
-        const warInfoData = await warInfoResponse.json();
+        const warInfoData = await warReportFetchJsonWithCache(warInfoUrl);
 
         if (warInfoData.error) {
             throw new Error(`Torn API Error: ${warInfoData.error.error}`);
@@ -1411,7 +1714,8 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
             const attacksUrl = `https://api.torn.com/v2/faction/attacks?limit=100&sort=ASC&from=${currentBatchFrom}&key=${apiKey}`;
 
             // Use global rate-limited fetch function
-            const attacksData = await window.fetchWithRateLimit(attacksUrl, {
+            const attacksData = await warReportFetchJsonWithCache(attacksUrl, {
+                useRateLimit: true,
                 progressMessage: progressMessage,
                 progressDetails: progressDetails
             });
@@ -1656,6 +1960,18 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
         warData.playerStats = playerStats;
         warData.warInfo = warInfoForUi;
         warData.allAttacks = allAttacks;
+        warReportWriteResultCache(
+            apiKey,
+            factionId,
+            warId,
+            includeChain,
+            customEndUnixForCache,
+            {
+                playerStats,
+                warInfo: warInfoForUi,
+                allAttacks
+            }
+        );
 
         const totalTime = performance.now() - startTime;
 
@@ -2035,6 +2351,40 @@ function parsePayoutInputInt(inputEl, fallback) {
     return Number.isFinite(n) ? n : fallback;
 }
 
+function warReportGetManualBonusValue(mapObj, playerId) {
+    const map = mapObj && typeof mapObj === 'object' ? mapObj : {};
+    const key = String(playerId);
+    const n = Math.round(Number(map[key] || 0));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function warReportSetManualBonusValue(mapObj, playerId, rawValue) {
+    if (!mapObj || typeof mapObj !== 'object') return;
+    const key = String(playerId);
+    const parsed = Math.round(Number(rawValue || 0));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        delete mapObj[key];
+        return;
+    }
+    mapObj[key] = parsed;
+}
+
+function warReportGetManualBonusTotal(mapObj) {
+    if (!mapObj || typeof mapObj !== 'object') return 0;
+    return Object.values(mapObj).reduce((sum, v) => {
+        const n = Math.round(Number(v || 0));
+        return sum + (Number.isFinite(n) && n > 0 ? n : 0);
+    }, 0);
+}
+
+function warReportSyncManualBonusCostInput(inputId, total) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    const n = Math.max(0, Math.round(Number(total) || 0));
+    el.value = n.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
+    el.dataset.raw = String(n);
+}
+
 function addThousandSeparatorInput(input) {
     if (!input) {
         return;
@@ -2215,6 +2565,25 @@ function initializeTabs() {
         });
         cacheSalesInput.addEventListener('input', updatePayoutTable);
         payPerHitInput.addEventListener('input', updatePayoutTable);
+        const hitSurrenderInput = document.getElementById('hitSurrenderTimeTct');
+        if (hitSurrenderInput) {
+            hitSurrenderInput.addEventListener('input', () => {
+                warReportSyncSurrenderInputs('hitSurrenderTimeTct', 'respectSurrenderTimeTct');
+                updatePayoutTable();
+            });
+        }
+        ['hitApplyRealWarFactor', 'hitRealWarFactor'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('input', () => {
+                updatePayoutTable();
+                saveHitPayoutSettings();
+            });
+            el.addEventListener('change', () => {
+                updatePayoutTable();
+                saveHitPayoutSettings();
+            });
+        });
         
         // Add event listeners for calculation mode switching
         const calculationModeRadios = document.querySelectorAll('input[name="hitCalculationMode"]');
@@ -2430,6 +2799,25 @@ function initializeTabs() {
                 }
             });
             respectCacheSalesInput.addEventListener('input', updateRespectPayoutTable);
+            const respectSurrenderInput = document.getElementById('respectSurrenderTimeTct');
+            if (respectSurrenderInput) {
+                respectSurrenderInput.addEventListener('input', () => {
+                    warReportSyncSurrenderInputs('respectSurrenderTimeTct', 'hitSurrenderTimeTct');
+                    updateRespectPayoutTable();
+                });
+            }
+            ['respectApplyRealWarFactor', 'respectRealWarFactor'].forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.addEventListener('input', () => {
+                    updateRespectPayoutTable();
+                    saveRespectPayoutSettings();
+                });
+                el.addEventListener('change', () => {
+                    updateRespectPayoutTable();
+                    saveRespectPayoutSettings();
+                });
+            });
             
             // Add event listeners for respect combined minimum settings
             const respectEnableCombinedMinCheckbox = document.getElementById('respectEnableCombinedMin');
@@ -2665,15 +3053,18 @@ function renderPayoutTable() {
         { label: 'Terms', id: 'otherTerms' },
         { label: 'Other', id: 'otherOther' }
     ];
-    let totalCosts = 0;
+    let totalBaseCosts = 0;
     otherCosts.forEach(cost => {
         const input = document.getElementById(cost.id);
         let value = 0;
         if (input) {
             value = parsePayoutInputInt(input, 0);
         }
-        totalCosts += value;
+        totalBaseCosts += value;
     });
+    const hitManualBonusTotal = warReportGetManualBonusTotal(warData.hitManualBonuses);
+    warReportSyncManualBonusCostInput('otherManualBonuses', hitManualBonusTotal);
+    const totalCosts = totalBaseCosts + hitManualBonusTotal;
 
     // Advanced payout options
     const payAssists = document.getElementById('payAssists')?.checked;
@@ -2688,6 +3079,12 @@ function renderPayoutTable() {
     const outsideHitsMultiplier = parseFloat(document.getElementById('outsideHitsMultiplier')?.value || '0.1');
     const filterLowFF = document.getElementById('filterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('minFFRating')?.value || '2.0');
+
+    // Surrender split (TCT/UTC): hits after this timestamp are treated as termed.
+    const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
+    const realWarFactor = warReportGetRealWarFactor('hitApplyRealWarFactor', 'hitRealWarFactor');
+    const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
+    const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, factionIdForSplit, hitSurrenderUnix);
 
     // If in Faction Cut mode, calculate payPerHit from percentage
     if (calculationMode === 'factionCut') {
@@ -2718,13 +3115,16 @@ function renderPayoutTable() {
             Object.values(playerStats).forEach(player => {
                 // Count low FF hits for this player
                 let lowFFHits = 0;
-                let qualifiedWarHits = player.warHits || 0;
+                const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
+                const warHitsForPayout = Math.max(0, (player.warHits || 0) - termedWarHits);
+                let qualifiedWarHits = warHitsForPayout;
                 
                 if (filterLowFF) {
                     const playerAttacks = warData.allAttacks.filter(attack => 
                         String(attack.attacker?.id) === String(player.id) &&
                         attack.modifiers?.war === 2 &&
-                        !attack.is_interrupted
+                        !attack.is_interrupted &&
+                        (!Number.isFinite(hitSurrenderUnix) || attack.started <= hitSurrenderUnix)
                     );
                     
                     lowFFHits = playerAttacks.filter(attack => 
@@ -2733,25 +3133,29 @@ function renderPayoutTable() {
                         !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
                     ).length;
                     
-                    qualifiedWarHits = (player.warHits || 0) - lowFFHits;
+                    qualifiedWarHits = Math.max(0, warHitsForPayout - lowFFHits);
                 }
                 
-                const combinedHits = warReportPlayerHitThresholdCount(player, hitThIncludeAssists, hitThIncludeOutside);
+                const warHitsForThreshold = qualifiedWarHits + termedWarHits;
+                const weightedWarHits = (qualifiedWarHits * realWarFactor) + termedWarHits;
+                const combinedHits = warReportPlayerHitThresholdCount({ ...player, warHitsForPayout: warHitsForThreshold }, hitThIncludeAssists, hitThIncludeOutside);
                 
                 if (enableThresholds) {
                     if (combinedHits < minThreshold) {
                         // Below threshold count: excluded from payout (no effective hits)
                     } else {
                         // Above minimum threshold - war hits are capped, other modifiers don't count
+                        const adjustedHits = payoutMode === 'equal' ? minThreshold : Math.min(combinedHits, maxThreshold);
+                        const adjustedWeightedHits = warHitsForThreshold > 0 ? (adjustedHits * (weightedWarHits / warHitsForThreshold)) : adjustedHits;
                         if (payoutMode === 'equal') {
-                            totalEffectiveHits += minThreshold;
+                            totalEffectiveHits += adjustedWeightedHits;
                         } else {
-                            totalEffectiveHits += Math.min(combinedHits, maxThreshold);
+                            totalEffectiveHits += adjustedWeightedHits;
                         }
                     }
                 } else {
                     // No thresholds - calculate effective hits normally
-                    let effectiveHits = qualifiedWarHits;
+                    let effectiveHits = (qualifiedWarHits * realWarFactor) + termedWarHits;
                     if (payRetals) effectiveHits += (player.warRetals || 0) * retalMultiplier;
                     if (payAssists) effectiveHits += (player.warAssists || 0) * assistMultiplier;
                     if (payOverseas) effectiveHits += (player.overseasHits || 0) * overseasMultiplier;
@@ -2789,14 +3193,17 @@ function renderPayoutTable() {
     const playersWithPayouts = Object.values(playerStats).map(player => {
         // Count low FF hits for this player
         let lowFFHits = 0;
-        let qualifiedWarHits = player.warHits || 0;
+        const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
+        const warHitsForPayout = Math.max(0, (player.warHits || 0) - termedWarHits);
+        let qualifiedWarHits = warHitsForPayout;
         
         if (filterLowFF) {
             // Find all war hits for this player and check FF ratings
             const playerAttacks = warData.allAttacks.filter(attack => 
                 String(attack.attacker?.id) === String(player.id) &&
                 attack.modifiers?.war === 2 &&
-                !attack.is_interrupted
+                !attack.is_interrupted &&
+                (!Number.isFinite(hitSurrenderUnix) || attack.started <= hitSurrenderUnix)
             );
             
             lowFFHits = playerAttacks.filter(attack => 
@@ -2806,10 +3213,11 @@ function renderPayoutTable() {
                 !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
             ).length;
             
-            qualifiedWarHits = (player.warHits || 0) - lowFFHits;
+            qualifiedWarHits = Math.max(0, warHitsForPayout - lowFFHits);
         }
         
-        let warHitPayout = Math.round(qualifiedWarHits * payPerHit);
+        const weightedWarHits = (qualifiedWarHits * realWarFactor) + termedWarHits;
+        let warHitPayout = Math.round(weightedWarHits * payPerHit);
         let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerHit * retalMultiplier) : 0;
         let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerHit * assistMultiplier) : 0;
         let overseasPayout = payOverseas ? Math.round((player.overseasHits || 0) * payPerHit * overseasMultiplier) : 0;
@@ -2826,6 +3234,9 @@ function renderPayoutTable() {
 
         return {
             ...player,
+            warHitsForPayout,
+            termedWarHits,
+            weightedWarHits,
             lowFFHits,
             qualifiedWarHits,
             warHitPayout,
@@ -2836,7 +3247,8 @@ function renderPayoutTable() {
             otherAttacksPayout,
             lowFFPayout,
             otherAttacks: otherAttacksCount,
-            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + outsideHitsPayout + otherAttacksPayout + lowFFPayout)
+            manualBonus: warReportGetManualBonusValue(warData.hitManualBonuses, player.id),
+            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + outsideHitsPayout + otherAttacksPayout + lowFFPayout + warReportGetManualBonusValue(warData.hitManualBonuses, player.id))
         };
     });
 
@@ -2852,7 +3264,8 @@ function renderPayoutTable() {
 
         // Apply threshold logic (count = war hits + optional assists + optional outside hits)
         playersWithPayouts.forEach(player => {
-            const combinedHits = warReportPlayerHitThresholdCount(player, hitThIncludeAssists, hitThIncludeOutside);
+            const warHitsForThreshold = (player.warHitsForPayout || 0) + (player.termedWarHits || 0);
+            const combinedHits = warReportPlayerHitThresholdCount({ ...player, warHitsForPayout: warHitsForThreshold }, hitThIncludeAssists, hitThIncludeOutside);
             
             if (combinedHits < minThreshold) {
                 // Below minimum: no war hit pay and no retals/assists/overseas/outside/other/low-FF pay
@@ -2863,17 +3276,19 @@ function renderPayoutTable() {
                 player.outsideHitsPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
-                player.totalPayout = 0;
+                player.totalPayout = player.manualBonus || 0;
             } else {
                 // Above minimum threshold - apply threshold logic using Pay Per War Hit
                 if (payoutMode === 'equal') {
                     // Equal mode: treat all qualifying players as having minimum threshold hits
-                    player.warHitPayout = minThreshold * payPerHit;
+                    const adjustedWeightedHits = warHitsForThreshold > 0 ? (minThreshold * ((player.weightedWarHits || warHitsForThreshold) / warHitsForThreshold)) : minThreshold;
+                    player.warHitPayout = adjustedWeightedHits * payPerHit;
 
                 } else {
                     // Ratio mode: use adjusted hits (capped at max threshold) with Pay Per War Hit
                     const adjustedHits = Math.min(combinedHits, maxThreshold);
-                    player.warHitPayout = adjustedHits * payPerHit;
+                    const adjustedWeightedHits = warHitsForThreshold > 0 ? (adjustedHits * ((player.weightedWarHits || warHitsForThreshold) / warHitsForThreshold)) : adjustedHits;
+                    player.warHitPayout = adjustedWeightedHits * payPerHit;
 
                 }
                 
@@ -2889,7 +3304,7 @@ function renderPayoutTable() {
             }
             
             // Recalculate total payout
-            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.outsideHitsPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.outsideHitsPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0) + (player.manualBonus || 0);
         });
     } else {
 
@@ -2921,7 +3336,8 @@ function renderPayoutTable() {
 
     // Calculate totals
     const totalPayout = playersWithPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
-    const totalWarHits = playersWithPayouts.reduce((sum, p) => sum + (p.warHits || 0), 0);
+    const totalWarHits = playersWithPayouts.reduce((sum, p) => sum + (p.warHitsForPayout || 0), 0);
+    const totalTermedWarHits = playersWithPayouts.reduce((sum, p) => sum + (p.termedWarHits || 0), 0);
     
     // In Faction Cut mode, use the percentage directly to ensure exact remaining amount
     let remaining, remainingPercent;
@@ -2931,7 +3347,7 @@ function renderPayoutTable() {
         remaining = Math.round(cacheSales * factionCutPercentage);
         remainingPercent = (factionCutPercentage * 100).toFixed(2);
     } else {
-        remaining = cacheSales - totalPayout - totalCosts;
+        remaining = cacheSales - totalPayout - totalBaseCosts;
         remainingPercent = cacheSales !== 0 ? ((remaining / cacheSales) * 100).toFixed(2) : '0.00';
     }
     const payoutTableDiv = document.getElementById('payoutTable');
@@ -2940,7 +3356,7 @@ function renderPayoutTable() {
     const showSupportColBreakdownHit = warReportGetSupportColumnBreakdown();
     const hitHdrSubRow = showSupportColBreakdownHit || showOtherBreakdown;
     const hitHdrRowspan = hitHdrSubRow ? 2 : 1;
-    let hitTableMinW = showOtherBreakdown ? 1240 : 1000;
+    let hitTableMinW = showOtherBreakdown ? 1520 : 1280;
     if (!showSupportColBreakdownHit) hitTableMinW -= 120;
     const showMemberIdBrackets = window.toolsGetShowMemberIdInBrackets();
     const othSortInd = warData.payoutSortState.column === 'otherAttacks' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : '';
@@ -3013,11 +3429,13 @@ function renderPayoutTable() {
                         </div>
                     </th>
                     <th rowspan="${hitHdrRowspan}" data-column="level" style="cursor: pointer;">Level <span class="sort-indicator">${warData.payoutSortState.column === 'level' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th rowspan="${hitHdrRowspan}" data-column="warHits" style="cursor: pointer;">War Hits <span class="sort-indicator">${warData.payoutSortState.column === 'warHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${hitHdrRowspan}" data-column="warHitsForPayout" style="cursor: pointer;">War Hits <span class="sort-indicator">${warData.payoutSortState.column === 'warHitsForPayout' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${hitHdrRowspan}" data-column="termedWarHits" style="cursor: pointer;">Termed War Hits <span class="sort-indicator">${warData.payoutSortState.column === 'termedWarHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${hitHdrRowspan}" data-column="lowFFHits" style="cursor: pointer; color: #ff6b6b;">Low FF Hits <span class="sort-indicator">${warData.payoutSortState.column === 'lowFFHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     ${supportHeadRow1Hit}
                     ${otherHeadRow1Hit}
-                    <th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" data-column="totalPayout" style="cursor: pointer;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.payoutSortState.column === 'totalPayout' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" style="min-width: 120px;">Manual Bonus</th>
+                    <th rowspan="${hitHdrRowspan}" data-column="totalPayout" style="cursor: pointer;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.payoutSortState.column === 'totalPayout' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${hitHdrRowspan}">Pay link</th>
                 </tr>
                 ${hitTheadSecondRow}
@@ -3038,11 +3456,15 @@ function renderPayoutTable() {
                         <tr>
                             <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank"${window.toolsMemberLinkAttrs(player.name, player.id)}>${window.toolsFormatMemberDisplayLabel(player, showMemberIdBrackets)}</a></td>
                             <td>${player.level}</td>
-                            <td>${player.warHits || 0}</td>
+                            <td>${player.warHitsForPayout || 0}</td>
+                            <td>${player.termedWarHits || 0}</td>
                             <td style="color: #ff6b6b;">${player.lowFFHits || 0}</td>
                             ${supportCellsHit}
                             ${otherCells}
-                            <td class="war-report-col-group-lead"><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
+                            <td class="war-report-col-group-lead">
+                                <input type="text" class="war-report-manual-bonus-input" data-mode="hit" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 110px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                            </td>
+                            <td><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
                             <td>${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
                         </tr>
                     `;
@@ -3053,6 +3475,7 @@ function renderPayoutTable() {
                     <td><strong>TOTALS</strong></td>
                     <td></td>
                     <td><strong>${totalWarHits}</strong></td>
+                    <td><strong>${totalTermedWarHits}</strong></td>
                     <td><strong style="color: #ff6b6b;">${playersWithPayouts.reduce((sum, p) => sum + (p.lowFFHits || 0), 0)}</strong></td>
                     ${showSupportColBreakdownHit
         ? `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td>`
@@ -3060,7 +3483,8 @@ function renderPayoutTable() {
                     ${showOtherBreakdown
         ? `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td>`}
-                    <td class="war-report-col-group-lead"><strong>$${totalPayout.toLocaleString()}</strong></td>
+                    <td class="war-report-col-group-lead"><strong>$${playersWithPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>
+                    <td><strong>$${totalPayout.toLocaleString()}</strong></td>
                     <td></td>
                 </tr>
             </tfoot>
@@ -3096,6 +3520,22 @@ function renderPayoutTable() {
     } else {
         console.error('[WAR REPORT 2.0] Payout table not found!');
     }
+
+    const hitManualInputs = payoutTableDiv.querySelectorAll('.war-report-manual-bonus-input[data-mode="hit"]');
+    hitManualInputs.forEach(inp => {
+        addThousandSeparatorInput(inp);
+        inp.addEventListener('input', () => {
+            const y = window.scrollY || window.pageYOffset || 0;
+            const pid = inp.getAttribute('data-player-id');
+            warReportSetManualBonusValue(warData.hitManualBonuses, pid, parsePayoutInputInt(inp, 0));
+            renderPayoutTable();
+            requestAnimationFrame(() => {
+                window.scrollTo(0, y);
+                const sel = document.querySelector(`.war-report-manual-bonus-input[data-mode="hit"][data-player-id="${pid}"]`);
+                if (sel) sel.focus({ preventScroll: true });
+            });
+        });
+    });
     
     // Attach only the summary box export button
     const exportPayoutBtn = document.getElementById('exportPayoutCSV');
@@ -3107,25 +3547,22 @@ function renderPayoutTable() {
     const openAllBtn = document.getElementById('openAllPayLinks');
     if (openAllBtn) {
         openAllBtn.onclick = async () => {
-            const playersWithPayouts = Object.values(playerStats).map(player => {
-                const payout = calculatePlayerPayout(player, payPerHit);
-                return { ...player, ...payout };
-            }).filter(player => player.totalPayout > 0);
+            const payablePlayers = playersWithPayouts.filter(player => player.totalPayout > 0);
             
-            if (playersWithPayouts.length === 0) {
+            if (payablePlayers.length === 0) {
                 alert('No players have payouts to open links for.');
                 return;
             }
             
             // Show confirmation dialog
-            showOpenLinksConfirmation(playersWithPayouts.length, async () => {
+            showOpenLinksConfirmation(payablePlayers.length, async () => {
             // Disable button during opening process
             openAllBtn.disabled = true;
-            openAllBtn.textContent = `Opening ${playersWithPayouts.length} links...`;
+            openAllBtn.textContent = `Opening ${payablePlayers.length} links...`;
             
             try {
-                for (let i = 0; i < playersWithPayouts.length; i++) {
-                    const player = playersWithPayouts[i];
+                for (let i = 0; i < payablePlayers.length; i++) {
+                    const player = payablePlayers[i];
                     const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
                     
                     // Update button text to show progress
@@ -3141,13 +3578,13 @@ function renderPayoutTable() {
                     }
                     
                     // Wait 500ms before opening the next link (allows browser to process)
-                    if (i < playersWithPayouts.length - 1) {
+                    if (i < payablePlayers.length - 1) {
                         await sleep(500);
                     }
                 }
                 
                 // Show completion message
-                openAllBtn.textContent = `Opened ${playersWithPayouts.length} links!`;
+                openAllBtn.textContent = `Opened ${payablePlayers.length} links!`;
                 setTimeout(() => {
                     openAllBtn.textContent = 'Open All Links';
                     openAllBtn.disabled = false;
@@ -3227,7 +3664,7 @@ function exportPayoutToCSV() {
     const showOtherBreakdownCsv = warReportGetOtherAttacksBreakdown();
     const showSupportBreakdownCsv = warReportGetSupportColumnBreakdown();
 
-    const headers = ['Member', 'Level', 'War Hits', 'Low FF Hits'];
+    const headers = ['Member', 'Level', 'War Hits', 'Termed War Hits', 'Low FF Hits'];
     if (showSupportBreakdownCsv) {
         headers.push('Retaliations', 'Assists', 'Overseas');
     } else {
@@ -3237,19 +3674,26 @@ function exportPayoutToCSV() {
     if (showOtherBreakdownCsv) {
         headers.push('Other (interrupted)', 'Other (outside)', 'Other (lost/ran)');
     }
-    headers.push('Total Payout', 'Pay link');
+    headers.push('Manual Bonus', 'Total Payout', 'Pay link');
 
     // Calculate payouts using the same logic as renderPayoutTable
+    const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
+    const realWarFactor = warReportGetRealWarFactor('hitApplyRealWarFactor', 'hitRealWarFactor');
+    const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
+    const termedHitsMap = warReportBuildTermedHitsMap(warData.allAttacks, factionIdForSplit, hitSurrenderUnix);
     const playersWithPayouts = Object.values(playerStats).map(player => {
         // Count low FF hits for this player
         let lowFFHits = 0;
-        let qualifiedWarHits = player.warHits || 0;
+        const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
+        const warHitsForPayout = Math.max(0, (player.warHits || 0) - termedWarHits);
+        let qualifiedWarHits = warHitsForPayout;
         
         if (filterLowFF) {
             const playerAttacks = warData.allAttacks.filter(attack => 
                 String(attack.attacker?.id) === String(player.id) &&
                 attack.modifiers?.war === 2 &&
-                !attack.is_interrupted
+                !attack.is_interrupted &&
+                (!Number.isFinite(hitSurrenderUnix) || attack.started <= hitSurrenderUnix)
             );
             
             lowFFHits = playerAttacks.filter(attack => 
@@ -3258,10 +3702,11 @@ function exportPayoutToCSV() {
                 !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
             ).length;
             
-            qualifiedWarHits = (player.warHits || 0) - lowFFHits;
+            qualifiedWarHits = Math.max(0, warHitsForPayout - lowFFHits);
         }
         
-        let warHitPayout = Math.round(qualifiedWarHits * payPerHit);
+        const weightedWarHits = (qualifiedWarHits * realWarFactor) + termedWarHits;
+        let warHitPayout = Math.round(weightedWarHits * payPerHit);
         let retalPayout = payRetals ? Math.round((player.warRetals || 0) * payPerHit * retalMultiplier) : 0;
         let assistPayout = payAssists ? Math.round((player.warAssists || 0) * payPerHit * assistMultiplier) : 0;
         let overseasPayout = payOverseas ? Math.round((player.overseasHits || 0) * payPerHit * overseasMultiplier) : 0;
@@ -3277,6 +3722,9 @@ function exportPayoutToCSV() {
 
         return {
             ...player,
+            warHitsForPayout,
+            termedWarHits,
+            weightedWarHits,
             lowFFHits,
             qualifiedWarHits,
             warHitPayout,
@@ -3287,7 +3735,8 @@ function exportPayoutToCSV() {
             otherAttacksPayout,
             lowFFPayout,
             otherAttacks: otherAttacksCount,
-            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + outsideHitsPayout + otherAttacksPayout + lowFFPayout)
+            manualBonus: warReportGetManualBonusValue(warData.hitManualBonuses, player.id),
+            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + outsideHitsPayout + otherAttacksPayout + lowFFPayout + warReportGetManualBonusValue(warData.hitManualBonuses, player.id))
         };
     });
 
@@ -3301,7 +3750,8 @@ function exportPayoutToCSV() {
 
     if (enableThresholds) {
         playersWithPayouts.forEach(player => {
-            const combinedHits = warReportPlayerHitThresholdCount(player, hitThIncludeAssists, hitThIncludeOutside);
+            const warHitsForThreshold = (player.warHitsForPayout || 0) + (player.termedWarHits || 0);
+            const combinedHits = warReportPlayerHitThresholdCount({ ...player, warHitsForPayout: warHitsForThreshold }, hitThIncludeAssists, hitThIncludeOutside);
             
             if (combinedHits < minThreshold) {
                 player.warHitPayout = 0;
@@ -3311,13 +3761,15 @@ function exportPayoutToCSV() {
                 player.outsideHitsPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
-                player.totalPayout = 0;
+                player.totalPayout = player.manualBonus || 0;
             } else {
                 if (payoutMode === 'equal') {
-                    player.warHitPayout = minThreshold * payPerHit;
+                    const adjustedWeightedHits = warHitsForThreshold > 0 ? (minThreshold * ((player.weightedWarHits || warHitsForThreshold) / warHitsForThreshold)) : minThreshold;
+                    player.warHitPayout = adjustedWeightedHits * payPerHit;
                 } else {
                     const adjustedHits = Math.min(combinedHits, maxThreshold);
-                    player.warHitPayout = adjustedHits * payPerHit;
+                    const adjustedWeightedHits = warHitsForThreshold > 0 ? (adjustedHits * ((player.weightedWarHits || warHitsForThreshold) / warHitsForThreshold)) : adjustedHits;
+                    player.warHitPayout = adjustedWeightedHits * payPerHit;
                 }
                 
                 player.retalPayout = 0;
@@ -3328,7 +3780,7 @@ function exportPayoutToCSV() {
                 player.lowFFPayout = 0;
             }
             
-            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.outsideHitsPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.outsideHitsPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0) + (player.manualBonus || 0);
         });
     }
 
@@ -3362,7 +3814,8 @@ function exportPayoutToCSV() {
         const row = [
             window.toolsCsvMemberCell(player),
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
-            player.warHits || 0,
+            player.warHitsForPayout || 0,
+            player.termedWarHits || 0,
             player.lowFFHits || 0
         ];
         if (showSupportBreakdownCsv) {
@@ -3378,7 +3831,7 @@ function exportPayoutToCSV() {
                 player.otherAttacksLostEscape || 0
             );
         }
-        row.push(player.totalPayout, payLink);
+        row.push(player.manualBonus || 0, player.totalPayout, payLink);
         csvContent += row.join(',') + '\r\n';
     });
     const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
@@ -3557,15 +4010,18 @@ function renderRespectPayoutTable() {
         { label: 'Terms', id: 'respectOtherTerms' },
         { label: 'Other', id: 'respectOtherOther' }
     ];
-    let totalCosts = 0;
+    let totalBaseCosts = 0;
     otherCosts.forEach(cost => {
         const input = document.getElementById(cost.id);
         let value = 0;
         if (input) {
             value = parsePayoutInputInt(input, 0);
         }
-        totalCosts += value;
+        totalBaseCosts += value;
     });
+    const respectManualBonusTotal = warReportGetManualBonusTotal(warData.respectManualBonuses);
+    warReportSyncManualBonusCostInput('respectOtherManualBonuses', respectManualBonusTotal);
+    const totalCosts = totalBaseCosts + respectManualBonusTotal;
     
     const remainingPercentageSlider = document.getElementById('respectRemainingPercentage');
     const remainingPercentage = remainingPercentageSlider ? parseFloat(remainingPercentageSlider.value) / 100 : 0.3;
@@ -3603,6 +4059,10 @@ function renderRespectPayoutTable() {
     const filterLowFF = document.getElementById('respectFilterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('respectMinFFRating')?.value || '2.0');
 
+    const respectSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('respectSurrenderTimeTct')?.value);
+    const respectRealWarFactor = warReportGetRealWarFactor('respectApplyRealWarFactor', 'respectRealWarFactor');
+    const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, String(factionId), respectSurrenderUnix);
+
     // Phase 1: respect / combined / counts per player (no $ yet).
     // Outside respect is excluded from pool split when Pay Outside Hits is on (those hits are paid via multiplier only).
     const respectRowsPhase1 = Object.values(playerStats).map(player => {
@@ -3610,14 +4070,16 @@ function renderRespectPayoutTable() {
         const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
         let playerWarRespect = playerData.warRespect;
         let playerOutsideRespect = playerData.outsideRespect;
-        let playerWarHits = (playerData.warHits ?? player.warHits) || 0;
+        const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
+        let playerWarHits = Math.max(0, ((playerData.warHits ?? player.warHits) || 0) - termedWarHits);
 
         let lowFFHits = 0;
         if (filterLowFF) {
             const playerAttacks = warData.allAttacks.filter(attack =>
                 String(attack.attacker?.id) === String(player.id) &&
                 attack.modifiers?.war === 2 &&
-                !attack.is_interrupted
+                !attack.is_interrupted &&
+                (!Number.isFinite(respectSurrenderUnix) || attack.started <= respectSurrenderUnix)
             );
 
             lowFFHits = playerAttacks.filter(attack =>
@@ -3640,7 +4102,7 @@ function renderRespectPayoutTable() {
                 });
 
                 playerWarRespect -= lowFFRespect;
-                playerWarHits -= lowFFHits;
+                playerWarHits = Math.max(0, playerWarHits - lowFFHits);
             }
         }
 
@@ -3666,6 +4128,8 @@ function renderRespectPayoutTable() {
             playerWarRespect,
             playerOutsideRespect,
             playerWarHits,
+            termedWarHits,
+            playerWeightedWarHits: (playerWarHits * respectRealWarFactor) + termedWarHits,
             lowFFHits,
             combinedCount,
             passesCombined,
@@ -3689,7 +4153,8 @@ function renderRespectPayoutTable() {
         if (filterLowFF && r.lowFFHits > 0) modifierWeightedTotal += r.lowFFHits * otherAttacksMultiplier;
     });
 
-    const respectPayoutDenominator = totalWarHits + modifierWeightedTotal;
+    const totalWarHitsForPayout = respectRowsPhase1.reduce((sum, r) => sum + (r.playerWeightedWarHits || 0), 0);
+    const respectPayoutDenominator = totalWarHitsForPayout + modifierWeightedTotal;
     const payPerWarHit = respectPayoutDenominator > 0 ? Math.round(availablePayout / respectPayoutDenominator) : 0;
 
     if (respectPayPerHitInput) {
@@ -3734,7 +4199,11 @@ function renderRespectPayoutTable() {
             otherAttacksPayout,
             lowFFPayout,
             otherAttacks: r.otherAttacksCount,
-            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + outsideHitsPayout + otherAttacksPayout + lowFFPayout)
+            warHitsForPayout: r.playerWarHits,
+            termedWarHits: r.termedWarHits,
+            weightedWarHits: r.playerWeightedWarHits,
+            manualBonus: warReportGetManualBonusValue(warData.respectManualBonuses, player.id),
+            totalPayout: Math.round(warHitPayout + retalPayout + assistPayout + overseasPayout + outsideHitsPayout + otherAttacksPayout + lowFFPayout + warReportGetManualBonusValue(warData.respectManualBonuses, player.id))
         };
     });
 
@@ -3754,19 +4223,26 @@ function renderRespectPayoutTable() {
     });
     
     // Pool split uses respectPoolPoints (war respect + optional outside, but not outside when Pay Outside Hits pays those separately)
-    const totalQualifyingRespect = qualifyingPlayers.reduce((sum, p) => sum + (p.respectPoolPoints || 0), 0);
+    const totalQualifyingRespect = qualifyingPlayers.reduce((sum, p) => {
+        const baseHits = (p.warHitsForPayout || 0) + (p.termedWarHits || 0);
+        const boostRatio = baseHits > 0 ? ((p.weightedWarHits || baseHits) / baseHits) : 1;
+        return sum + ((p.respectPoolPoints || 0) * boostRatio);
+    }, 0);
     
     // Distribute remaining money proportionally based on respect
     qualifyingPlayers.forEach(player => {
         if (totalQualifyingRespect > 0) {
-            const respectShare = (player.respectPoolPoints || 0) / totalQualifyingRespect;
+            const baseHits = (player.warHitsForPayout || 0) + (player.termedWarHits || 0);
+            const boostRatio = baseHits > 0 ? ((player.weightedWarHits || baseHits) / baseHits) : 1;
+            const weightedRespectPoints = (player.respectPoolPoints || 0) * boostRatio;
+            const respectShare = weightedRespectPoints / totalQualifyingRespect;
             player.warHitPayout = Math.round(respectShare * respectDistributionPool);
         } else {
             player.warHitPayout = 0;
         }
         
         // Update total payout
-        player.totalPayout = Math.round(player.warHitPayout + player.retalPayout + player.assistPayout + player.overseasPayout + player.outsideHitsPayout + player.otherAttacksPayout + player.lowFFPayout);
+        player.totalPayout = Math.round(player.warHitPayout + player.retalPayout + player.assistPayout + player.overseasPayout + player.outsideHitsPayout + player.otherAttacksPayout + player.lowFFPayout + (player.manualBonus || 0));
     });
     
     // Apply threshold-based payout adjustments if thresholds are enabled
@@ -3825,7 +4301,7 @@ function renderRespectPayoutTable() {
                 player.outsideHitsPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
-                player.totalPayout = 0;
+                player.totalPayout = player.manualBonus || 0;
                 return;
             }
 
@@ -3888,12 +4364,15 @@ function renderRespectPayoutTable() {
             }
             
             // Recalculate total payout
-            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.outsideHitsPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0);
+            player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.outsideHitsPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0) + (player.manualBonus || 0);
         });
     } else {
 
     }
     
+    const totalWarHitsDisplay = playersWithRespectPayouts.reduce((sum, p) => sum + (p.warHitsForPayout || 0), 0);
+    const totalTermedWarHitsDisplay = playersWithRespectPayouts.reduce((sum, p) => sum + (p.termedWarHits || 0), 0);
+
     // Calculate final total payout
     let totalPayout = playersWithRespectPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
 
@@ -3948,6 +4427,8 @@ function renderRespectPayoutTable() {
             name: p.name,
             level: p.level,
             warHits: p.warHits,
+            warHitsForPayout: p.warHitsForPayout || p.warHits || 0,
+            termedWarHits: p.termedWarHits || 0,
             warRetals: p.warRetals,
             warAssists: p.warAssists,
             overseasHits: p.overseasHits,
@@ -3960,7 +4441,8 @@ function renderRespectPayoutTable() {
             playerWarRespect: p.playerWarRespect,
             playerOutsideRespect: p.playerOutsideRespect,
             respectRatio: p.respectRatio,
-            totalPayout: p.totalPayout
+            totalPayout: p.totalPayout,
+            manualBonus: p.manualBonus || 0
         }))
     };
     
@@ -3973,7 +4455,7 @@ function renderRespectPayoutTable() {
     const respectHdrSubRow = showRespectColBreakdownR || showSupportColBreakdownR || showOtherBreakdownR;
     const respectHdrRowspan = respectHdrSubRow ? 2 : 1;
     const showMemberIdBracketsR = window.toolsGetShowMemberIdInBrackets();
-    let respectTableMinW = showOtherBreakdownR ? 1240 : 1100;
+    let respectTableMinW = showOtherBreakdownR ? 1460 : 1300;
     if (!showRespectColBreakdownR) respectTableMinW -= 150;
     if (!showSupportColBreakdownR) respectTableMinW -= 110;
 
@@ -4041,7 +4523,8 @@ function renderRespectPayoutTable() {
             <p><strong>Total Costs:</strong> $${totalCosts.toLocaleString()}</p>
             <p><strong>Total War ${removeModifiers ? 'Base' : 'Full'} Respect:</strong> ${Math.round(totalBaseRespect).toLocaleString()}</p>
             <p><strong>Total Outside ${removeModifiers ? 'Base' : 'Full'} Respect:</strong> ${Math.round(totalOutsideRespect).toLocaleString()} ${includeOutsideRespect ? '(Included)' : '(Excluded)'}</p>
-            <p><strong>Total War Hits:</strong> ${totalWarHits.toLocaleString()}</p>
+            <p><strong>Total War Hits:</strong> ${totalWarHitsDisplay.toLocaleString()}</p>
+            <p><strong>Total Termed War Hits:</strong> ${totalTermedWarHitsDisplay.toLocaleString()}</p>
             <p><strong>Pay Per War Hit (Auto-calculated):</strong> $${Math.round(payPerWarHit).toLocaleString()}</p>
             <p><strong>Total Payout:</strong> $${totalPayout.toLocaleString()}</p>
             <p><strong>Remaining:</strong> $${remaining2.toLocaleString()} <span style=\"color:#ffd700;font-weight:normal;\">(${remainingPercent}% of cache sales)</span></p>
@@ -4073,11 +4556,13 @@ function renderRespectPayoutTable() {
                         </div>
                     </th>
                     <th rowspan="${respectHdrRowspan}" data-column="level" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Level <span class="sort-indicator">${warData.respectPayoutSortState.column === 'level' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th rowspan="${respectHdrRowspan}" data-column="warHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">War Hits <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${respectHdrRowspan}" data-column="warHitsForPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">War Hits <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warHitsForPayout' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${respectHdrRowspan}" data-column="termedWarHits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Termed War Hits <span class="sort-indicator">${warData.respectPayoutSortState.column === 'termedWarHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     ${respectHeadRow1R}
                     ${supportHeadRow1R}
                     ${otherHeadRow1R}
-                    <th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.respectPayoutSortState.column === 'totalPayout' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle; min-width: 120px;">Manual Bonus</th>
+                    <th rowspan="${respectHdrRowspan}" data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.respectPayoutSortState.column === 'totalPayout' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${respectHdrRowspan}" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Pay link</th>
                 </tr>
                 ${respectTheadSecondRow}
@@ -4101,11 +4586,15 @@ function renderRespectPayoutTable() {
                         <tr>
                             <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><a class="player-link" href="https://www.torn.com/profiles.php?XID=${player.id}" target="_blank"${window.toolsMemberLinkAttrs(player.name, player.id)}>${window.toolsFormatMemberDisplayLabel(player, showMemberIdBracketsR)}</a></td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.level}</td>
-                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warHits || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warHitsForPayout || 0}</td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.termedWarHits || 0}</td>
                             ${respectCellsR}
                             ${supportCellsR}
                             ${otherCells}
-                            <td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
+                            <td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">
+                                <input type="text" class="war-report-manual-bonus-input" data-mode="respect" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 110px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                            </td>
+                            <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
                         </tr>
                     `;
@@ -4115,7 +4604,8 @@ function renderRespectPayoutTable() {
                 <tr class="totals-row" style="background-color: #1a1a1a;">
                     <td style="padding: 10px; text-align: left; border-bottom: 1px solid #404040;"><strong>TOTALS</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
-                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalWarHits}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalWarHitsDisplay}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalTermedWarHitsDisplay}</strong></td>
                     ${showRespectColBreakdownR
         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalBaseRespect)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalOutsideRespect)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>100.00%</strong></td>`
         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalBaseRespect + totalOutsideRespect)}</strong></td>`}
@@ -4125,7 +4615,8 @@ function renderRespectPayoutTable() {
                     ${showOtherBreakdownR
         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td>`}
-                    <td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${totalPayout.toLocaleString()}</strong></td>
+                    <td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${playersWithRespectPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>
+                    <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${totalPayout.toLocaleString()}</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
                 </tr>
             </tfoot>
@@ -4226,6 +4717,22 @@ function renderRespectPayoutTable() {
             });
         });
     }
+
+    const respectManualInputs = respectPayoutTableDiv.querySelectorAll('.war-report-manual-bonus-input[data-mode="respect"]');
+    respectManualInputs.forEach(inp => {
+        addThousandSeparatorInput(inp);
+        inp.addEventListener('input', () => {
+            const y = window.scrollY || window.pageYOffset || 0;
+            const pid = inp.getAttribute('data-player-id');
+            warReportSetManualBonusValue(warData.respectManualBonuses, pid, parsePayoutInputInt(inp, 0));
+            renderRespectPayoutTable();
+            requestAnimationFrame(() => {
+                window.scrollTo(0, y);
+                const sel = document.querySelector(`.war-report-manual-bonus-input[data-mode="respect"][data-player-id="${pid}"]`);
+                if (sel) sel.focus({ preventScroll: true });
+            });
+        });
+    });
     
     // Add click event listener for "Open All Respect Links" button
     const openAllRespectPayLinksBtn = document.getElementById('openAllRespectPayLinks');
@@ -4315,7 +4822,7 @@ function exportRespectPayoutToCSV() {
     const showSupportCsv = warReportGetSupportColumnBreakdown();
     const showOtherCsv = warReportGetOtherAttacksBreakdown();
 
-    const headers = ['Member', 'Level', 'War Hits'];
+    const headers = ['Member', 'Level', 'War Hits', 'Termed War Hits'];
     if (showRespectCsv) {
         headers.push(
             `War ${removeModifiers ? 'Base' : 'Full'} Respect`,
@@ -4334,7 +4841,7 @@ function exportRespectPayoutToCSV() {
     if (showOtherCsv) {
         headers.push('Other (interrupted)', 'Other (outside)', 'Other (lost/ran)');
     }
-    headers.push('Total Payout', 'Pay link');
+    headers.push('Manual Bonus', 'Total Payout', 'Pay link');
 
     let csvContent = headers.join(',') + '\r\n';
 
@@ -4343,7 +4850,8 @@ function exportRespectPayoutToCSV() {
         const row = [
             window.toolsCsvMemberCell(player),
             player.level !== undefined && player.level !== null && player.level !== '' ? player.level : 'Unknown',
-            player.warHits || 0
+            player.warHitsForPayout || player.warHits || 0,
+            player.termedWarHits || 0
         ];
         if (showRespectCsv) {
             row.push(
@@ -4367,7 +4875,7 @@ function exportRespectPayoutToCSV() {
                 player.otherAttacksLostEscape || 0
             );
         }
-        row.push(player.totalPayout, payLink);
+        row.push(player.manualBonus || 0, player.totalPayout, payLink);
         csvContent += row.join(',') + '\r\n';
     });
     

@@ -113,6 +113,23 @@
                                              <label>Bounties:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="otherBounties" value="0" placeholder="e.g., 25m" style="width: 120px;"></div>
                                              <label>Terms:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="otherTerms" value="0" placeholder="e.g., 10m" style="width: 120px;"></div>
                                              <label>Other:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="otherOther" value="0" placeholder="e.g., 5m" style="width: 120px;"></div>
+                                             <label>Manual Bonuses:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="otherManualBonuses" value="0" readonly style="width: 120px; background-color: #1a1a1a; border: 1px solid #404040; color: #ccc; cursor: not-allowed;"></div>
+                                    </div>
+                                </div>
+                                <div class="war-report-surrender-block">
+                                    <label for="hitSurrenderTimeTct">Surrender Time (TCT/UTC)</label>
+                                    <input type="datetime-local" id="hitSurrenderTimeTct" class="war-report-surrender-input">
+                                    <p class="war-report-surrender-hint">War hits after this time appear in <strong>Termed War Hits</strong>.</p>
+                                    <div style="margin-top: 10px;">
+                                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; cursor:pointer;" title="When enabled, hits before surrender are worth more than termed hits using the Real War Factor value.">
+                                            <input type="checkbox" id="hitApplyRealWarFactor" style="accent-color:#ffd700;" checked>
+                                            Apply Real War Factor
+                                        </label>
+                                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <label for="hitRealWarFactor" style="margin:0;">Real War Factor:</label>
+                                            <input type="number" id="hitRealWarFactor" value="2" min="1" step="0.1" style="width:90px; padding:6px;">
+                                            <span style="color:#999; font-size:12px;">1.0 = same weight as termed hits</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -253,6 +270,23 @@
                                              <label>Bounties:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="respectOtherBounties" value="0" placeholder="e.g., 25m" style="width: 120px;"></div>
                                              <label>Terms:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="respectOtherTerms" value="0" placeholder="e.g., 10m" style="width: 120px;"></div>
                                              <label>Other:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="respectOtherOther" value="0" placeholder="e.g., 5m" style="width: 120px;"></div>
+                                             <label>Manual Bonuses:</label><div style="display: flex; align-items: center;"><span style="color: #fff; font-weight: normal; margin-right: 4px; display: flex; align-items: center;">$</span><input type="text" id="respectOtherManualBonuses" value="0" readonly style="width: 120px; background-color: #1a1a1a; border: 1px solid #404040; color: #ccc; cursor: not-allowed;"></div>
+                                    </div>
+                                </div>
+                                <div class="war-report-surrender-block">
+                                    <label for="respectSurrenderTimeTct">Surrender Time (TCT/UTC)</label>
+                                    <input type="datetime-local" id="respectSurrenderTimeTct" class="war-report-surrender-input">
+                                    <p class="war-report-surrender-hint">War hits after this time appear in <strong>Termed War Hits</strong>.</p>
+                                    <div style="margin-top: 10px;">
+                                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; cursor:pointer;" title="When enabled, hits before surrender are worth more than termed hits using the Real War Factor value.">
+                                            <input type="checkbox" id="respectApplyRealWarFactor" style="accent-color:#ffd700;" checked>
+                                            Apply Real War Factor
+                                        </label>
+                                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <label for="respectRealWarFactor" style="margin:0;">Real War Factor:</label>
+                                            <input type="number" id="respectRealWarFactor" value="2" min="1" step="0.1" style="width:90px; padding:6px;">
+                                            <span style="color:#999; font-size:12px;">1.0 = same weight as termed hits</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

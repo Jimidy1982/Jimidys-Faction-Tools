@@ -7,6 +7,24 @@ const OC_STATS_ALLOWED_PRESETS = new Set(['all', '7', '14', '30', '90', '365', '
 const OC_STATS_ALLOWED_UNITS = new Set(['days', 'months', 'years']);
 
 /**
+ * Localhost: Torn does not allow browser CORS from file:// or :5173; Vite proxies /.torn-api-proxy → api.torn.com.
+ * Main app registers window.getTornApiFetchUrl (see app.js, vite.config.js).
+ */
+function ocStatsTornFetchUrl(url) {
+    if (typeof window.getTornApiFetchUrl === 'function') return window.getTornApiFetchUrl(url);
+    try {
+        if (typeof location === 'undefined') return url;
+        const h = String(location.hostname || '').toLowerCase();
+        if (h !== 'localhost' && h !== '127.0.0.1') return url;
+        const u = new URL(url, location.origin);
+        if (u.hostname !== 'api.torn.com') return url;
+        return '/.torn-api-proxy' + u.pathname + u.search;
+    } catch (e) {
+        return url;
+    }
+}
+
+/**
  * Read the visible date filter for a section from the DOM (source of truth for what the user sees).
  * Falls back to ocStatsData.activeFilters if the select is missing (e.g. before first paint).
  */
@@ -171,7 +189,7 @@ function updateOcStatsCacheHint() {
     const when = formatOcStatsCacheDate(meta.savedAt);
     el.textContent =
         `Last full fetch used about ${meta.totalApiCalls} API calls (${meta.crimePages} crime page${meta.crimePages === 1 ? '' : 's'} at 100 crimes each + faction members + item prices). ` +
-        `${crimesCached ? `Crimes are cached locally (${meta.crimeCount} rows, saved ${when}). "Load from cache" uses 2 calls (members + items) only.` : `Crime list was not cached (too large or first run); next fetch will re-pull all crime pages.`}`;
+        `${crimesCached ? `Crimes are cached locally (${meta.crimeCount} rows, saved ${when}). "Load from cache" uses members + items plus planning/recruiting crime pages (for the missing-items list).` : `Crime list was not cached (too large or first run); next fetch will re-pull all crime pages.`}`;
     if (btn) btn.style.display = crimesCached ? 'inline-block' : 'none';
 }
 
@@ -190,7 +208,7 @@ async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
     if (progressDetails) progressDetails.textContent = 'Loading member list...';
 
     const apiKey = localStorage.getItem('tornApiKey');
-    const membersResponse = await fetch(`https://api.torn.com/v2/faction/members?key=${apiKey}`);
+    const membersResponse = await fetch(ocStatsTornFetchUrl(`https://api.torn.com/v2/faction/members?key=${apiKey}`));
     const membersData = await membersResponse.json();
 
     if (membersData.error) {
@@ -216,12 +234,29 @@ async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
     if (progressMessage) progressMessage.textContent = 'Loading item details...';
     if (progressDetails) progressDetails.textContent = 'Fetching item names and values...';
     try {
-        const itemsResponse = await fetch(`https://api.torn.com/torn/?selections=items&key=${apiKey}`);
+        const itemsResponse = await fetch(ocStatsTornFetchUrl(`https://api.torn.com/torn/?selections=items&key=${apiKey}`));
         const itemsData = await itemsResponse.json();
         ocStatsData.itemsMap = itemsData && itemsData.items ? itemsData.items : {};
     } catch (e) {
         console.warn('[ORGANISED CRIME STATS] Could not fetch Torn items:', e);
         ocStatsData.itemsMap = {};
+    }
+
+    if (progressMessage) progressMessage.textContent = 'Checking planning & recruiting OCs…';
+    if (progressDetails) progressDetails.textContent = 'Missing item requirements on active crimes…';
+
+    let plannedFetchWarnings = [];
+    let plannedMissingRows = [];
+    try {
+        const { crimes: activeCrimes, warnings } = await fetchActiveFactionCrimesForPlannedItemNeeds(
+            apiKey,
+            progressDetails
+        );
+        plannedFetchWarnings = warnings || [];
+        plannedMissingRows = extractPlannedOcMissingItemRows(activeCrimes, playerNames, ocStatsData.itemsMap);
+    } catch (e) {
+        console.warn('[ORGANISED CRIME STATS] Planned / recruiting OC fetch failed:', e);
+        plannedFetchWarnings = [e && e.message ? e.message : String(e)];
     }
 
     const totalSuccessful = difficultyStats.reduce((sum, stat) => sum + stat.successful, 0);
@@ -237,6 +272,7 @@ async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
 
     updateOCStatsUI(difficultyStats, playerStats, totalCrimes);
     reapplyOcStatsDateFiltersToTables();
+    renderOcPlannedMissingItemsPanel(plannedMissingRows, plannedFetchWarnings);
 
     if (resultsSection) {
         resultsSection.style.display = 'block';
@@ -473,7 +509,7 @@ const handleOCDataFetch = async () => {
             const url = `https://api.torn.com/v2/faction/crimes?cat=completed&offset=${currentOffset}&limit=${limit}&sort=DESC&key=${apiKey}`;
             console.log(`[ORGANISED CRIME STATS] Fetching page ${pageCount} from offset ${currentOffset}...`);
             
-            const response = await fetch(url);
+            const response = await fetch(ocStatsTornFetchUrl(url));
             const data = await response.json();
             
             if (data.error) {
@@ -586,8 +622,8 @@ const handleOCDataLoadFromCache = async () => {
         if (loadCacheBtn) loadCacheBtn.disabled = true;
         if (progressContainer) progressContainer.style.display = 'block';
         if (progressMessage) progressMessage.textContent = 'Loading from local cache...';
-        if (progressDetails) progressDetails.textContent = `${crimes.length} crimes in cache — 2 live API calls (members + items)`;
-        if (progressPercentage) progressPercentage.textContent = '2 calls';
+        if (progressDetails) progressDetails.textContent = `${crimes.length} crimes in cache — live API: members, items, then planning/recruiting OCs (missing items list)`;
+        if (progressPercentage) progressPercentage.textContent = 'API…';
         if (progressFill) progressFill.style.width = '30%';
 
         await runOcStatsAfterCrimesReady(crimes, {
@@ -614,6 +650,194 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/** v2 /faction/crimes categories for in-flight OCs (Torn UI: Planning / Recruiting). */
+const OC_STATS_ACTIVE_CRIME_CATS = ['planning', 'recruiting'];
+
+function ocStatsCrimeStableId(crime) {
+    if (!crime || typeof crime !== 'object') return '';
+    if (crime.id != null) return String(crime.id);
+    if (crime.crime_id != null) return `cid_${crime.crime_id}`;
+    return '';
+}
+
+async function ocStatsFetchFactionCrimesPage(apiKey, cat, offset, limit, sort) {
+    const catQ = cat ? `cat=${encodeURIComponent(cat)}&` : '';
+    const url = `https://api.torn.com/v2/faction/crimes?${catQ}offset=${offset}&limit=${limit}&sort=${sort}&key=${apiKey}`;
+    const response = await fetch(ocStatsTornFetchUrl(url));
+    return response.json();
+}
+
+async function ocStatsFetchAllPagesForCat(apiKey, cat, progressDetails, label) {
+    let all = [];
+    let offset = 0;
+    const limit = 100;
+    const sort = 'ASC';
+    let page = 0;
+    let errObj = null;
+    while (page < 25) {
+        page++;
+        if (progressDetails) progressDetails.textContent = `${label} (page ${page})…`;
+        const data = await ocStatsFetchFactionCrimesPage(apiKey, cat, offset, limit, sort);
+        if (data.error) {
+            errObj = data.error;
+            break;
+        }
+        const crimes = data.crimes || [];
+        all = all.concat(crimes);
+        if (!data._metadata?.links?.next || crimes.length === 0) break;
+        offset += limit;
+        await new Promise((r) => setTimeout(r, 100));
+    }
+    return { crimes: all, error: errObj };
+}
+
+/**
+ * Pull planning + recruiting organised crimes (deduped) for item-requirement overview.
+ * @returns {Promise<{ crimes: object[], warnings: string[] }>}
+ */
+async function fetchActiveFactionCrimesForPlannedItemNeeds(apiKey, progressDetails) {
+    const merged = [];
+    const warnings = [];
+    for (const cat of OC_STATS_ACTIVE_CRIME_CATS) {
+        const { crimes, error } = await ocStatsFetchAllPagesForCat(
+            apiKey,
+            cat,
+            progressDetails,
+            `Fetching ${cat} OCs`
+        );
+        if (error) {
+            if (error.code !== 21) {
+                warnings.push(`${cat}: ${error.error || JSON.stringify(error)}`);
+            }
+            await new Promise((r) => setTimeout(r, 80));
+            continue;
+        }
+        merged.push(...crimes);
+        await new Promise((r) => setTimeout(r, 80));
+    }
+    const byId = new Map();
+    merged.forEach((c) => {
+        const sid = ocStatsCrimeStableId(c);
+        const key = sid || `__noid_${byId.size}`;
+        if (!byId.has(key)) byId.set(key, c);
+    });
+    return { crimes: [...byId.values()], warnings };
+}
+
+function ocStatsItemRequirementIsMissing(req) {
+    if (!req || typeof req !== 'object') return false;
+    return req.is_available === false || req.is_available === 0;
+}
+
+function extractPlannedOcMissingItemRows(crimes, playerNames, itemsMap) {
+    const names = playerNames || {};
+    const items = itemsMap || {};
+    const rows = [];
+    const seen = new Set();
+    if (!Array.isArray(crimes)) return rows;
+    crimes.forEach((crime) => {
+        const crimeName = crime.crime_name ?? crime.name ?? crime.title ?? 'Unknown OC';
+        const slots = crime.slots;
+        if (!Array.isArray(slots)) return;
+        slots.forEach((slot) => {
+            const req = slot && slot.item_requirement;
+            if (!ocStatsItemRequirementIsMissing(req)) return;
+            const itemId = req.id;
+            if (itemId == null) return;
+            const uid = slot.user && slot.user.id != null ? String(slot.user.id) : '';
+            if (!uid) return;
+            const itemRec = items[String(itemId)] || items[itemId];
+            const itemName = itemRec && itemRec.name ? itemRec.name : `Item #${itemId}`;
+            const playerName = names[uid] || `Player ${uid}`;
+            const position = slot.position || (slot.position_info && slot.position_info.label) || '—';
+            const dedupeKey = `${crimeName}\0${uid}\0${itemId}\0${position}`;
+            if (seen.has(dedupeKey)) return;
+            seen.add(dedupeKey);
+            rows.push({
+                playerId: uid,
+                playerName,
+                itemId: String(itemId),
+                itemName,
+                crimeName,
+                position
+            });
+        });
+    });
+    rows.sort((a, b) => {
+        const n = a.playerName.localeCompare(b.playerName);
+        if (n !== 0) return n;
+        const c = a.crimeName.localeCompare(b.crimeName);
+        if (c !== 0) return c;
+        return a.itemName.localeCompare(b.itemName);
+    });
+    return rows;
+}
+
+function renderOcPlannedMissingItemsPanel(rows, fetchWarnings) {
+    const el = document.getElementById('ocPlannedMissingItems');
+    if (!el) return;
+    const warn =
+        fetchWarnings && fetchWarnings.length
+            ? `<p class="oc-planned-missing-warn">${escapeHtml(fetchWarnings.join(' · '))}</p>`
+            : '';
+    const count = rows.length;
+    const summaryText =
+        count === 0
+            ? 'Planned / recruiting OCs — missing items (none right now)'
+            : `Planned / recruiting OCs — missing items (${count})`;
+
+    const linkExtra =
+        typeof window.toolsMemberLinkAttrs === 'function' ? window.toolsMemberLinkAttrs : () => '';
+    const playerCellLabel = (r) => {
+        if (typeof window.toolsFormatMemberDisplayLabel === 'function') {
+            const showId =
+                typeof window.toolsGetShowMemberIdInBrackets === 'function'
+                    ? window.toolsGetShowMemberIdInBrackets()
+                    : false;
+            return escapeHtml(
+                window.toolsFormatMemberDisplayLabel({ id: r.playerId, name: r.playerName }, showId)
+            );
+        }
+        return escapeHtml(r.playerName);
+    };
+
+    if (count === 0) {
+        el.innerHTML = `
+            <details class="summary-section oc-planned-missing-panel">
+                <summary class="oc-planned-missing-summary">${escapeHtml(summaryText)}</summary>
+                <p class="oc-planned-missing-note">No slots currently report a missing item (<code>item_requirement.is_available</code> is false), or there are no planning/recruiting crimes in the API response.</p>
+                ${warn}
+            </details>`;
+        return;
+    }
+
+    const thead = `<thead><tr>
+        <th>Player</th>
+        <th>Item</th>
+        <th>Crime</th>
+        <th>Slot</th>
+    </tr></thead>`;
+    const tbodyRows = rows
+        .map((r) => {
+            const attrs = linkExtra(r.playerName, r.playerId);
+            return `<tr>
+                <td><a class="player-link" href="https://www.torn.com/profiles.php?XID=${escapeHtml(r.playerId)}" target="_blank" rel="noopener noreferrer"${attrs}>${playerCellLabel(r)}</a></td>
+                <td>${escapeHtml(r.itemName)}</td>
+                <td>${escapeHtml(r.crimeName)}</td>
+                <td>${escapeHtml(r.position)}</td>
+            </tr>`;
+        })
+        .join('');
+    el.innerHTML = `
+        <details class="summary-section oc-planned-missing-panel">
+            <summary class="oc-planned-missing-summary">${escapeHtml(summaryText)}</summary>
+            <div class="table-scroll-wrapper oc-planned-missing-table-wrap">
+                <table class="oc-planned-missing-table" id="ocPlannedMissingTable">${thead}<tbody>${tbodyRows}</tbody></table>
+            </div>
+            ${warn}
+        </details>`;
 }
 
 // Parse crime.rewards (money, items, and respect from API rewards object)
