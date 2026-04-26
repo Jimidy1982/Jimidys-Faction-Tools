@@ -82,11 +82,61 @@ if (!window.warReportData) {
     payoutSortState: { column: 'totalPayout', direction: 'desc' },
     respectPayoutSortState: { column: 'totalPayout', direction: 'desc' },
     hitManualBonuses: {},
-    respectManualBonuses: {}
+    respectManualBonuses: {},
+    hitManualBonusBulkCheckedIds: new Set(),
+    respectManualBonusBulkCheckedIds: new Set(),
+    hitManualBonusBulkSkipIds: new Set(),
+    respectManualBonusBulkSkipIds: new Set(),
+    hitManualBonusBulkDraft: '',
+    respectManualBonusBulkDraft: ''
 };
 }
 // Create local reference for convenience (use var to allow redeclaration on script reload)
 var warData = window.warReportData;
+
+function warReportEnsureManualBonusBulkState() {
+    const w = warData;
+    if (!w.hitManualBonusBulkCheckedIds || !(w.hitManualBonusBulkCheckedIds instanceof Set)) w.hitManualBonusBulkCheckedIds = new Set();
+    if (!w.respectManualBonusBulkCheckedIds || !(w.respectManualBonusBulkCheckedIds instanceof Set)) w.respectManualBonusBulkCheckedIds = new Set();
+    if (!w.hitManualBonusBulkSkipIds || !(w.hitManualBonusBulkSkipIds instanceof Set)) w.hitManualBonusBulkSkipIds = new Set();
+    if (!w.respectManualBonusBulkSkipIds || !(w.respectManualBonusBulkSkipIds instanceof Set)) w.respectManualBonusBulkSkipIds = new Set();
+    if (typeof w.hitManualBonusBulkDraft !== 'string') w.hitManualBonusBulkDraft = '';
+    if (typeof w.respectManualBonusBulkDraft !== 'string') w.respectManualBonusBulkDraft = '';
+}
+
+function warReportResetManualBonusBulkUiState() {
+    warReportEnsureManualBonusBulkState();
+    warData.hitManualBonusBulkCheckedIds.clear();
+    warData.respectManualBonusBulkCheckedIds.clear();
+    warData.hitManualBonusBulkSkipIds.clear();
+    warData.respectManualBonusBulkSkipIds.clear();
+    warData.hitManualBonusBulkDraft = '';
+    warData.respectManualBonusBulkDraft = '';
+}
+
+/** Drop bulk checkbox/skip ids that are not in the current war roster. */
+function warReportPruneManualBonusBulkStateForPlayers(playerStats) {
+    warReportEnsureManualBonusBulkState();
+    if (!playerStats || typeof playerStats !== 'object') return;
+    const ids = new Set(Object.keys(playerStats).map(String));
+    const prune = (set) => {
+        set.forEach((pid) => {
+            if (!ids.has(String(pid))) set.delete(pid);
+        });
+    };
+    prune(warData.hitManualBonusBulkCheckedIds);
+    prune(warData.respectManualBonusBulkCheckedIds);
+    prune(warData.hitManualBonusBulkSkipIds);
+    prune(warData.respectManualBonusBulkSkipIds);
+}
+
+/** Per-player manual cell was typed in — remove bulk tick so header amount changes cannot overwrite this row until they tick again. */
+function warReportManualBonusBulkUncheckRow(mode, playerIdStr) {
+    warReportEnsureManualBonusBulkState();
+    const pid = String(playerIdStr);
+    if (mode === 'respect') warData.respectManualBonusBulkCheckedIds.delete(pid);
+    else warData.hitManualBonusBulkCheckedIds.delete(pid);
+}
 
 /**
  * Browser CORS blocks https://api.torn.com from localhost. Vite proxies /.torn-api-proxy → api.torn.com.
@@ -464,6 +514,31 @@ function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix) {
     return map;
 }
 
+/**
+ * Low-FF war hits (war modifier 2, not interrupted). Non-termed = on/before surrender (same pool as warHitsForPayout);
+ * post-surrender war hits are termed for payout and must not be double-counted as low-FF modifier weight.
+ */
+function warReportLowFfWarHitData(playerId, allAttacks, surrenderUnix, minFFRating) {
+    const pid = String(playerId);
+    const base = (attack) =>
+        attack &&
+        String(attack.attacker?.id) === pid &&
+        attack.modifiers?.war === 2 &&
+        !attack.is_interrupted;
+    const isLowFf = (attack) =>
+        attack.modifiers?.fair_fight !== undefined &&
+        attack.modifiers.fair_fight < minFFRating &&
+        !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5);
+
+    const allWar = (Array.isArray(allAttacks) ? allAttacks : []).filter(base);
+    const nonTer = Number.isFinite(surrenderUnix) ? allWar.filter((a) => a.started <= surrenderUnix) : allWar;
+    const lowFFAttacksNonTer = nonTer.filter(isLowFf);
+    return {
+        lowFFNonTer: lowFFAttacksNonTer.length,
+        lowFFAttacksNonTer
+    };
+}
+
 function warReportSyncSurrenderInputs(sourceId, targetId) {
     const src = document.getElementById(sourceId);
     const dst = document.getElementById(targetId);
@@ -477,6 +552,12 @@ function warReportGetRealWarFactor(enabledInputId, factorInputId) {
     const raw = parseFloat(document.getElementById(factorInputId)?.value || '2');
     if (!Number.isFinite(raw) || raw <= 0) return 1;
     return raw;
+}
+
+/** Apply real-war × only when surrender time is set (termed split); otherwise ×1 so totals do not move. */
+function warReportRealWarFactorForPayout(surrenderUnix, enabledInputId, factorInputId) {
+    if (!Number.isFinite(surrenderUnix)) return 1;
+    return warReportGetRealWarFactor(enabledInputId, factorInputId);
 }
 
 /**
@@ -844,9 +925,26 @@ function saveRespectPayoutSettings() {
 
 }
 
+function warReportApplyHitCalculationModeToDom(mode) {
+    const m = mode === 'factionCut' ? 'factionCut' : 'payPerHit';
+    const radio = document.querySelector(`input[name="hitCalculationMode"][value="${m}"]`);
+    if (radio) radio.checked = true;
+    const payPerHitContainer = document.getElementById('payPerHitContainer');
+    const factionCutContainer = document.getElementById('factionCutContainer');
+    if (m === 'factionCut') {
+        if (payPerHitContainer) payPerHitContainer.style.display = 'none';
+        if (factionCutContainer) factionCutContainer.style.display = 'block';
+    } else {
+        if (payPerHitContainer) payPerHitContainer.style.display = 'block';
+        if (factionCutContainer) factionCutContainer.style.display = 'none';
+    }
+}
+
 // Functions to save and load hit payout settings
 function saveHitPayoutSettings() {
     const settings = {
+        calculationMode: document.querySelector('input[name="hitCalculationMode"]:checked')?.value || 'payPerHit',
+        factionCutPercentage: document.getElementById('hitFactionCutPercentage')?.value ?? '30',
         payAssists: document.getElementById('payAssists')?.checked || false,
         payRetals: document.getElementById('payRetals')?.checked || false,
         payOverseas: document.getElementById('payOverseas')?.checked || false,
@@ -878,6 +976,13 @@ function loadHitPayoutSettings() {
         try {
             const settings = JSON.parse(savedSettings);
             // Apply settings to elements
+            if (settings.calculationMode !== undefined) {
+                warReportApplyHitCalculationModeToDom(settings.calculationMode);
+            }
+            if (settings.factionCutPercentage !== undefined) {
+                const fcp = document.getElementById('hitFactionCutPercentage');
+                if (fcp) fcp.value = settings.factionCutPercentage;
+            }
             if (settings.payAssists !== undefined) document.getElementById('payAssists').checked = settings.payAssists;
             if (settings.payRetals !== undefined) document.getElementById('payRetals').checked = settings.payRetals;
             if (settings.payOverseas !== undefined) document.getElementById('payOverseas').checked = settings.payOverseas;
@@ -2015,6 +2120,7 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
 function updateWarReportUI(playerStats, warInfo, allAttacks, totalTime) {
 
     // Store data in global state
+    warReportResetManualBonusBulkUiState();
     warData.playerStats = playerStats;
     warData.warInfo = warInfo;
     warData.allAttacks = allAttacks;
@@ -2377,6 +2483,153 @@ function warReportGetManualBonusTotal(mapObj) {
     }, 0);
 }
 
+function warReportManualBonusHeaderHtml(mode) {
+    warReportEnsureManualBonusBulkState();
+    const draft = mode === 'respect' ? warData.respectManualBonusBulkDraft : warData.hitManualBonusBulkDraft;
+    const valueAttr =
+        draft && String(draft).trim() !== ''
+            ? ` value="${warReportEscapeHtmlForFactionMail(String(draft))}"`
+            : '';
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;font-weight:normal;">
+        <span style="font-weight:600;color:#ffd700;">Manual Bonus</span>
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:center;">
+            <span style="font-size:11px;color:#aaa;">$</span>
+            <input type="text" class="war-report-bulk-manual-bonus-input" data-mode="${mode}"${valueAttr} placeholder="e.g. 500k" title="Applied to ticked rows when you tick one, press Enter, or leave this field after editing" style="width:92px;padding:4px 6px;text-align:right;font-size:12px;background:#1a1a1a;border:1px solid #404040;color:#fff;border-radius:4px;">
+        </div>
+        <span style="font-size:10px;color:#888;line-height:1.25;text-align:center;max-width:180px;">Set amount, tick rows (or Enter / leave field) to apply. Editing a cell unticks that row so the header amount won’t overwrite it until you tick again.</span>
+    </div>`;
+}
+
+function warReportBindBulkManualBonusUi(tableWrapEl, mode, mapObj, renderFn, syncCostInputId) {
+    if (!tableWrapEl) return;
+    warReportEnsureManualBonusBulkState();
+    const bulkInput = tableWrapEl.querySelector(`.war-report-bulk-manual-bonus-input[data-mode="${mode}"]`);
+    const skipSet = mode === 'respect' ? warData.respectManualBonusBulkSkipIds : warData.hitManualBonusBulkSkipIds;
+    const checkedSet = mode === 'respect' ? warData.respectManualBonusBulkCheckedIds : warData.hitManualBonusBulkCheckedIds;
+    if (bulkInput) addThousandSeparatorInput(bulkInput);
+
+    const persistBulkDraftFromInput = () => {
+        if (!bulkInput) return;
+        if (mode === 'respect') warData.respectManualBonusBulkDraft = bulkInput.value;
+        else warData.hitManualBonusBulkDraft = bulkInput.value;
+    };
+
+    const bulkApplyCheckedRows = () => {
+        persistBulkDraftFromInput();
+        const checked = tableWrapEl.querySelectorAll(`.war-report-manual-bonus-select-cb[data-mode="${mode}"]:checked`);
+        if (!checked.length) return;
+        const amount = parsePayoutInputInt(bulkInput, 0);
+        const y = window.scrollY || window.pageYOffset || 0;
+        let changed = false;
+        checked.forEach((cb) => {
+            const pid = String(cb.getAttribute('data-player-id'));
+            if (skipSet.has(pid)) return;
+            warReportSetManualBonusValue(mapObj, pid, amount);
+            changed = true;
+        });
+        if (changed) {
+            if (syncCostInputId) warReportSyncManualBonusCostInput(syncCostInputId, warReportGetManualBonusTotal(mapObj));
+            renderFn();
+            requestAnimationFrame(() => window.scrollTo(0, y));
+        }
+    };
+
+    if (bulkInput) {
+        // Do not run bulk apply on every `input` — a full re-render would destroy this field and drop focus.
+        // Draft is saved as you type; apply runs on blur (`change`), Enter, or when ticking a row.
+        bulkInput.addEventListener('input', persistBulkDraftFromInput);
+        bulkInput.addEventListener('change', () => bulkApplyCheckedRows());
+        bulkInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                bulkApplyCheckedRows();
+            }
+        });
+    }
+
+    tableWrapEl.querySelectorAll(`.war-report-manual-bonus-select-cb[data-mode="${mode}"]`).forEach((cb) => {
+        cb.addEventListener('change', () => {
+            const pid = String(cb.getAttribute('data-player-id'));
+            if (cb.checked) checkedSet.add(pid);
+            else checkedSet.delete(pid);
+            if (cb.checked) bulkApplyCheckedRows();
+        });
+    });
+}
+
+function warReportEscapeHtmlForFactionMail(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+/** Summary lines + table columns/rows (plain strings) for Torn faction mail — no pay links. */
+async function warReportCopyFactionMailPack(copyBtn, pack) {
+    if (!pack || !Array.isArray(pack.summaryLines) || !Array.isArray(pack.columns) || !Array.isArray(pack.rows)) {
+        alert('Nothing to copy.');
+        return;
+    }
+    const esc = warReportEscapeHtmlForFactionMail;
+    let html = '<div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45;color:#111;">';
+    pack.summaryLines.forEach((line, i) => {
+        if (i === 0) {
+            html += `<div style="font-size:18px;font-weight:700;margin:0 0 10px 0;">${esc(line)}</div>`;
+        } else {
+            html += `<div style="margin:0 0 4px 0;">${esc(line)}</div>`;
+        }
+    });
+    html += '</div><div style="height:10px"></div>';
+    html += '<table style="border-collapse:collapse;font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:12px;color:#111;" border="1" cellpadding="5"><thead><tr>';
+    pack.columns.forEach((c) => {
+        html += `<th style="background:#f0f0f0;font-weight:600;text-align:left;">${esc(c)}</th>`;
+    });
+    html += '</tr></thead><tbody>';
+    pack.rows.forEach((row) => {
+        html += '<tr>';
+        row.forEach((cell) => {
+            html += `<td>${esc(cell)}</td>`;
+        });
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+
+    const plain = pack.summaryLines.join('\n') + '\n\n' + pack.columns.join('\t') + '\n' + pack.rows.map((r) => r.join('\t')).join('\n');
+
+    const showCopied = () => {
+        const t = copyBtn.textContent;
+        const bg = copyBtn.style.backgroundColor;
+        copyBtn.textContent = '✓ Copied!';
+        copyBtn.style.backgroundColor = 'rgba(76, 175, 80, 0.9)';
+        copyBtn.style.opacity = '1';
+        setTimeout(() => {
+            copyBtn.textContent = t;
+            copyBtn.style.backgroundColor = bg;
+            copyBtn.style.opacity = '';
+        }, 2000);
+    };
+
+    try {
+        await navigator.clipboard.write([
+            new ClipboardItem({
+                'text/html': new Blob([html], { type: 'text/html' }),
+                'text/plain': new Blob([plain], { type: 'text/plain' })
+            })
+        ]);
+        showCopied();
+    } catch (err) {
+        console.warn('[WAR REPORT] ClipboardItem copy failed, trying plain text', err);
+        try {
+            await navigator.clipboard.writeText(plain);
+            showCopied();
+        } catch (e2) {
+            console.error(e2);
+            alert('Could not copy to clipboard. Try a secure (https) context or copy manually.');
+        }
+    }
+}
+
 function warReportSyncManualBonusCostInput(inputId, total) {
     const el = document.getElementById(inputId);
     if (!el) return;
@@ -2589,25 +2842,19 @@ function initializeTabs() {
         const calculationModeRadios = document.querySelectorAll('input[name="hitCalculationMode"]');
         calculationModeRadios.forEach(radio => {
             radio.addEventListener('change', (e) => {
-                const mode = e.target.value;
-                const payPerHitContainer = document.getElementById('payPerHitContainer');
-                const factionCutContainer = document.getElementById('factionCutContainer');
-                
-                if (mode === 'factionCut') {
-                    if (payPerHitContainer) payPerHitContainer.style.display = 'none';
-                    if (factionCutContainer) factionCutContainer.style.display = 'block';
-                } else {
-                    if (payPerHitContainer) payPerHitContainer.style.display = 'block';
-                    if (factionCutContainer) factionCutContainer.style.display = 'none';
-                }
+                warReportApplyHitCalculationModeToDom(e.target.value);
                 updatePayoutTable();
+                saveHitPayoutSettings();
             });
         });
         
         // Add event listener for faction cut percentage input
         const factionCutPercentageInput = document.getElementById('hitFactionCutPercentage');
         if (factionCutPercentageInput) {
-            factionCutPercentageInput.addEventListener('input', updatePayoutTable);
+            factionCutPercentageInput.addEventListener('input', () => {
+                updatePayoutTable();
+                saveHitPayoutSettings();
+            });
         }
         
         
@@ -3011,6 +3258,7 @@ function renderPayoutTable() {
 
         return;
     }
+    warReportPruneManualBonusBulkStateForPlayers(playerStats);
     // Get payout settings (use raw value for calculations)
     const cacheSalesInput = document.getElementById('cacheSales');
     const payPerHitInput = document.getElementById('payPerHit');
@@ -3082,7 +3330,7 @@ function renderPayoutTable() {
 
     // Surrender split (TCT/UTC): hits after this timestamp are treated as termed.
     const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
-    const realWarFactor = warReportGetRealWarFactor('hitApplyRealWarFactor', 'hitRealWarFactor');
+    const realWarFactor = warReportRealWarFactorForPayout(hitSurrenderUnix, 'hitApplyRealWarFactor', 'hitRealWarFactor');
     const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
     const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, factionIdForSplit, hitSurrenderUnix);
 
@@ -3120,19 +3368,8 @@ function renderPayoutTable() {
                 let qualifiedWarHits = warHitsForPayout;
                 
                 if (filterLowFF) {
-                    const playerAttacks = warData.allAttacks.filter(attack => 
-                        String(attack.attacker?.id) === String(player.id) &&
-                        attack.modifiers?.war === 2 &&
-                        !attack.is_interrupted &&
-                        (!Number.isFinite(hitSurrenderUnix) || attack.started <= hitSurrenderUnix)
-                    );
-                    
-                    lowFFHits = playerAttacks.filter(attack => 
-                        attack.modifiers?.fair_fight !== undefined && 
-                        attack.modifiers.fair_fight < minFFRating &&
-                        !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
-                    ).length;
-                    
+                    const lf = warReportLowFfWarHitData(player.id, warData.allAttacks, hitSurrenderUnix, minFFRating);
+                    lowFFHits = lf.lowFFNonTer;
                     qualifiedWarHits = Math.max(0, warHitsForPayout - lowFFHits);
                 }
                 
@@ -3181,12 +3418,6 @@ function renderPayoutTable() {
         }
         
         payPerHit = estimatedPayPerHit;
-        
-        // Update the calculated pay per hit display
-        const calculatedPayPerHitInput = document.getElementById('calculatedPayPerHit');
-        if (calculatedPayPerHitInput) {
-            calculatedPayPerHitInput.value = payPerHit.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
-        }
     }
 
     // Process attacks to count low FF hits and calculate filtered payouts
@@ -3198,21 +3429,8 @@ function renderPayoutTable() {
         let qualifiedWarHits = warHitsForPayout;
         
         if (filterLowFF) {
-            // Find all war hits for this player and check FF ratings
-            const playerAttacks = warData.allAttacks.filter(attack => 
-                String(attack.attacker?.id) === String(player.id) &&
-                attack.modifiers?.war === 2 &&
-                !attack.is_interrupted &&
-                (!Number.isFinite(hitSurrenderUnix) || attack.started <= hitSurrenderUnix)
-            );
-            
-            lowFFHits = playerAttacks.filter(attack => 
-                attack.modifiers?.fair_fight !== undefined && 
-                attack.modifiers.fair_fight < minFFRating &&
-                // Don't count retaliation hits (1.5) as low FF - they're good hits
-                !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
-            ).length;
-            
+            const lf = warReportLowFfWarHitData(player.id, warData.allAttacks, hitSurrenderUnix, minFFRating);
+            lowFFHits = lf.lowFFNonTer;
             qualifiedWarHits = Math.max(0, warHitsForPayout - lowFFHits);
         }
         
@@ -3338,7 +3556,13 @@ function renderPayoutTable() {
     const totalPayout = playersWithPayouts.reduce((sum, p) => sum + p.totalPayout, 0);
     const totalWarHits = playersWithPayouts.reduce((sum, p) => sum + (p.warHitsForPayout || 0), 0);
     const totalTermedWarHits = playersWithPayouts.reduce((sum, p) => sum + (p.termedWarHits || 0), 0);
-    
+    const payPerWarHitSummary = totalWarHits > 0 ? Math.round(totalPayout / totalWarHits) : 0;
+
+    const calculatedPayPerHitInput = document.getElementById('calculatedPayPerHit');
+    if (calculatedPayPerHitInput) {
+        calculatedPayPerHitInput.value = payPerWarHitSummary.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
+    }
+
     // In Faction Cut mode, use the percentage directly to ensure exact remaining amount
     let remaining, remainingPercent;
     if (calculationMode === 'factionCut') {
@@ -3397,16 +3621,19 @@ function renderPayoutTable() {
             <h3><strong>War Payout Summary</strong>${warName ? ' <span style=\"font-weight:normal;color:#ccc;font-size:0.95em;\">' + warName + '</span>' : ''}</h3>
             <p><strong>Cache Sales:</strong> $${cacheSales.toLocaleString()}</p>
             <p><strong>Total Costs:</strong> $${totalCosts.toLocaleString()}</p>
-            <p><strong>Pay Per Hit:</strong> $${payPerHit.toLocaleString()}</p>
+            <p><strong>Pay per War hit:</strong> $${payPerWarHitSummary.toLocaleString()}</p>
             <p><strong>Total Payout:</strong> $${totalPayout.toLocaleString()}</p>
             <p><strong>Remaining for Faction:</strong> $${remaining.toLocaleString()} <span style=\"color:#ffd700;font-weight:normal;\">(${remainingPercent}% of cache sales)</span></p>
             <p><strong>Total War Hits:</strong> ${totalWarHits.toLocaleString()}</p>
             <button id="exportPayoutCSV" class="btn btn-secondary">Export to CSV</button>
         </div>
         <div class="table-container">
-        <div class="table-header" style="display: flex; align-items: flex-end; justify-content: space-between;">
+        <div class="table-header" style="display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
             <h3>Payout Table (hit based)</h3>
-            <button id="openAllPayLinks" class="btn btn-primary" style="margin-bottom: 4px;">Open All Links</button>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                <button type="button" id="warReportCopyHitFactionMail" class="btn btn-secondary" style="margin-bottom: 4px;" title="Copy summary and payout table (no pay links) for faction mail">Copy for faction mail</button>
+                <button type="button" id="openAllPayLinks" class="btn btn-primary" style="margin-bottom: 4px;">Open All Links</button>
+            </div>
         </div>
         <div style="margin-bottom: 10px; font-size: 12px; color: #666; font-style: italic;">
             💡 <strong>Note:</strong> If links don't open, please allow popups for this site in your browser settings.
@@ -3434,7 +3661,7 @@ function renderPayoutTable() {
                     <th rowspan="${hitHdrRowspan}" data-column="lowFFHits" style="cursor: pointer; color: #ff6b6b;">Low FF Hits <span class="sort-indicator">${warData.payoutSortState.column === 'lowFFHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     ${supportHeadRow1Hit}
                     ${otherHeadRow1Hit}
-                    <th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" style="min-width: 120px;">Manual Bonus</th>
+                    <th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" style="min-width: 168px; vertical-align: middle; text-align: center;">${warReportManualBonusHeaderHtml('hit')}</th>
                     <th rowspan="${hitHdrRowspan}" data-column="totalPayout" style="cursor: pointer;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.payoutSortState.column === 'totalPayout' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${hitHdrRowspan}">Pay link</th>
                 </tr>
@@ -3461,8 +3688,11 @@ function renderPayoutTable() {
                             <td style="color: #ff6b6b;">${player.lowFFHits || 0}</td>
                             ${supportCellsHit}
                             ${otherCells}
-                            <td class="war-report-col-group-lead">
-                                <input type="text" class="war-report-manual-bonus-input" data-mode="hit" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 110px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                            <td class="war-report-col-group-lead" style="text-align: center;">
+                                <div style="display: inline-flex; align-items: center; gap: 6px;">
+                                    <input type="checkbox" class="war-report-manual-bonus-select-cb" data-mode="hit" data-player-id="${player.id}" ${warData.hitManualBonusBulkCheckedIds.has(String(player.id)) ? 'checked' : ''} title="Tick to apply bulk bonus to this row" style="accent-color: #ffd700; width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
+                                    <input type="text" class="war-report-manual-bonus-input" data-mode="hit" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                                </div>
                             </td>
                             <td><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
                             <td>${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
@@ -3493,6 +3723,83 @@ function renderPayoutTable() {
         </div>
         </div>
     `;
+    const hitCopyMoney = (n) => '$' + Math.round(Number(n) || 0).toLocaleString();
+    const hitCopyCols = ['Member', 'Level', 'War Hits', 'Termed War Hits', 'Low FF Hits'];
+    if (showSupportColBreakdownHit) {
+        hitCopyCols.push('Retaliations', 'Assists', 'Overseas');
+    } else {
+        hitCopyCols.push('Support');
+    }
+    if (showOtherBreakdown) {
+        hitCopyCols.push('Other (total)', 'Int.', 'Outside', 'Lost/ran');
+    } else {
+        hitCopyCols.push('Other attacks');
+    }
+    hitCopyCols.push('Manual bonus', 'Total payout');
+    const hitCopyRows = playersWithPayouts.map((player) => {
+        const row = [
+            window.toolsFormatMemberDisplayLabel(player, showMemberIdBrackets),
+            String(player.level ?? ''),
+            String(player.warHitsForPayout || 0),
+            String(player.termedWarHits || 0),
+            String(player.lowFFHits || 0)
+        ];
+        if (showSupportColBreakdownHit) {
+            row.push(String(player.warRetals || 0), String(player.warAssists || 0), String(player.overseasHits || 0));
+        } else {
+            row.push(String(warReportPlayerSupportHitsTotal(player)));
+        }
+        if (showOtherBreakdown) {
+            row.push(
+                String(warReportPlayerOtherAttacksTotal(player)),
+                String(player.otherAttacksInterrupted || 0),
+                String(player.otherAttacksOutside || 0),
+                String(player.otherAttacksLostEscape || 0)
+            );
+        } else {
+            row.push(String(warReportPlayerOtherAttacksTotal(player)));
+        }
+        row.push(hitCopyMoney(player.manualBonus || 0), hitCopyMoney(player.totalPayout));
+        return row;
+    });
+    const lowFFSumHit = playersWithPayouts.reduce((sum, p) => sum + (p.lowFFHits || 0), 0);
+    const hitCopyFooter = ['TOTALS', '', String(totalWarHits), String(totalTermedWarHits), String(lowFFSumHit)];
+    if (showSupportColBreakdownHit) {
+        hitCopyFooter.push(
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)),
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)),
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0))
+        );
+    } else {
+        hitCopyFooter.push(String(playersWithPayouts.reduce((sum, p) => sum + warReportPlayerSupportHitsTotal(p), 0)));
+    }
+    if (showOtherBreakdown) {
+        hitCopyFooter.push(
+            String(playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)),
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)),
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)),
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0))
+        );
+    } else {
+        hitCopyFooter.push(String(playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)));
+    }
+    hitCopyFooter.push(
+        hitCopyMoney(playersWithPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0)),
+        hitCopyMoney(totalPayout)
+    );
+    warData._warReportHitPayoutCopy = {
+        summaryLines: [
+            `War Payout Summary${warName ? ` — ${warName}` : ''}`,
+            `Cache Sales: ${hitCopyMoney(cacheSales)}`,
+            `Total Costs: ${hitCopyMoney(totalCosts)}`,
+            `Pay per War hit: ${hitCopyMoney(payPerWarHitSummary)}`,
+            `Total Payout: ${hitCopyMoney(totalPayout)}`,
+            `Remaining for Faction: ${hitCopyMoney(remaining)} (${remainingPercent}% of cache sales)`,
+            `Total War Hits: ${totalWarHits.toLocaleString()}`
+        ],
+        columns: hitCopyCols,
+        rows: [...hitCopyRows, hitCopyFooter]
+    };
     payoutTableDiv.innerHTML = tableHtml;
     warReportBindTopHorizontalScroll(payoutTableDiv);
     warReportAttachOtherAttacksBreakdownUI(payoutTableDiv);
@@ -3524,19 +3831,39 @@ function renderPayoutTable() {
     const hitManualInputs = payoutTableDiv.querySelectorAll('.war-report-manual-bonus-input[data-mode="hit"]');
     hitManualInputs.forEach(inp => {
         addThousandSeparatorInput(inp);
-        inp.addEventListener('input', () => {
+        const hitManualRowRebindFocus = (pid) => {
             const y = window.scrollY || window.pageYOffset || 0;
-            const pid = inp.getAttribute('data-player-id');
-            warReportSetManualBonusValue(warData.hitManualBonuses, pid, parsePayoutInputInt(inp, 0));
             renderPayoutTable();
             requestAnimationFrame(() => {
                 window.scrollTo(0, y);
                 const sel = document.querySelector(`.war-report-manual-bonus-input[data-mode="hit"][data-player-id="${pid}"]`);
                 if (sel) sel.focus({ preventScroll: true });
             });
+        };
+        inp.addEventListener('input', () => {
+            warReportEnsureManualBonusBulkState();
+            const pidStr = String(inp.getAttribute('data-player-id'));
+            warReportManualBonusBulkUncheckRow('hit', pidStr);
+            const v = parsePayoutInputInt(inp, 0);
+            if (v > 0) warData.hitManualBonusBulkSkipIds.add(pidStr);
+            else warData.hitManualBonusBulkSkipIds.delete(pidStr);
+            const pid = inp.getAttribute('data-player-id');
+            warReportSetManualBonusValue(warData.hitManualBonuses, pid, parsePayoutInputInt(inp, 0));
+            warReportSyncManualBonusCostInput('otherManualBonuses', warReportGetManualBonusTotal(warData.hitManualBonuses));
+        });
+        inp.addEventListener('change', () => {
+            const y = window.scrollY || window.pageYOffset || 0;
+            renderPayoutTable();
+            requestAnimationFrame(() => window.scrollTo(0, y));
+        });
+        inp.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            hitManualRowRebindFocus(inp.getAttribute('data-player-id'));
         });
     });
-    
+    warReportBindBulkManualBonusUi(payoutTableDiv, 'hit', warData.hitManualBonuses, renderPayoutTable, 'otherManualBonuses');
+
     // Attach only the summary box export button
     const exportPayoutBtn = document.getElementById('exportPayoutCSV');
     if (exportPayoutBtn) {
@@ -3600,6 +3927,13 @@ function renderPayoutTable() {
             }
             });
         };
+    }
+
+    const copyHitFactionMailBtn = document.getElementById('warReportCopyHitFactionMail');
+    if (copyHitFactionMailBtn) {
+        copyHitFactionMailBtn.addEventListener('click', () => {
+            warReportCopyFactionMailPack(copyHitFactionMailBtn, warData._warReportHitPayoutCopy);
+        });
     }
 
     // Update summary header with war name
@@ -3678,7 +4012,7 @@ function exportPayoutToCSV() {
 
     // Calculate payouts using the same logic as renderPayoutTable
     const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
-    const realWarFactor = warReportGetRealWarFactor('hitApplyRealWarFactor', 'hitRealWarFactor');
+    const realWarFactor = warReportRealWarFactorForPayout(hitSurrenderUnix, 'hitApplyRealWarFactor', 'hitRealWarFactor');
     const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
     const termedHitsMap = warReportBuildTermedHitsMap(warData.allAttacks, factionIdForSplit, hitSurrenderUnix);
     const playersWithPayouts = Object.values(playerStats).map(player => {
@@ -3689,19 +4023,8 @@ function exportPayoutToCSV() {
         let qualifiedWarHits = warHitsForPayout;
         
         if (filterLowFF) {
-            const playerAttacks = warData.allAttacks.filter(attack => 
-                String(attack.attacker?.id) === String(player.id) &&
-                attack.modifiers?.war === 2 &&
-                !attack.is_interrupted &&
-                (!Number.isFinite(hitSurrenderUnix) || attack.started <= hitSurrenderUnix)
-            );
-            
-            lowFFHits = playerAttacks.filter(attack => 
-                attack.modifiers?.fair_fight !== undefined && 
-                attack.modifiers.fair_fight < minFFRating &&
-                !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
-            ).length;
-            
+            const lf = warReportLowFfWarHitData(player.id, warData.allAttacks, hitSurrenderUnix, minFFRating);
+            lowFFHits = lf.lowFFNonTer;
             qualifiedWarHits = Math.max(0, warHitsForPayout - lowFFHits);
         }
         
@@ -3853,6 +4176,7 @@ function renderRespectPayoutTable() {
 
         return;
     }
+    warReportPruneManualBonusBulkStateForPlayers(playerStats);
 
     // Get respect payout settings (use raw value for calculations)
     const respectCacheSalesInput = document.getElementById('respectCacheSales');
@@ -4060,7 +4384,7 @@ function renderRespectPayoutTable() {
     const minFFRating = parseFloat(document.getElementById('respectMinFFRating')?.value || '2.0');
 
     const respectSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('respectSurrenderTimeTct')?.value);
-    const respectRealWarFactor = warReportGetRealWarFactor('respectApplyRealWarFactor', 'respectRealWarFactor');
+    const respectRealWarFactor = warReportRealWarFactorForPayout(respectSurrenderUnix, 'respectApplyRealWarFactor', 'respectRealWarFactor');
     const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, String(factionId), respectSurrenderUnix);
 
     // Phase 1: respect / combined / counts per player (no $ yet).
@@ -4075,28 +4399,12 @@ function renderRespectPayoutTable() {
 
         let lowFFHits = 0;
         if (filterLowFF) {
-            const playerAttacks = warData.allAttacks.filter(attack =>
-                String(attack.attacker?.id) === String(player.id) &&
-                attack.modifiers?.war === 2 &&
-                !attack.is_interrupted &&
-                (!Number.isFinite(respectSurrenderUnix) || attack.started <= respectSurrenderUnix)
-            );
+            const lf = warReportLowFfWarHitData(player.id, allAttacks, respectSurrenderUnix, minFFRating);
+            lowFFHits = lf.lowFFNonTer;
 
-            lowFFHits = playerAttacks.filter(attack =>
-                attack.modifiers?.fair_fight !== undefined &&
-                attack.modifiers.fair_fight < minFFRating &&
-                !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
-            ).length;
-
-            if (lowFFHits > 0) {
-                const lowFFAttacks = playerAttacks.filter(attack =>
-                    attack.modifiers?.fair_fight !== undefined &&
-                    attack.modifiers.fair_fight < minFFRating &&
-                    !(attack.modifiers?.retaliation && attack.modifiers.retaliation === 1.5)
-                );
-
+            if (lf.lowFFAttacksNonTer.length > 0) {
                 let lowFFRespect = 0;
-                lowFFAttacks.forEach(attack => {
+                lf.lowFFAttacksNonTer.forEach(attack => {
                     const removeModLocal = document.getElementById('respectRemoveModifiers')?.checked;
                     lowFFRespect += calculateBaseRespect(attack, removeModLocal);
                 });
@@ -4531,9 +4839,12 @@ function renderRespectPayoutTable() {
             <button id="exportRespectPayoutCSV" class="btn btn-secondary">Export to CSV</button>
         </div>
         <div class="table-container">
-        <div class="table-header" style="display: flex; align-items: flex-end; justify-content: space-between;">
+        <div class="table-header" style="display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
             <h3>Payout Table (respect based)</h3>
-            <button id="openAllRespectPayLinks" class="btn btn-primary" style="margin-bottom: 4px;">Open All Links</button>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                <button type="button" id="warReportCopyRespectFactionMail" class="btn btn-secondary" style="margin-bottom: 4px;" title="Copy summary and payout table (no pay links) for faction mail">Copy for faction mail</button>
+                <button type="button" id="openAllRespectPayLinks" class="btn btn-primary" style="margin-bottom: 4px;">Open All Links</button>
+            </div>
         </div>
         <div style="margin-bottom: 10px; font-size: 12px; color: #666; font-style: italic;">
             💡 <strong>Note:</strong> If links don't open, please allow popups for this site in your browser settings.
@@ -4561,7 +4872,7 @@ function renderRespectPayoutTable() {
                     ${respectHeadRow1R}
                     ${supportHeadRow1R}
                     ${otherHeadRow1R}
-                    <th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle; min-width: 120px;">Manual Bonus</th>
+                    <th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle; min-width: 168px;">${warReportManualBonusHeaderHtml('respect')}</th>
                     <th rowspan="${respectHdrRowspan}" data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.respectPayoutSortState.column === 'totalPayout' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="${respectHdrRowspan}" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Pay link</th>
                 </tr>
@@ -4592,7 +4903,10 @@ function renderRespectPayoutTable() {
                             ${supportCellsR}
                             ${otherCells}
                             <td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">
-                                <input type="text" class="war-report-manual-bonus-input" data-mode="respect" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 110px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                                <div style="display: inline-flex; align-items: center; gap: 6px;">
+                                    <input type="checkbox" class="war-report-manual-bonus-select-cb" data-mode="respect" data-player-id="${player.id}" ${warData.respectManualBonusBulkCheckedIds.has(String(player.id)) ? 'checked' : ''} title="Tick to apply bulk bonus to this row" style="accent-color: #ffd700; width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
+                                    <input type="text" class="war-report-manual-bonus-input" data-mode="respect" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                                </div>
                             </td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
@@ -4683,6 +4997,110 @@ function renderRespectPayoutTable() {
             `;
         })()}
     `;
+    const rCopyMoney = (n) => '$' + Math.round(Number(n) || 0).toLocaleString();
+    const warRespectHdr = removeModifiers ? 'War Base Respect' : 'War Full Respect';
+    const outsideRespectHdr = removeModifiers ? 'Outside Base Respect' : 'Outside Full Respect';
+    const respectCopyCols = ['Member', 'Level', 'War Hits', 'Termed War Hits'];
+    if (showRespectColBreakdownR) {
+        respectCopyCols.push(warRespectHdr, outsideRespectHdr, '% pool');
+    } else {
+        respectCopyCols.push('Respect (total)');
+    }
+    if (showSupportColBreakdownR) {
+        respectCopyCols.push('Retals', 'Assists', 'Abroad');
+    } else {
+        respectCopyCols.push('Support');
+    }
+    if (showOtherBreakdownR) {
+        respectCopyCols.push('Other (total)', 'Int.', 'Outside', 'Lost/ran');
+    } else {
+        respectCopyCols.push('Other attacks');
+    }
+    respectCopyCols.push('Manual bonus', 'Total payout');
+    const respectCopyRows = playersWithRespectPayouts.map((player) => {
+        const row = [
+            window.toolsFormatMemberDisplayLabel(player, showMemberIdBracketsR),
+            String(player.level ?? ''),
+            String(player.warHitsForPayout || 0),
+            String(player.termedWarHits || 0)
+        ];
+        if (showRespectColBreakdownR) {
+            row.push(
+                String(player.playerWarRespect || 0),
+                String(player.playerOutsideRespect || 0),
+                `${(parseFloat(player.respectRatio) * 100).toFixed(2)}%`
+            );
+        } else {
+            row.push(String(warReportPlayerRespectPointsTotal(player)));
+        }
+        if (showSupportColBreakdownR) {
+            row.push(String(player.warRetals || 0), String(player.warAssists || 0), String(player.overseasHits || 0));
+        } else {
+            row.push(String(warReportPlayerSupportHitsTotal(player)));
+        }
+        if (showOtherBreakdownR) {
+            row.push(
+                String(warReportPlayerOtherAttacksTotal(player)),
+                String(player.otherAttacksInterrupted || 0),
+                String(player.otherAttacksOutside || 0),
+                String(player.otherAttacksLostEscape || 0)
+            );
+        } else {
+            row.push(String(warReportPlayerOtherAttacksTotal(player)));
+        }
+        row.push(rCopyMoney(player.manualBonus || 0), rCopyMoney(player.totalPayout));
+        return row;
+    });
+    const outsideIncR = includeOutsideRespect ? '(Included)' : '(Excluded)';
+    const respectCopyFooter = ['TOTALS', '', String(totalWarHitsDisplay), String(totalTermedWarHitsDisplay)];
+    if (showRespectColBreakdownR) {
+        respectCopyFooter.push(
+            String(Math.round(totalBaseRespect)),
+            String(Math.round(totalOutsideRespect)),
+            '100.00%'
+        );
+    } else {
+        respectCopyFooter.push(String(Math.round(totalBaseRespect + totalOutsideRespect)));
+    }
+    if (showSupportColBreakdownR) {
+        respectCopyFooter.push(
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)),
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)),
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0))
+        );
+    } else {
+        respectCopyFooter.push(String(playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerSupportHitsTotal(p), 0)));
+    }
+    if (showOtherBreakdownR) {
+        respectCopyFooter.push(
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)),
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)),
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)),
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0))
+        );
+    } else {
+        respectCopyFooter.push(String(playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)));
+    }
+    respectCopyFooter.push(
+        rCopyMoney(playersWithRespectPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0)),
+        rCopyMoney(totalPayout)
+    );
+    warData._warReportRespectPayoutCopy = {
+        summaryLines: [
+            `Respect Based War Payout Summary${warName ? ` — ${warName}` : ''}`,
+            `Cache Sales: ${rCopyMoney(cacheSales)}`,
+            `Total Costs: ${rCopyMoney(totalCosts)}`,
+            `Total War ${removeModifiers ? 'Base' : 'Full'} Respect: ${Math.round(totalBaseRespect).toLocaleString()}`,
+            `Total Outside ${removeModifiers ? 'Base' : 'Full'} Respect: ${Math.round(totalOutsideRespect).toLocaleString()} ${outsideIncR}`,
+            `Total War Hits: ${totalWarHitsDisplay.toLocaleString()}`,
+            `Total Termed War Hits: ${totalTermedWarHitsDisplay.toLocaleString()}`,
+            `Pay Per War Hit (auto): ${rCopyMoney(payPerWarHit)}`,
+            `Total Payout: ${rCopyMoney(totalPayout)}`,
+            `Remaining: ${rCopyMoney(remaining2)} (${remainingPercent}% of cache sales)`
+        ],
+        columns: respectCopyCols,
+        rows: [...respectCopyRows, respectCopyFooter]
+    };
     respectPayoutTableDiv.innerHTML = tableHtml;
     warReportBindTopHorizontalScroll(respectPayoutTableDiv);
     warReportAttachOtherAttacksBreakdownUI(respectPayoutTableDiv);
@@ -4721,19 +5139,39 @@ function renderRespectPayoutTable() {
     const respectManualInputs = respectPayoutTableDiv.querySelectorAll('.war-report-manual-bonus-input[data-mode="respect"]');
     respectManualInputs.forEach(inp => {
         addThousandSeparatorInput(inp);
-        inp.addEventListener('input', () => {
+        const respectManualRowRebindFocus = (pid) => {
             const y = window.scrollY || window.pageYOffset || 0;
-            const pid = inp.getAttribute('data-player-id');
-            warReportSetManualBonusValue(warData.respectManualBonuses, pid, parsePayoutInputInt(inp, 0));
             renderRespectPayoutTable();
             requestAnimationFrame(() => {
                 window.scrollTo(0, y);
                 const sel = document.querySelector(`.war-report-manual-bonus-input[data-mode="respect"][data-player-id="${pid}"]`);
                 if (sel) sel.focus({ preventScroll: true });
             });
+        };
+        inp.addEventListener('input', () => {
+            warReportEnsureManualBonusBulkState();
+            const pidStr = String(inp.getAttribute('data-player-id'));
+            warReportManualBonusBulkUncheckRow('respect', pidStr);
+            const v = parsePayoutInputInt(inp, 0);
+            if (v > 0) warData.respectManualBonusBulkSkipIds.add(pidStr);
+            else warData.respectManualBonusBulkSkipIds.delete(pidStr);
+            const pid = inp.getAttribute('data-player-id');
+            warReportSetManualBonusValue(warData.respectManualBonuses, pid, parsePayoutInputInt(inp, 0));
+            warReportSyncManualBonusCostInput('respectOtherManualBonuses', warReportGetManualBonusTotal(warData.respectManualBonuses));
+        });
+        inp.addEventListener('change', () => {
+            const y = window.scrollY || window.pageYOffset || 0;
+            renderRespectPayoutTable();
+            requestAnimationFrame(() => window.scrollTo(0, y));
+        });
+        inp.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            respectManualRowRebindFocus(inp.getAttribute('data-player-id'));
         });
     });
-    
+    warReportBindBulkManualBonusUi(respectPayoutTableDiv, 'respect', warData.respectManualBonuses, renderRespectPayoutTable, 'respectOtherManualBonuses');
+
     // Add click event listener for "Open All Respect Links" button
     const openAllRespectPayLinksBtn = document.getElementById('openAllRespectPayLinks');
     if (openAllRespectPayLinksBtn) {
@@ -4765,6 +5203,13 @@ function renderRespectPayoutTable() {
                     openAllRespectPayLinksBtn.textContent = 'Open All Links';
                 }, 2000);
             });
+        });
+    }
+
+    const copyRespectFactionMailBtn = document.getElementById('warReportCopyRespectFactionMail');
+    if (copyRespectFactionMailBtn) {
+        copyRespectFactionMailBtn.addEventListener('click', () => {
+            warReportCopyFactionMailPack(copyRespectFactionMailBtn, warData._warReportRespectPayoutCopy);
         });
     }
     
