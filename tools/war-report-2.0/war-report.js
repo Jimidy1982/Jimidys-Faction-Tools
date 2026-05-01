@@ -88,7 +88,10 @@ if (!window.warReportData) {
     hitManualBonusBulkSkipIds: new Set(),
     respectManualBonusBulkSkipIds: new Set(),
     hitManualBonusBulkDraft: '',
-    respectManualBonusBulkDraft: ''
+    respectManualBonusBulkDraft: '',
+    /** When true, payout tables show the Manual Bonus column (default hidden). */
+    hitPayoutShowManualBonusColumn: false,
+    respectPayoutShowManualBonusColumn: false
 };
 }
 // Create local reference for convenience (use var to allow redeclaration on script reload)
@@ -102,6 +105,8 @@ function warReportEnsureManualBonusBulkState() {
     if (!w.respectManualBonusBulkSkipIds || !(w.respectManualBonusBulkSkipIds instanceof Set)) w.respectManualBonusBulkSkipIds = new Set();
     if (typeof w.hitManualBonusBulkDraft !== 'string') w.hitManualBonusBulkDraft = '';
     if (typeof w.respectManualBonusBulkDraft !== 'string') w.respectManualBonusBulkDraft = '';
+    if (typeof w.hitPayoutShowManualBonusColumn !== 'boolean') w.hitPayoutShowManualBonusColumn = false;
+    if (typeof w.respectPayoutShowManualBonusColumn !== 'boolean') w.respectPayoutShowManualBonusColumn = false;
 }
 
 function warReportResetManualBonusBulkUiState() {
@@ -504,6 +509,7 @@ function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix) {
     allAttacks.forEach((attack) => {
         if (!attack || !attack.attacker || !attack.attacker.faction) return;
         if (String(attack.attacker.faction.id) !== String(factionIdStr)) return;
+        if (attack._warScoreCapWarPayEligible === false) return;
         if (attack.is_interrupted) return;
         if (!(attack.modifiers && attack.modifiers.war === 2)) return;
         if (!(attack.started > surrenderUnix)) return;
@@ -512,6 +518,254 @@ function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix) {
         map.set(pid, (map.get(pid) || 0) + 1);
     });
     return map;
+}
+
+/** Outside-style hits (war modifier 1 + respect): never consume the faction war score cap; always pay via outside rules. */
+function warReportOutsideRespectExemptFromWarCap(attack) {
+    return !!(attack && attack.modifiers?.war === 1 && (attack.respect_gain || 0) > 0);
+}
+
+/**
+ * Non-negative respect_gain for cap math, rounded to 2 decimal places (same precision as typical war score display).
+ * Uses integer hundredths internally to avoid drift from per-hit flooring.
+ */
+function warReportWarScoreCapRespectGainCents(attack) {
+    const raw = Number(attack && attack.respect_gain);
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return Math.round(raw * 100);
+}
+
+/**
+ * War-context lines that count toward the faction cumulative cap (chronological order).
+ * The running total uses each line’s full respect_gain (bonuses / chain totals included), not pool “base” respect.
+ * Excludes outside-only hits. Includes war modifier 2 (including interrupted), assists, and retals (same buckets as payout).
+ */
+function warReportAttackUsesFactionWarScoreCap(attack) {
+    if (!attack) return false;
+    if (warReportOutsideRespectExemptFromWarCap(attack)) return false;
+    const isWarHit = attack.modifiers?.war === 2;
+    const isAssist =
+        attack.modifiers?.war &&
+        !attack.is_interrupted &&
+        attack.result &&
+        String(attack.result).toLowerCase() === 'assist';
+    if (isWarHit || isAssist) return true;
+    if (attack.modifiers?.retaliation === 1.5) return true;
+    return false;
+}
+
+function warReportClearWarScoreCapAttackTags(allAttacks) {
+    if (!Array.isArray(allAttacks)) return;
+    allAttacks.forEach((a) => {
+        if (a && '_warScoreCapWarPayEligible' in a) delete a._warScoreCapWarPayEligible;
+    });
+}
+
+/**
+ * After this runs, each faction attack may have _warScoreCapWarPayEligible:
+ * - true: outside / non-cap / before cap (war-context lines pay normally)
+ * - false: war-context hit after the faction cumulative respect passed the cap (no pay for war buckets)
+ *
+ * Cumulative cap sums each line’s respect_gain rounded to 2 dp (hundredths), compared to the same for your target.
+ * The hit that first pushes running over the threshold is still marked eligible, then later war-context lines are ineligible.
+ */
+function warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStr, capThreshold) {
+    warReportClearWarScoreCapAttackTags(allAttacks);
+    if (!Array.isArray(allAttacks) || !factionIdStr || !Number.isFinite(capThreshold) || capThreshold <= 0) return;
+    const fid = String(factionIdStr);
+    const thresholdCents = Math.round(capThreshold * 100);
+    const sorted = [...allAttacks].sort((a, b) => {
+        const ta = a.started ?? a.timestamp ?? 0;
+        const tb = b.started ?? b.timestamp ?? 0;
+        return ta - tb;
+    });
+    let runningCents = 0;
+    let postCap = false;
+
+    sorted.forEach((attack) => {
+        if (!attack?.attacker?.faction || String(attack.attacker.faction.id) !== fid) return;
+
+        if (warReportOutsideRespectExemptFromWarCap(attack)) {
+            attack._warScoreCapWarPayEligible = true;
+            return;
+        }
+        if (!warReportAttackUsesFactionWarScoreCap(attack)) {
+            attack._warScoreCapWarPayEligible = true;
+            return;
+        }
+
+        const incrementCents = warReportWarScoreCapRespectGainCents(attack);
+        if (postCap) {
+            attack._warScoreCapWarPayEligible = false;
+            return;
+        }
+        attack._warScoreCapWarPayEligible = true;
+        runningCents += incrementCents;
+        if (runningCents > thresholdCents) {
+            postCap = true;
+        }
+    });
+}
+
+/** Rebuild per-player hit buckets from attacks when war score cap is on (must run after tags). */
+function warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStr) {
+    const out = {};
+    const fid = String(factionIdStr);
+    (Array.isArray(allAttacks) ? allAttacks : []).forEach((attack) => {
+        if (!attack?.attacker?.faction || String(attack.attacker.faction.id) !== fid) return;
+        const attackerId = String(attack.attacker.id);
+        if (!out[attackerId]) {
+            out[attackerId] = {
+                warHits: 0,
+                warAssists: 0,
+                warRetals: 0,
+                overseasHits: 0,
+                otherAttacksInterrupted: 0,
+                otherAttacksOutside: 0,
+                otherAttacksLostEscape: 0,
+                otherAttacksNonWar: 0,
+                totalAttacks: 0
+            };
+        }
+        const p = out[attackerId];
+        p.totalAttacks++;
+        const warZero = attack._warScoreCapWarPayEligible === false;
+
+        const isWarHit = !attack.is_interrupted && attack.modifiers?.war === 2;
+        const isAssist =
+            attack.modifiers?.war &&
+            !attack.is_interrupted &&
+            attack.result &&
+            String(attack.result).toLowerCase() === 'assist';
+
+        if (isWarHit) {
+            if (!warZero) {
+                p.warHits++;
+                if (attack.modifiers?.overseas && attack.modifiers.overseas > 1) {
+                    p.overseasHits++;
+                }
+                if (attack.modifiers?.retaliation === 1.5) {
+                    p.warRetals++;
+                }
+            }
+        } else if (isAssist) {
+            if (!warZero) {
+                p.warAssists++;
+                if (attack.modifiers?.retaliation === 1.5) {
+                    p.warRetals++;
+                }
+            }
+        } else {
+            if (attack.is_interrupted) {
+                p.otherAttacksInterrupted++;
+            } else if (attack.modifiers?.war) {
+                const rg = attack.respect_gain || 0;
+                if (warReportResultIsLostOrEscape(attack) || rg <= 0) {
+                    p.otherAttacksLostEscape++;
+                } else if (attack.modifiers.war === 1) {
+                    p.otherAttacksOutside++;
+                } else {
+                    p.otherAttacksLostEscape++;
+                }
+            } else {
+                p.otherAttacksNonWar++;
+            }
+        }
+
+        if (attack.modifiers?.retaliation === 1.5 && !isWarHit && !isAssist && !warZero) {
+            p.warRetals++;
+        }
+    });
+    return out;
+}
+
+function warReportPlayerWithWarCapMerged(player, effMap) {
+    if (!effMap || !player) return player;
+    const id = String(player.id);
+    const e = effMap[id];
+    if (!e) return player;
+    return {
+        ...player,
+        warHits: e.warHits,
+        warAssists: e.warAssists,
+        warRetals: e.warRetals,
+        overseasHits: e.overseasHits,
+        otherAttacksInterrupted: e.otherAttacksInterrupted,
+        otherAttacksOutside: e.otherAttacksOutside,
+        otherAttacksLostEscape: e.otherAttacksLostEscape,
+        otherAttacksNonWar: e.otherAttacksNonWar,
+        totalAttacks: e.totalAttacks
+    };
+}
+
+/** Read cap from Hit or Respect tab controls (kept in sync). Returns 0 if disabled or invalid. */
+function warReportReadWarScoreCapThreshold() {
+    const hitEn = document.getElementById('hitWarScoreCapEnabled');
+    const resEn = document.getElementById('respectWarScoreCapEnabled');
+    const enabled = (hitEn && hitEn.checked) || (resEn && resEn.checked);
+    if (!enabled) return 0;
+    const raw =
+        (document.getElementById('hitWarScoreCapScore')?.value ||
+            document.getElementById('respectWarScoreCapScore')?.value ||
+            '0').trim();
+    const cleaned = String(raw).replace(/[^\d.-]/g, '');
+    const n = parseFloat(cleaned);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.round(n * 100) / 100;
+}
+
+function warReportSyncWarScoreCapRespectToHit() {
+    const hE = document.getElementById('hitWarScoreCapEnabled');
+    const rE = document.getElementById('respectWarScoreCapEnabled');
+    const hS = document.getElementById('hitWarScoreCapScore');
+    const rS = document.getElementById('respectWarScoreCapScore');
+    if (hE && rE) hE.checked = rE.checked;
+    if (hS && rS) hS.value = rS.value;
+}
+
+function warReportSyncWarScoreCapHitToRespect() {
+    const hE = document.getElementById('hitWarScoreCapEnabled');
+    const rE = document.getElementById('respectWarScoreCapEnabled');
+    const hS = document.getElementById('hitWarScoreCapScore');
+    const rS = document.getElementById('respectWarScoreCapScore');
+    if (hE && rE) rE.checked = hE.checked;
+    if (hS && rS) rS.value = hS.value;
+}
+
+function warReportWarScoreCapSettingsPayload() {
+    return {
+        warScoreCapEnabled: document.getElementById('hitWarScoreCapEnabled')?.checked === true,
+        warScoreCapScore: String(document.getElementById('hitWarScoreCapScore')?.value ?? '').trim()
+    };
+}
+
+/**
+ * Per-player war-context lines marked ineligible after the faction war score cap (chronological).
+ * respectPoints sums respect_gain per hit rounded to 2 dp (same units as the cap target).
+ * @returns {{ playerId: string, hits: number, respectPoints: number }[]}
+ */
+function warReportAggregateWarScoreCapDisallowed(allAttacks, factionIdStr) {
+    const fid = String(factionIdStr);
+    const byPid = {};
+    if (!Array.isArray(allAttacks)) return [];
+    allAttacks.forEach((attack) => {
+        if (!attack?.attacker?.faction || String(attack.attacker.faction.id) !== fid) return;
+        if (attack._warScoreCapWarPayEligible !== false) return;
+        if (!warReportAttackUsesFactionWarScoreCap(attack)) return;
+        const pid = String(attack.attacker.id || '');
+        if (!pid) return;
+        if (!byPid[pid]) byPid[pid] = { hits: 0, respectCents: 0 };
+        byPid[pid].hits++;
+        byPid[pid].respectCents += warReportWarScoreCapRespectGainCents(attack);
+    });
+    return Object.entries(byPid)
+        .map(([playerId, v]) => ({
+            playerId,
+            hits: v.hits,
+            respectPoints: v.respectCents / 100
+        }))
+        .filter((x) => x.hits > 0)
+        .sort((a, b) => b.hits - a.hits || b.respectPoints - a.respectPoints);
 }
 
 /**
@@ -532,7 +786,7 @@ function warReportLowFfWarHitData(playerId, allAttacks, surrenderUnix, minFFRati
 
     const allWar = (Array.isArray(allAttacks) ? allAttacks : []).filter(base);
     const nonTer = Number.isFinite(surrenderUnix) ? allWar.filter((a) => a.started <= surrenderUnix) : allWar;
-    const lowFFAttacksNonTer = nonTer.filter(isLowFf);
+    const lowFFAttacksNonTer = nonTer.filter(isLowFf).filter((a) => a._warScoreCapWarPayEligible !== false);
     return {
         lowFFNonTer: lowFFAttacksNonTer.length,
         lowFFAttacksNonTer
@@ -893,6 +1147,7 @@ function showOpenLinksConfirmation(linkCount, callback) {
 
 // Functions to save and load respect payout settings
 function saveRespectPayoutSettings() {
+    warReportSyncWarScoreCapRespectToHit();
     const settings = {
         payAssists: document.getElementById('respectPayAssists')?.checked || false,
         payRetals: document.getElementById('respectPayRetals')?.checked || false,
@@ -919,7 +1174,8 @@ function saveRespectPayoutSettings() {
         payoutMode: document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio',
         ignoreChainDeductions: document.getElementById('respectIgnoreChainDeductions')?.checked || false,
         applyRealWarFactor: document.getElementById('respectApplyRealWarFactor')?.checked === true,
-        realWarFactor: document.getElementById('respectRealWarFactor')?.value || '2'
+        realWarFactor: document.getElementById('respectRealWarFactor')?.value || '2',
+        ...warReportWarScoreCapSettingsPayload()
     };
     localStorage.setItem('respectPayoutSettings', JSON.stringify(settings));
 
@@ -964,10 +1220,11 @@ function saveHitPayoutSettings() {
         thresholdIncludeAssists: document.getElementById('hitThresholdIncludeAssists')?.checked !== false,
         thresholdIncludeOutsideHits: document.getElementById('hitThresholdIncludeOutsideHits')?.checked === true,
         applyRealWarFactor: document.getElementById('hitApplyRealWarFactor')?.checked === true,
-        realWarFactor: document.getElementById('hitRealWarFactor')?.value || '2'
+        realWarFactor: document.getElementById('hitRealWarFactor')?.value || '2',
+        ...warReportWarScoreCapSettingsPayload()
     };
     localStorage.setItem('hitPayoutSettings', JSON.stringify(settings));
-
+    warReportSyncWarScoreCapHitToRespect();
 }
 
 function loadHitPayoutSettings() {
@@ -1017,6 +1274,13 @@ function loadHitPayoutSettings() {
             if (settings.realWarFactor !== undefined) {
                 const el = document.getElementById('hitRealWarFactor');
                 if (el) el.value = settings.realWarFactor;
+            }
+            if (settings.warScoreCapEnabled !== undefined) {
+                const hE = document.getElementById('hitWarScoreCapEnabled');
+                const hS = document.getElementById('hitWarScoreCapScore');
+                if (hE) hE.checked = !!settings.warScoreCapEnabled;
+                if (hS && settings.warScoreCapScore !== undefined) hS.value = settings.warScoreCapScore;
+                warReportSyncWarScoreCapHitToRespect();
             }
 
         } catch (error) {
@@ -1151,6 +1415,14 @@ function loadRespectPayoutSettings() {
             }
             // Ignore chain deductions checkbox is in the table (only exists when chain bonuses present); applied on next render via localStorage
 
+            if (settings.warScoreCapEnabled !== undefined) {
+                const rE = document.getElementById('respectWarScoreCapEnabled');
+                const rS = document.getElementById('respectWarScoreCapScore');
+                if (rE) rE.checked = !!settings.warScoreCapEnabled;
+                if (rS && settings.warScoreCapScore !== undefined) rS.value = settings.warScoreCapScore;
+                warReportSyncWarScoreCapRespectToHit();
+            }
+
         } catch (error) {
             console.error('Error loading respect payout settings:', error);
         }
@@ -1192,6 +1464,36 @@ function initWarReport2() {
     
     // Load saved hit payout settings
     loadHitPayoutSettings();
+
+    (function warReportWireWarScoreCapControls() {
+        const debounced = () => {
+            saveHitPayoutSettings();
+            saveRespectPayoutSettings();
+            const ps = window.warReportData?.playerStats;
+            if (ps && Object.keys(ps).length > 0) {
+                if (typeof renderPayoutTable === 'function') renderPayoutTable();
+                if (typeof renderRespectPayoutTable === 'function') renderRespectPayoutTable();
+            }
+        };
+        ['hitWarScoreCapEnabled', 'respectWarScoreCapEnabled'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('change', () => {
+                if (id === 'respectWarScoreCapEnabled') warReportSyncWarScoreCapRespectToHit();
+                else warReportSyncWarScoreCapHitToRespect();
+                debounced();
+            });
+        });
+        ['hitWarScoreCapScore', 'respectWarScoreCapScore'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('input', () => {
+                if (id === 'respectWarScoreCapScore') warReportSyncWarScoreCapRespectToHit();
+                else warReportSyncWarScoreCapHitToRespect();
+                debounced();
+            });
+        });
+    })();
     
     // Log tool usage
     if (window.logToolUsage) {
@@ -2496,7 +2798,6 @@ function warReportManualBonusHeaderHtml(mode) {
             <span style="font-size:11px;color:#aaa;">$</span>
             <input type="text" class="war-report-bulk-manual-bonus-input" data-mode="${mode}"${valueAttr} placeholder="e.g. 500k" title="Applied to ticked rows when you tick one, press Enter, or leave this field after editing" style="width:92px;padding:4px 6px;text-align:right;font-size:12px;background:#1a1a1a;border:1px solid #404040;color:#fff;border-radius:4px;">
         </div>
-        <span style="font-size:10px;color:#888;line-height:1.25;text-align:center;max-width:180px;">Set amount, tick rows (or Enter / leave field) to apply. Editing a cell unticks that row so the header amount won’t overwrite it until you tick again.</span>
     </div>`;
 }
 
@@ -3332,6 +3633,12 @@ function renderPayoutTable() {
     const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
     const realWarFactor = warReportRealWarFactorForPayout(hitSurrenderUnix, 'hitApplyRealWarFactor', 'hitRealWarFactor');
     const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
+    const warScoreCapTh = warReportReadWarScoreCapThreshold();
+    warReportClearWarScoreCapAttackTags(allAttacks);
+    if (warScoreCapTh > 0) {
+        warReportApplyWarScoreCapAttackTags(allAttacks, factionIdForSplit, warScoreCapTh);
+    }
+    const warCapEffMap = warScoreCapTh > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdForSplit) : null;
     const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, factionIdForSplit, hitSurrenderUnix);
 
     // If in Faction Cut mode, calculate payPerHit from percentage
@@ -3360,7 +3667,8 @@ function renderPayoutTable() {
             // Calculate total effective hits with thresholds applied
             let totalEffectiveHits = 0;
             
-            Object.values(playerStats).forEach(player => {
+            Object.values(playerStats).forEach((origPl) => {
+                const player = warReportPlayerWithWarCapMerged(origPl, warCapEffMap);
                 // Count low FF hits for this player
                 let lowFFHits = 0;
                 const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
@@ -3421,7 +3729,8 @@ function renderPayoutTable() {
     }
 
     // Process attacks to count low FF hits and calculate filtered payouts
-    const playersWithPayouts = Object.values(playerStats).map(player => {
+    const playersWithPayouts = Object.values(playerStats).map((origPl) => {
+        const player = warReportPlayerWithWarCapMerged(origPl, warCapEffMap);
         // Count low FF hits for this player
         let lowFFHits = 0;
         const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
@@ -3582,6 +3891,8 @@ function renderPayoutTable() {
     const hitHdrRowspan = hitHdrSubRow ? 2 : 1;
     let hitTableMinW = showOtherBreakdown ? 1520 : 1280;
     if (!showSupportColBreakdownHit) hitTableMinW -= 120;
+    const showHitManualBonusCol = warData.hitPayoutShowManualBonusColumn === true;
+    if (!showHitManualBonusCol) hitTableMinW -= 200;
     const showMemberIdBrackets = window.toolsGetShowMemberIdInBrackets();
     const othSortInd = warData.payoutSortState.column === 'otherAttacks' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : '';
     const supSortIndHit = warData.payoutSortState.column === 'supportHitsTotal' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : '';
@@ -3661,8 +3972,16 @@ function renderPayoutTable() {
                     <th rowspan="${hitHdrRowspan}" data-column="lowFFHits" style="cursor: pointer; color: #ff6b6b;">Low FF Hits <span class="sort-indicator">${warData.payoutSortState.column === 'lowFFHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     ${supportHeadRow1Hit}
                     ${otherHeadRow1Hit}
-                    <th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" style="min-width: 168px; vertical-align: middle; text-align: center;">${warReportManualBonusHeaderHtml('hit')}</th>
-                    <th rowspan="${hitHdrRowspan}" data-column="totalPayout" style="cursor: pointer;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.payoutSortState.column === 'totalPayout' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    ${showHitManualBonusCol ? `<th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" style="min-width: 168px; vertical-align: middle; text-align: center;">${warReportManualBonusHeaderHtml('hit')}</th>` : ''}
+                    <th rowspan="${hitHdrRowspan}" data-column="totalPayout" style="cursor: pointer; vertical-align: middle; text-align: center;">
+                        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+                            <label class="war-report-bonuses-col-toggle" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal; font-size: 11px; color: #999; margin: 0;" title="Show the Manual Bonus column" onclick="event.stopPropagation()" onmousedown="event.stopPropagation()">
+                                <input type="checkbox" id="warReportHitPayoutShowBonusesCol" ${showHitManualBonusCol ? 'checked' : ''} style="accent-color: #ffd700;" onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" />
+                                Bonuses
+                            </label>
+                            <span><strong>Total Payout</strong> <span class="sort-indicator">${warData.payoutSortState.column === 'totalPayout' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></span>
+                        </div>
+                    </th>
                     <th rowspan="${hitHdrRowspan}">Pay link</th>
                 </tr>
                 ${hitTheadSecondRow}
@@ -3688,12 +4007,12 @@ function renderPayoutTable() {
                             <td style="color: #ff6b6b;">${player.lowFFHits || 0}</td>
                             ${supportCellsHit}
                             ${otherCells}
-                            <td class="war-report-col-group-lead" style="text-align: center;">
+                            ${showHitManualBonusCol ? `<td class="war-report-col-group-lead" style="text-align: center;">
                                 <div style="display: inline-flex; align-items: center; gap: 6px;">
                                     <input type="checkbox" class="war-report-manual-bonus-select-cb" data-mode="hit" data-player-id="${player.id}" ${warData.hitManualBonusBulkCheckedIds.has(String(player.id)) ? 'checked' : ''} title="Tick to apply bulk bonus to this row" style="accent-color: #ffd700; width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
                                     <input type="text" class="war-report-manual-bonus-input" data-mode="hit" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
                                 </div>
-                            </td>
+                            </td>` : ''}
                             <td><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
                             <td>${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
                         </tr>
@@ -3713,7 +4032,7 @@ function renderPayoutTable() {
                     ${showOtherBreakdown
         ? `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td>`}
-                    <td class="war-report-col-group-lead"><strong>$${playersWithPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>
+                    ${showHitManualBonusCol ? `<td class="war-report-col-group-lead"><strong>$${playersWithPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>` : ''}
                     <td><strong>$${totalPayout.toLocaleString()}</strong></td>
                     <td></td>
                 </tr>
@@ -3735,7 +4054,8 @@ function renderPayoutTable() {
     } else {
         hitCopyCols.push('Other attacks');
     }
-    hitCopyCols.push('Manual bonus', 'Total payout');
+    if (showHitManualBonusCol) hitCopyCols.push('Manual bonus');
+    hitCopyCols.push('Total payout');
     const hitCopyRows = playersWithPayouts.map((player) => {
         const row = [
             window.toolsFormatMemberDisplayLabel(player, showMemberIdBrackets),
@@ -3759,7 +4079,8 @@ function renderPayoutTable() {
         } else {
             row.push(String(warReportPlayerOtherAttacksTotal(player)));
         }
-        row.push(hitCopyMoney(player.manualBonus || 0), hitCopyMoney(player.totalPayout));
+        if (showHitManualBonusCol) row.push(hitCopyMoney(player.manualBonus || 0));
+        row.push(hitCopyMoney(player.totalPayout));
         return row;
     });
     const lowFFSumHit = playersWithPayouts.reduce((sum, p) => sum + (p.lowFFHits || 0), 0);
@@ -3783,10 +4104,10 @@ function renderPayoutTable() {
     } else {
         hitCopyFooter.push(String(playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)));
     }
-    hitCopyFooter.push(
-        hitCopyMoney(playersWithPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0)),
-        hitCopyMoney(totalPayout)
-    );
+    if (showHitManualBonusCol) {
+        hitCopyFooter.push(hitCopyMoney(playersWithPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0)));
+    }
+    hitCopyFooter.push(hitCopyMoney(totalPayout));
     warData._warReportHitPayoutCopy = {
         summaryLines: [
             `War Payout Summary${warName ? ` — ${warName}` : ''}`,
@@ -3803,7 +4124,15 @@ function renderPayoutTable() {
     payoutTableDiv.innerHTML = tableHtml;
     warReportBindTopHorizontalScroll(payoutTableDiv);
     warReportAttachOtherAttacksBreakdownUI(payoutTableDiv);
-    
+
+    const hitBonusesColCb = payoutTableDiv.querySelector('#warReportHitPayoutShowBonusesCol');
+    if (hitBonusesColCb) {
+        hitBonusesColCb.addEventListener('change', () => {
+            warData.hitPayoutShowManualBonusColumn = !!hitBonusesColCb.checked;
+            renderPayoutTable();
+        });
+    }
+
     // Add click event listeners for sorting
     const table = payoutTableDiv.querySelector('table#payoutTable');
 
@@ -3997,6 +4326,7 @@ function exportPayoutToCSV() {
     const minFFRating = parseFloat(document.getElementById('minFFRating')?.value || '2.0');
     const showOtherBreakdownCsv = warReportGetOtherAttacksBreakdown();
     const showSupportBreakdownCsv = warReportGetSupportColumnBreakdown();
+    const showHitManualBonusCsv = warData.hitPayoutShowManualBonusColumn === true;
 
     const headers = ['Member', 'Level', 'War Hits', 'Termed War Hits', 'Low FF Hits'];
     if (showSupportBreakdownCsv) {
@@ -4008,14 +4338,23 @@ function exportPayoutToCSV() {
     if (showOtherBreakdownCsv) {
         headers.push('Other (interrupted)', 'Other (outside)', 'Other (lost/ran)');
     }
-    headers.push('Manual Bonus', 'Total Payout', 'Pay link');
+    if (showHitManualBonusCsv) headers.push('Manual Bonus');
+    headers.push('Total Payout', 'Pay link');
 
     // Calculate payouts using the same logic as renderPayoutTable
     const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
     const realWarFactor = warReportRealWarFactorForPayout(hitSurrenderUnix, 'hitApplyRealWarFactor', 'hitRealWarFactor');
     const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
-    const termedHitsMap = warReportBuildTermedHitsMap(warData.allAttacks, factionIdForSplit, hitSurrenderUnix);
-    const playersWithPayouts = Object.values(playerStats).map(player => {
+    const allAttacksCsv = warData.allAttacks || [];
+    const warScoreCapCsv = warReportReadWarScoreCapThreshold();
+    warReportClearWarScoreCapAttackTags(allAttacksCsv);
+    if (warScoreCapCsv > 0) {
+        warReportApplyWarScoreCapAttackTags(allAttacksCsv, factionIdForSplit, warScoreCapCsv);
+    }
+    const warCapEffCsv = warScoreCapCsv > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacksCsv, factionIdForSplit) : null;
+    const termedHitsMap = warReportBuildTermedHitsMap(allAttacksCsv, factionIdForSplit, hitSurrenderUnix);
+    const playersWithPayouts = Object.values(playerStats).map((origPl) => {
+        const player = warReportPlayerWithWarCapMerged(origPl, warCapEffCsv);
         // Count low FF hits for this player
         let lowFFHits = 0;
         const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
@@ -4154,7 +4493,8 @@ function exportPayoutToCSV() {
                 player.otherAttacksLostEscape || 0
             );
         }
-        row.push(player.manualBonus || 0, player.totalPayout, payLink);
+        if (showHitManualBonusCsv) row.push(player.manualBonus || 0);
+        row.push(player.totalPayout, payLink);
         csvContent += row.join(',') + '\r\n';
     });
     const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
@@ -4200,6 +4540,14 @@ function renderRespectPayoutTable() {
 
     // OPTIMIZATION: Process all attacks ONCE and cache player respect data
     const factionId = parseInt(document.getElementById('factionId').value);
+    const factionIdStrRes = String(factionId);
+    const warScoreCapThR = warReportReadWarScoreCapThreshold();
+    warReportClearWarScoreCapAttackTags(allAttacks);
+    if (warScoreCapThR > 0) {
+        warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStrRes, warScoreCapThR);
+    }
+    const warCapEffMapRes = warScoreCapThR > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStrRes) : null;
+
     const playerRespectData = {};
     let totalBaseRespect = 0;
     let totalWarHits = 0;
@@ -4256,30 +4604,28 @@ function renderRespectPayoutTable() {
             }
             
             if (warModifier === 2) {
-                // This is a war hit (war modifier = 2)
-            totalWarHits++;
-            totalBaseRespect += baseRespect;
-            
-            // Debug: Count war hits with respect
-            if (attack.respect_gain && attack.respect_gain > 0) {
-                debugWarHitsWithRespect++;
-            }
-            
-                // Add to player's war respect data
-            if (playerRespectData[attackerId]) {
-                    playerRespectData[attackerId].warRespect += baseRespect;
-                playerRespectData[attackerId].warHits++;
-                    
-                    // Add chain bonus to player data (if it exists)
-                    if (chainBonus) {
-                        playerRespectData[attackerId].chainBonuses.push({
-                            ...chainBonus,
-                            attackerName: attack.attacker?.name,
-                            hitType: 'War Hit' // Mark as war hit
-                        });
+                if (attack._warScoreCapWarPayEligible !== false) {
+                    // War hit (modifier 2) — skipped entirely after faction war score cap (outside hits unaffected)
+                    totalWarHits++;
+                    totalBaseRespect += baseRespect;
+
+                    if (attack.respect_gain && attack.respect_gain > 0) {
+                        debugWarHitsWithRespect++;
+                    }
+
+                    if (playerRespectData[attackerId]) {
+                        playerRespectData[attackerId].warRespect += baseRespect;
+                        playerRespectData[attackerId].warHits++;
+
+                        if (chainBonus) {
+                            playerRespectData[attackerId].chainBonuses.push({
+                                ...chainBonus,
+                                attackerName: attack.attacker?.name,
+                                hitType: 'War Hit'
+                            });
+                        }
                     }
                 }
-                
             } else if (warModifier === 1 && baseRespect > 0) {
                 // This is an outside hit (war modifier = 1 and gains respect)
                 totalOutsideHits++;
@@ -4389,7 +4735,8 @@ function renderRespectPayoutTable() {
 
     // Phase 1: respect / combined / counts per player (no $ yet).
     // Outside respect is excluded from pool split when Pay Outside Hits is on (those hits are paid via multiplier only).
-    const respectRowsPhase1 = Object.values(playerStats).map(player => {
+    const respectRowsPhase1 = Object.values(playerStats).map((origPl) => {
+        const player = warReportPlayerWithWarCapMerged(origPl, warCapEffMapRes);
         const playerIdStr = String(player.id);
         const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
         let playerWarRespect = playerData.warRespect;
@@ -4766,6 +5113,8 @@ function renderRespectPayoutTable() {
     let respectTableMinW = showOtherBreakdownR ? 1460 : 1300;
     if (!showRespectColBreakdownR) respectTableMinW -= 150;
     if (!showSupportColBreakdownR) respectTableMinW -= 110;
+    const showRespectManualBonusCol = warData.respectPayoutShowManualBonusColumn === true;
+    if (!showRespectManualBonusCol) respectTableMinW -= 200;
 
     const othSortIndR = warData.respectPayoutSortState.column === 'otherAttacks' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : '';
     const outsSortIndR = warData.respectPayoutSortState.column === 'otherAttacksOutside' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : '';
@@ -4824,6 +5173,48 @@ function renderRespectPayoutTable() {
 
     const respectTheadSecondRow = respectHdrSubRow ? `<tr>${respectHeadRow2R}${supportHeadRow2R}${otherHeadRow2R}</tr>` : '';
 
+    const warCapDisallowedRows =
+        warScoreCapThR > 0 ? warReportAggregateWarScoreCapDisallowed(allAttacks, factionIdStrRes) : [];
+    const warCapDisallowedSectionHtml =
+        warScoreCapThR > 0
+            ? (() => {
+                  const body =
+                      warCapDisallowedRows.length === 0
+                          ? '<p style="color:#999;font-size:13px;margin:0;">No war-context hits were disallowed for any member.</p>'
+                          : `<table style="width:auto;border-collapse:collapse;margin:0;">
+                        <thead><tr>
+                            <th style="padding:6px 12px 6px 0;color:#aaa;font-size:12px;text-align:left;">Member</th>
+                            <th style="padding:6px 12px;color:#aaa;font-size:12px;text-align:right;">Disallowed hits</th>
+                            <th style="padding:6px 0;color:#aaa;font-size:12px;text-align:right;" title="Per-hit respect_gain (full score including chain/bonuses), same units as the cap target">Respect gained (not counted)</th>
+                        </tr></thead><tbody>
+                        ${warCapDisallowedRows
+                            .map((row) => {
+                                const pl =
+                                    playerStats[row.playerId] ||
+                                    Object.values(playerStats).find((p) => String(p.id) === row.playerId);
+                                const disp = pl || { id: row.playerId, name: 'Unknown' };
+                                const label = window.toolsFormatMemberDisplayLabel(disp, showMemberIdBracketsR);
+                                const mlink = `<a class="player-link" href="https://www.torn.com/profiles.php?XID=${disp.id}" target="_blank"${window.toolsMemberLinkAttrs(disp.name, disp.id)}>${label}</a>`;
+                                return `<tr><td style="padding:6px 12px 6px 0;color:#fff;font-weight:bold;white-space:nowrap;">${mlink}</td>
+                                    <td style="padding:6px 12px;color:#ff6b6b;font-weight:bold;text-align:right;white-space:nowrap;">${row.hits}</td>
+                                    <td style="padding:6px 0;color:#ff6b6b;font-weight:bold;text-align:right;white-space:nowrap;">${Number(row.respectPoints).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}</td></tr>`;
+                            })
+                            .join('')}
+                        </tbody></table>`;
+                  return `<div class="war-score-cap-deductions-section" style="margin-top: 20px; padding: 15px; background-color: #2a2a2a; border-radius: 8px; border: 1px solid #404040; border-left: 4px solid #a67c00;">
+                    <h4 style="color: #ffd700; margin: 0 0 10px 0; font-size: 16px;">⛔ War score cap — disallowed war-context hits</h4>
+                    <p style="color: #ccc; margin: 0 0 10px 0; font-size: 14px;">
+                        Target cumulative war-context respect on war targets: <strong>${warScoreCapThR.toLocaleString()}</strong>.
+                        Rows below are normal war hits, assists, and retals that landed <em>after</em> that total was exceeded (outside hits are never capped).
+                    </p>
+                    ${body}
+                    <div style="margin-top: 10px; padding: 8px; background-color: #1a1a1a; border-radius: 4px; font-size: 12px; color: #999;">
+                        💡 <strong>Note:</strong> These lines earn $0 from war-context buckets and do not add to war respect for the pool split. The cap uses cumulative full respect per hit (bonuses included); the hit that first pushed past the target still counts.
+                    </div>
+                </div>`;
+              })()
+            : '';
+
     const tableHtml = `
         <div class="summary-box" style="margin-bottom: 20px;">
             <h3><strong>Respect Based War Payout Summary</strong>${warName ? ' <span style=\"font-weight:normal;color:#ccc;font-size:0.95em;\">' + warName + '</span>' : ''}</h3>
@@ -4872,8 +5263,16 @@ function renderRespectPayoutTable() {
                     ${respectHeadRow1R}
                     ${supportHeadRow1R}
                     ${otherHeadRow1R}
-                    <th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle; min-width: 168px;">${warReportManualBonusHeaderHtml('respect')}</th>
-                    <th rowspan="${respectHdrRowspan}" data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;"><strong>Total Payout</strong> <span class="sort-indicator">${warData.respectPayoutSortState.column === 'totalPayout' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    ${showRespectManualBonusCol ? `<th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle; min-width: 168px;">${warReportManualBonusHeaderHtml('respect')}</th>` : ''}
+                    <th rowspan="${respectHdrRowspan}" data-column="totalPayout" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">
+                        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+                            <label class="war-report-bonuses-col-toggle" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal; font-size: 11px; color: #bbb; margin: 0;" title="Show the Manual Bonus column" onclick="event.stopPropagation()" onmousedown="event.stopPropagation()">
+                                <input type="checkbox" id="warReportRespectPayoutShowBonusesCol" ${showRespectManualBonusCol ? 'checked' : ''} style="accent-color: #ffd700;" onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" />
+                                Bonuses
+                            </label>
+                            <span><strong>Total Payout</strong> <span class="sort-indicator">${warData.respectPayoutSortState.column === 'totalPayout' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></span>
+                        </div>
+                    </th>
                     <th rowspan="${respectHdrRowspan}" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Pay link</th>
                 </tr>
                 ${respectTheadSecondRow}
@@ -4902,12 +5301,12 @@ function renderRespectPayoutTable() {
                             ${respectCellsR}
                             ${supportCellsR}
                             ${otherCells}
-                            <td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">
+                            ${showRespectManualBonusCol ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">
                                 <div style="display: inline-flex; align-items: center; gap: 6px;">
                                     <input type="checkbox" class="war-report-manual-bonus-select-cb" data-mode="respect" data-player-id="${player.id}" ${warData.respectManualBonusBulkCheckedIds.has(String(player.id)) ? 'checked' : ''} title="Tick to apply bulk bonus to this row" style="accent-color: #ffd700; width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
                                     <input type="text" class="war-report-manual-bonus-input" data-mode="respect" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
                                 </div>
-                            </td>
+                            </td>` : ''}
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.totalPayout > 0 ? `<a href="${payLink}" target="_blank" rel="noopener noreferrer" title="Pay in Torn">💰</a>` : ''}</td>
                         </tr>
@@ -4929,7 +5328,7 @@ function renderRespectPayoutTable() {
                     ${showOtherBreakdownR
         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td>`}
-                    <td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${playersWithRespectPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>
+                    ${showRespectManualBonusCol ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${playersWithRespectPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>` : ''}
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${totalPayout.toLocaleString()}</strong></td>
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"></td>
                 </tr>
@@ -4996,6 +5395,7 @@ function renderRespectPayoutTable() {
         </div>
             `;
         })()}
+        ${warCapDisallowedSectionHtml}
     `;
     const rCopyMoney = (n) => '$' + Math.round(Number(n) || 0).toLocaleString();
     const warRespectHdr = removeModifiers ? 'War Base Respect' : 'War Full Respect';
@@ -5016,7 +5416,8 @@ function renderRespectPayoutTable() {
     } else {
         respectCopyCols.push('Other attacks');
     }
-    respectCopyCols.push('Manual bonus', 'Total payout');
+    if (showRespectManualBonusCol) respectCopyCols.push('Manual bonus');
+    respectCopyCols.push('Total payout');
     const respectCopyRows = playersWithRespectPayouts.map((player) => {
         const row = [
             window.toolsFormatMemberDisplayLabel(player, showMemberIdBracketsR),
@@ -5048,7 +5449,8 @@ function renderRespectPayoutTable() {
         } else {
             row.push(String(warReportPlayerOtherAttacksTotal(player)));
         }
-        row.push(rCopyMoney(player.manualBonus || 0), rCopyMoney(player.totalPayout));
+        if (showRespectManualBonusCol) row.push(rCopyMoney(player.manualBonus || 0));
+        row.push(rCopyMoney(player.totalPayout));
         return row;
     });
     const outsideIncR = includeOutsideRespect ? '(Included)' : '(Excluded)';
@@ -5081,10 +5483,10 @@ function renderRespectPayoutTable() {
     } else {
         respectCopyFooter.push(String(playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)));
     }
-    respectCopyFooter.push(
-        rCopyMoney(playersWithRespectPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0)),
-        rCopyMoney(totalPayout)
-    );
+    if (showRespectManualBonusCol) {
+        respectCopyFooter.push(rCopyMoney(playersWithRespectPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0)));
+    }
+    respectCopyFooter.push(rCopyMoney(totalPayout));
     warData._warReportRespectPayoutCopy = {
         summaryLines: [
             `Respect Based War Payout Summary${warName ? ` — ${warName}` : ''}`,
@@ -5104,7 +5506,15 @@ function renderRespectPayoutTable() {
     respectPayoutTableDiv.innerHTML = tableHtml;
     warReportBindTopHorizontalScroll(respectPayoutTableDiv);
     warReportAttachOtherAttacksBreakdownUI(respectPayoutTableDiv);
-    
+
+    const respectBonusesColCb = respectPayoutTableDiv.querySelector('#warReportRespectPayoutShowBonusesCol');
+    if (respectBonusesColCb) {
+        respectBonusesColCb.addEventListener('change', () => {
+            warData.respectPayoutShowManualBonusColumn = !!respectBonusesColCb.checked;
+            renderRespectPayoutTable();
+        });
+    }
+
     // Wire "Ignore chain deductions" checkbox to re-render and save
     const ignoreChainDeductionsCb = document.getElementById('respectIgnoreChainDeductions');
     if (ignoreChainDeductionsCb) {
@@ -5266,6 +5676,7 @@ function exportRespectPayoutToCSV() {
     const showRespectCsv = warReportGetRespectColumnBreakdown();
     const showSupportCsv = warReportGetSupportColumnBreakdown();
     const showOtherCsv = warReportGetOtherAttacksBreakdown();
+    const showRespectManualBonusCsv = warData.respectPayoutShowManualBonusColumn === true;
 
     const headers = ['Member', 'Level', 'War Hits', 'Termed War Hits'];
     if (showRespectCsv) {
@@ -5286,7 +5697,8 @@ function exportRespectPayoutToCSV() {
     if (showOtherCsv) {
         headers.push('Other (interrupted)', 'Other (outside)', 'Other (lost/ran)');
     }
-    headers.push('Manual Bonus', 'Total Payout', 'Pay link');
+    if (showRespectManualBonusCsv) headers.push('Manual Bonus');
+    headers.push('Total Payout', 'Pay link');
 
     let csvContent = headers.join(',') + '\r\n';
 
@@ -5320,7 +5732,8 @@ function exportRespectPayoutToCSV() {
                 player.otherAttacksLostEscape || 0
             );
         }
-        row.push(player.manualBonus || 0, player.totalPayout, payLink);
+        if (showRespectManualBonusCsv) row.push(player.manualBonus || 0);
+        row.push(player.totalPayout, payLink);
         csvContent += row.join(',') + '\r\n';
     });
     

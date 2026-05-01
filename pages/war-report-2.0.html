@@ -132,6 +132,17 @@
                                         </div>
                                     </div>
                                 </div>
+                                <div class="war-report-surrender-block" style="margin-top: 14px; border-left-color: #a67c00;">
+                                    <label style="display:flex; align-items:center; gap:8px; color:#ffd700; cursor:pointer; font-weight:bold;" title="Termed-war style: after cumulative faction war-context respect passes this target, no further payout for war hits, assists, retals, or overseas-on-war lines. Outside hits (war modifier 1 with respect) always pay. The hit that pushes the total past the target still pays.">
+                                        <input type="checkbox" id="hitWarScoreCapEnabled" style="accent-color:#ffd700;">
+                                        Cap faction war score (termed target)
+                                    </label>
+                                    <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap;">
+                                        <label for="hitWarScoreCapScore" style="margin:0;">Stop war-context pay after cumulative respect exceeds:</label>
+                                        <input type="number" id="hitWarScoreCapScore" min="0.01" step="0.01" placeholder="e.g. 50000" style="width:120px; padding:6px;" value="">
+                                    </div>
+                                    <p class="war-report-surrender-hint">Uses chronological <strong>war-context</strong> lines only (war hits including interrupted, assists, retals). Each line adds its API <strong>respect_gain</strong> (full score on that hit), rounded to <strong>2 decimal places</strong> before summing — same as typical war score precision. The hit that first pushes the cumulative total <em>past</em> your target still pays; nothing after that. Outside hits are excluded from the running total and always count for pay.</p>
+                                </div>
                             </div>
                             <div style="flex: 1;">
                                 <div style="margin-bottom: 10px;">
@@ -288,6 +299,17 @@
                                             <span style="color:#999; font-size:12px;">1.0 = same weight as termed hits</span>
                                         </div>
                                     </div>
+                                </div>
+                                <div class="war-report-surrender-block" style="margin-top: 14px; border-left-color: #a67c00;">
+                                    <label style="display:flex; align-items:center; gap:8px; color:#ffd700; cursor:pointer; font-weight:bold;" title="Same as Hit tab: caps cumulative war-context respect for payout. Kept in sync with Hit tab.">
+                                        <input type="checkbox" id="respectWarScoreCapEnabled" style="accent-color:#ffd700;">
+                                        Cap faction war score (termed target)
+                                    </label>
+                                    <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap;">
+                                        <label for="respectWarScoreCapScore" style="margin:0;">Stop war-context pay after cumulative respect exceeds:</label>
+                                        <input type="number" id="respectWarScoreCapScore" min="0.01" step="0.01" placeholder="e.g. 50000" style="width:120px; padding:6px;" value="">
+                                    </div>
+                                    <p class="war-report-surrender-hint">Synced with the Hit tab. Outside respect ignores the cap; war modifier 2 respect after the cap does not split the pool.</p>
                                 </div>
                             </div>
                             <div style="flex: 1;">

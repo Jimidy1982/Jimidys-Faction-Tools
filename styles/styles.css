@@ -1341,6 +1341,18 @@ header.app-site-header .app-site-header-title {
     flex-wrap: wrap;
     gap: 4px 12px;
 }
+.recruitment-results-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 12px;
+    margin-bottom: 12px;
+}
+.recruitment-results-summary {
+    color: #888;
+    font-size: 13px;
+    min-width: 0;
+}
 .recruitment-results-filters .recruitment-filter-row {
     display: flex;
     align-items: center;

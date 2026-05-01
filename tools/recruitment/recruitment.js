@@ -326,13 +326,6 @@
         let nextId = parseInt(String(oldest.warId), 10) - 1;
         if (!Number.isFinite(nextId) || nextId < 1) return 0;
 
-        const progressMsg = progressOpts?.progressMessage || null;
-        const progressDet = progressOpts?.progressDetails || null;
-        const updateProgress = (msg, detail) => {
-            if (progressMsg) progressMsg.textContent = msg || '';
-            if (progressDet) progressDet.textContent = detail || '';
-        };
-
         let added = 0;
         let consecutiveFails = 0;
         const existingIds = new Set(rankedWarsList.map(w => String(w.warId)));
@@ -342,9 +335,10 @@
                 nextId--;
                 continue;
             }
-            updateProgress('Fetching older wars by ID…', `${added} found, trying war ID ${nextId}…`);
+            recruitmentProgressSmoothed(true, 'Fetching older wars by ID…', `${added} added so far · probing war ID ${nextId}`, false);
             try {
-                const report = await fetchWarReport(apiKey, nextId, progressOpts);
+                // Do not pass progress DOM into fetchWithRateLimit — it overwrites these lines with "Fetching data…" / rate-limit text and glitches the UI.
+                const report = await fetchWarReport(apiKey, nextId, {});
                 if (report && report.factions && report.war && (report.war.end || 0) > 0) {
                     const entry = {
                         warId: String(nextId),
@@ -365,6 +359,7 @@
             }
             nextId--;
         }
+        recruitmentProgressSmoothed(true, 'Fetching older wars by ID…', `${added} older war(s) added this run.`, true);
         return added;
     }
 
@@ -452,15 +447,16 @@
         const batchFn = window.batchApiCallsWithRateLimit;
         if (typeof batchFn !== 'function') {
             for (let i = 0; i < total; i++) {
-                setProgress(true, 'Loading war reports…', `${i + 1} / ${total} wars`);
+                recruitmentProgressSmoothed(true, 'Loading war reports…', `${i + 1} / ${total} wars`, false);
                 try {
                     const wid = warsToProcess[i].warId;
-                    const report = await fetchWarReport(apiKey, wid, progressOpts);
+                    const report = await fetchWarReport(apiKey, wid, {});
                     processOneWarReport(report, opts, wid);
                 } catch (err) {
                     console.warn('Recruitment: war report failed for ' + warsToProcess[i].warId, err);
                 }
             }
+            recruitmentProgressSmoothed(true, 'Loading war reports…', `${total} / ${total} wars`, true);
             return;
         }
 
@@ -469,10 +465,16 @@
             warId: w.warId
         }));
 
+        let lastBatchOk = 0;
         const results = await batchFn(requests, {
-            progressMessage: progressOpts.progressMessage || null,
-            progressDetails: progressOpts.progressDetails || null
+            progressMessage: null,
+            progressDetails: null,
+            onProgress: (cur, tot, ok) => {
+                lastBatchOk = ok;
+                recruitmentProgressSmoothed(true, 'Loading war reports…', `${ok} ok · request ${cur} / ${tot}`, false);
+            }
         });
+        recruitmentProgressSmoothed(true, 'Loading war reports…', `${lastBatchOk} ok · ${total} / ${total} requests`, true);
 
         for (let i = 0; i < (results && results.length) ? results.length : 0; i++) {
             const r = results[i];
@@ -487,13 +489,43 @@
         if (el) el.textContent = text || '';
     }
 
+    let recruitmentProgressTimer = null;
+    let recruitmentProgressPending = null;
+
     function setProgress(show, message, details) {
+        if (!show) {
+            if (recruitmentProgressTimer) {
+                clearTimeout(recruitmentProgressTimer);
+                recruitmentProgressTimer = null;
+            }
+            recruitmentProgressPending = null;
+        }
         const wrap = document.getElementById('recruitment-progress');
         const msg = document.getElementById('recruitment-progress-message');
         const det = document.getElementById('recruitment-progress-details');
         if (wrap) wrap.style.display = show ? 'block' : 'none';
         if (msg) msg.textContent = message || '';
         if (det) det.textContent = details || '';
+    }
+
+    /** Coalesce rapid progress text updates so older-war / batch loops do not thrash the DOM (and avoid fighting fetchWithRateLimit messages). */
+    function recruitmentProgressSmoothed(show, message, details, force) {
+        recruitmentProgressPending = { show, message, details };
+        const flush = () => {
+            recruitmentProgressTimer = null;
+            const p = recruitmentProgressPending;
+            recruitmentProgressPending = null;
+            if (p) setProgress(p.show, p.message, p.details);
+        };
+        if (force) {
+            if (recruitmentProgressTimer) clearTimeout(recruitmentProgressTimer);
+            recruitmentProgressTimer = null;
+            flush();
+            return;
+        }
+        if (!recruitmentProgressTimer) {
+            recruitmentProgressTimer = setTimeout(flush, 260);
+        }
     }
 
     function setError(text) {
@@ -759,6 +791,11 @@
                 setProgress(false);
                 renderRankCheckboxes();
                 updateFetchButtonVisibility();
+                const resultsSectionEarly = document.getElementById('recruitment-results-section');
+                if (resultsSectionEarly) resultsSectionEarly.style.display = '';
+                renderTable();
+                const detailsBtnEarly = document.getElementById('recruitment-fetch-player-details');
+                if (detailsBtnEarly) detailsBtnEarly.disabled = playerList.length === 0;
                 const step2Section = document.getElementById('recruitment-step2-section');
                 if (step2Section) step2Section.style.display = '';
             } catch (e) {
@@ -1056,8 +1093,6 @@
 
             setError('');
             setProgress(true, 'Fetching player details (personalstats)…', `0 / ${ids.length}`);
-            const progressMsg = document.getElementById('recruitment-progress-message');
-            const progressDet = document.getElementById('recruitment-progress-details');
 
             const batchFn = window.batchApiCallsWithRateLimit;
             if (typeof batchFn !== 'function') {
@@ -1071,16 +1106,23 @@
             }));
 
             let results;
+            let lastDetailOk = 0;
             try {
                 results = await batchFn(requests, {
-                    progressMessage: progressMsg || undefined,
-                    progressDetails: progressDet || undefined
+                    progressMessage: null,
+                    progressDetails: null,
+                    onProgress: (cur, total, ok) => {
+                        lastDetailOk = ok;
+                        recruitmentProgressSmoothed(true, 'Fetching player details (personalstats)…', `${ok} ok · ${cur} / ${total}`, false);
+                    }
                 });
             } catch (e) {
                 setError(e.message || 'Failed to fetch player details.');
                 setProgress(false);
                 return;
             }
+
+            recruitmentProgressSmoothed(true, 'Fetching player details (personalstats)…', `${lastDetailOk} ok · ${ids.length} / ${ids.length}`, true);
 
             const detailedStats = {};
             const listById = {};

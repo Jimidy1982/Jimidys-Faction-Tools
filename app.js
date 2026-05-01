@@ -3696,35 +3696,22 @@ document.addEventListener('DOMContentLoaded', () => {
     // Smart caching with TTL (Time To Live)
     const apiCache = new Map();
     const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-    let cacheHits = 0;
-    let cacheMisses = 0;
-    
+
     const getCachedData = (key) => {
         const cached = apiCache.get(key);
         if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-            cacheHits++;
-            console.log(`✅ Cache HIT for: ${key}`);
             return cached.data;
         }
-        cacheMisses++;
-        console.log(`❌ Cache MISS for: ${key}`);
         return null;
     };
-    
+
     const setCachedData = (key, data) => {
         apiCache.set(key, {
             data,
             timestamp: Date.now()
         });
-        console.log(`💾 Cached data for: ${key}`);
     };
-    
-    const getCacheStats = () => {
-        const total = cacheHits + cacheMisses;
-        const hitRate = total > 0 ? ((cacheHits / total) * 100).toFixed(1) : 0;
-        return { hits: cacheHits, misses: cacheMisses, total, hitRate };
-    };
-    
+
     // Batch multiple Torn API calls
     const batchTornApiCalls = async (apiKey, requests) => {
         const results = {};
@@ -3737,7 +3724,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const cacheKey = `${request.url}?${request.params}`;
             const cached = getCachedData(cacheKey);
             if (cached) {
-                console.log(`Using cached data for: ${request.name}`);
                 cachedResults[request.name] = cached;
             } else {
                 // Build full URL for uncached request
@@ -4417,6 +4403,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (fetchBtn) {
             fetchBtn.addEventListener('click', handleBattleStatsFetch);
         }
+        const tornStatsKeyInput = document.getElementById('battleStatsTornStatsApiKey');
+        if (tornStatsKeyInput) {
+            const savedTornStatsKey = localStorage.getItem(BATTLE_STATS_TORNSTATS_KEY_STORAGE) || '';
+            if (savedTornStatsKey) tornStatsKeyInput.value = savedTornStatsKey;
+            tornStatsKeyInput.addEventListener('input', () => {
+                const v = String(tornStatsKeyInput.value || '').trim();
+                if (v) localStorage.setItem(BATTLE_STATS_TORNSTATS_KEY_STORAGE, v);
+                else localStorage.removeItem(BATTLE_STATS_TORNSTATS_KEY_STORAGE);
+            });
+        }
 
         const myFactionBtn = document.getElementById('myFactionBtn');
         const factionIdInput = document.getElementById('factionId');
@@ -4507,11 +4503,74 @@ document.addEventListener('DOMContentLoaded', () => {
         return Math.round(Math.pow(base, 2));
     };
 
-    // Local cache for Faction Battle Stats (localStorage, different TTLs)
+    // Faction Battle Stats: main + TornStats spy caches use IndexedDB (localStorage quota is often exhausted by other tools on the same origin).
+    const BATTLE_STATS_IDB_NAME = 'JimidyFactionToolsBattleStats';
+    const BATTLE_STATS_IDB_VERSION = 1;
+    const BATTLE_STATS_IDB_STORE_MAIN = 'battleStatsMain';
+    const BATTLE_STATS_IDB_STORE_SPY = 'battleStatsTornSpy';
+    let battleStatsIdbOpenPromise = null;
+    function openBattleStatsIdb() {
+        if (battleStatsIdbOpenPromise) return battleStatsIdbOpenPromise;
+        if (typeof indexedDB === 'undefined') {
+            battleStatsIdbOpenPromise = Promise.reject(new Error('indexedDB unavailable'));
+            return battleStatsIdbOpenPromise;
+        }
+        battleStatsIdbOpenPromise = new Promise((resolve, reject) => {
+            const req = indexedDB.open(BATTLE_STATS_IDB_NAME, BATTLE_STATS_IDB_VERSION);
+            req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+            req.onupgradeneeded = (ev) => {
+                const db = ev.target.result;
+                if (!db.objectStoreNames.contains(BATTLE_STATS_IDB_STORE_MAIN)) {
+                    db.createObjectStore(BATTLE_STATS_IDB_STORE_MAIN);
+                }
+                if (!db.objectStoreNames.contains(BATTLE_STATS_IDB_STORE_SPY)) {
+                    db.createObjectStore(BATTLE_STATS_IDB_STORE_SPY);
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+        });
+        return battleStatsIdbOpenPromise;
+    }
+    async function battleStatsIdbGet(storeName, key) {
+        const db = await openBattleStatsIdb();
+        return new Promise((resolve, reject) => {
+            try {
+                const tx = db.transaction(storeName, 'readonly');
+                const r = tx.objectStore(storeName).get(key);
+                r.onerror = () => reject(r.error);
+                r.onsuccess = () => resolve(r.result);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+    async function battleStatsIdbPut(storeName, key, value) {
+        const db = await openBattleStatsIdb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(storeName, 'readwrite');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            try {
+                tx.objectStore(storeName).put(value, key);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    // Legacy localStorage key (migration / cleanup only)
     const BATTLE_STATS_MAIN_PREFIX = 'battle_stats_main_';
     const BATTLE_STATS_ACTIVITY_PAST_PREFIX = 'battle_stats_activity_past_';
     const BATTLE_STATS_ACTIVITY_NOW_PREFIX = 'battle_stats_activity_now_';
     const BATTLE_STATS_MAIN_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
+    const BATTLE_STATS_TORNSTATS_MAX_AGE_SEC = 30 * 24 * 60 * 60; // 30 days
+    const BATTLE_STATS_TORNSTATS_KEY_STORAGE = 'battle_stats_tornstats_api_key';
+    /** Legacy: one JSON blob for all players — blows localStorage quota; removed opportunistically. */
+    const BATTLE_STATS_TORNSTATS_SPY_LEGACY_BLOB_KEY = 'battle_stats_tornstats_spy_cache_v2';
+    /** Legacy localStorage per-player keys (removed after IDB write to free quota). */
+    const BATTLE_STATS_TORNSTATS_SPY_ENTRY_PREFIX = 'battle_ts_spy3_';
+    /** How long we keep a TornStats spy *payload* to skip repeat API calls. Spy *freshness* in the UI is still `isBattleStatsTornStatsSpyFresh`. */
+    const BATTLE_STATS_TORNSTATS_SPY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7d — avoid re-hitting TornStats on every import session
     /** Past + “today” timeplayed snapshot blobs: max age in localStorage (both use the same cap). */
     const BATTLE_STATS_ACTIVITY_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     const BATTLE_STATS_ACTIVITY_PAST_TTL_MS = BATTLE_STATS_ACTIVITY_MAX_TTL_MS;
@@ -4524,24 +4583,96 @@ document.addEventListener('DOMContentLoaded', () => {
         return String(factionID == null ? '' : factionID).trim();
     }
 
-    function getBattleStatsMainCache(factionID) {
+    async function getBattleStatsMainCache(factionID) {
         const fid = normalizeBattleStatsFactionId(factionID);
+        if (!fid) return null;
+        try {
+            const obj = await battleStatsIdbGet(BATTLE_STATS_IDB_STORE_MAIN, fid);
+            if (obj && typeof obj === 'object' && obj.cachedAt && (Date.now() - obj.cachedAt) <= BATTLE_STATS_MAIN_TTL_MS) {
+                return obj;
+            }
+        } catch (e) {
+            console.warn('[Battle Stats] IndexedDB main cache read failed', fid, e && e.message);
+        }
         try {
             const raw = localStorage.getItem(BATTLE_STATS_MAIN_PREFIX + fid);
             if (!raw) return null;
             const obj = JSON.parse(raw);
             if (!obj.cachedAt || (Date.now() - obj.cachedAt) > BATTLE_STATS_MAIN_TTL_MS) return null;
             return obj;
-        } catch (e) { return null; }
+        } catch (e) {
+            return null;
+        }
     }
-    function setBattleStatsMainCache(factionID, data) {
+
+    /** Persist only roster fields needed for `buildBattleStatsMembersObject` / account start (full v2 rows are huge). */
+    function slimBattleStatsMemberApiRowForCache(member) {
+        if (!member || typeof member !== 'object') return member;
+        const la = member.last_action || {};
+        return {
+            id: member.id,
+            name: member.name,
+            level: member.level,
+            last_action: {
+                relative: la.relative,
+                timestamp: la.timestamp,
+                status: la.status
+            },
+            signed_up: member.signed_up,
+            sign_up: member.sign_up,
+            user_joined: member.user_joined,
+            signedUp: member.signedUp,
+            signUp: member.signUp,
+            userJoined: member.userJoined,
+            signup: member.signup,
+            age: member.age,
+            basic: member.basic,
+            life: member.life
+        };
+    }
+
+    /** Strip bulky fields before localStorage — FF raw rows, full tornData, duplicate membersObject, fat member rows. */
+    function getBattleStatsMainCachePersistPayload(data) {
+        if (!data || typeof data !== 'object') return data;
+        const { ffData: _ffd, membersObject: _mo, tornData, membersArray, ...rest } = data;
+        const slimMembers = Array.isArray(membersArray)
+            ? membersArray.map((m) => slimBattleStatsMemberApiRowForCache(m))
+            : membersArray;
+        let slimTorn = tornData;
+        if (tornData && typeof tornData === 'object') {
+            slimTorn = {
+                userStats: {
+                    personalstats: {
+                        totalstats: tornData.userStats?.personalstats?.totalstats
+                    }
+                }
+            };
+        }
+        return {
+            ...rest,
+            membersArray: slimMembers,
+            tornData: slimTorn
+        };
+    }
+
+    async function setBattleStatsMainCache(factionID, data) {
         const fid = normalizeBattleStatsFactionId(factionID);
+        if (!fid) return;
+        const persist = getBattleStatsMainCachePersistPayload(data);
+        const payload = { cachedAt: Date.now(), ...persist };
         try {
-            localStorage.setItem(BATTLE_STATS_MAIN_PREFIX + fid, JSON.stringify({
-                cachedAt: Date.now(),
-                ...data
-            }));
-        } catch (e) { /* ignore */ }
+            await battleStatsIdbPut(BATTLE_STATS_IDB_STORE_MAIN, fid, payload);
+            try {
+                localStorage.removeItem(BATTLE_STATS_MAIN_PREFIX + fid);
+            } catch (e) { /* ignore */ }
+        } catch (e) {
+            console.warn('[Battle Stats] IndexedDB main cache persist failed; trying localStorage fallback.', fid, e && e.message);
+            try {
+                localStorage.setItem(BATTLE_STATS_MAIN_PREFIX + fid, JSON.stringify(payload));
+            } catch (e2) {
+                console.warn('[Battle Stats] main cache fallback localStorage also failed', fid, e2 && e2.name);
+            }
+        }
     }
 
     /** Only treat as cache hit when timeplayed is a real number (null/string/undefined = miss). */
@@ -4563,6 +4694,181 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof raw === 'number' && !isNaN(raw)) return raw;
         const n = parseFloat(String(raw).replace(/,/g, ''));
         return typeof n === 'number' && !isNaN(n) ? n : NaN;
+    }
+
+    function parseBattleStatsTornStatsTimestamp(value) {
+        const n = Number(value);
+        if (Number.isFinite(n) && n > 0) return Math.floor(n);
+        return null;
+    }
+
+    function parseBattleStatsTornStatsNumber(value) {
+        const normalized = typeof value === 'string' ? value.replace(/,/g, '').trim() : value;
+        const n = Number(normalized);
+        if (!Number.isFinite(n)) return null;
+        if (n < 0) return null;
+        return Math.round(n);
+    }
+
+    function extractBattleStatsTornStatsSpy(entry) {
+        if (!entry || typeof entry !== 'object') return null;
+        const compareObj = entry.compare && typeof entry.compare === 'object' ? entry.compare : null;
+        const compareSpy = entry.compare && entry.compare.spy && typeof entry.compare.spy === 'object'
+            ? entry.compare.spy
+            : null;
+        const spyObj = compareSpy || (entry.spy && typeof entry.spy === 'object' ? entry.spy : entry);
+        const strength = parseBattleStatsTornStatsNumber(spyObj.strength ?? entry.strength);
+        const defense = parseBattleStatsTornStatsNumber(spyObj.defense ?? entry.defense);
+        const speed = parseBattleStatsTornStatsNumber(spyObj.speed ?? entry.speed);
+        const dexterity = parseBattleStatsTornStatsNumber(spyObj.dexterity ?? entry.dexterity);
+        let total = parseBattleStatsTornStatsNumber(spyObj.total ?? entry.total);
+        if (total == null && strength != null && defense != null && speed != null && dexterity != null) {
+            total = strength + defense + speed + dexterity;
+        }
+        const timestamp = parseBattleStatsTornStatsTimestamp(
+            spyObj.timestamp ??
+            compareObj?.timestamp ??
+            entry.timestamp ??
+            entry.personalstats?.timestamp
+        );
+        if (
+            strength == null &&
+            defense == null &&
+            speed == null &&
+            dexterity == null &&
+            total == null
+        ) {
+            return null;
+        }
+        return { strength, defense, speed, dexterity, total, timestamp };
+    }
+
+    function isBattleStatsTornStatsSpyFresh(spy, nowUnix) {
+        if (!spy || spy.timestamp == null) return false;
+        const now = Number.isFinite(nowUnix) ? nowUnix : Math.floor(Date.now() / 1000);
+        if (spy.timestamp > now) return false;
+        return (now - spy.timestamp) <= BATTLE_STATS_TORNSTATS_MAX_AGE_SEC;
+    }
+
+    function getBattleStatsEffectiveEstimate(rawEstimatedStat, tornStatsSpy, nowUnix) {
+        if (tornStatsSpy && isBattleStatsTornStatsSpyFresh(tornStatsSpy, nowUnix) && tornStatsSpy.total != null) {
+            return tornStatsSpy.total;
+        }
+        return rawEstimatedStat;
+    }
+
+    function battleStatsEscapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function showBattleStatsStyledModal(title, lines) {
+        const overlay = document.createElement('div');
+        overlay.className = 'app-modal-overlay';
+        const bodyLines = Array.isArray(lines) ? lines : [String(lines || '')];
+        overlay.innerHTML =
+            '<div class="app-modal" role="dialog" aria-modal="true" style="max-width: 520px;" aria-labelledby="battle-stats-modal-title">' +
+            '<div class="app-modal-header">' +
+            `<h2 id="battle-stats-modal-title">${battleStatsEscapeHtml(String(title || 'Message'))}</h2>` +
+            '<button type="button" class="app-modal-close" id="battle-stats-modal-close" aria-label="Close">×</button>' +
+            '</div>' +
+            '<div class="app-modal-body">' +
+            bodyLines.map((line) => `<p style="margin: 0 0 10px 0; color: #ddd;">${battleStatsEscapeHtml(String(line || ''))}</p>`).join('') +
+            '<div class="app-modal-actions">' +
+            '<button type="button" id="battle-stats-modal-ok" class="fetch-button">OK</button>' +
+            '</div>' +
+            '</div>' +
+            '</div>';
+        document.body.appendChild(overlay);
+        const close = () => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            document.removeEventListener('keydown', onEsc, true);
+        };
+        const onEsc = (e) => {
+            if (e.key === 'Escape') close();
+        };
+        document.addEventListener('keydown', onEsc, true);
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) close();
+        });
+        overlay.querySelector('#battle-stats-modal-close')?.addEventListener('click', close);
+        overlay.querySelector('#battle-stats-modal-ok')?.addEventListener('click', close);
+    }
+
+    /** Faction battle scout table (has stat breakdown columns) — not activity-only or comparison tables. */
+    function getBattleStatsFactionScoutMembersTable() {
+        const root = document.getElementById('battle-stats-results');
+        if (!root) return null;
+        const strengthTh = root.querySelector('thead th[data-column="strength"]');
+        if (strengthTh) return strengthTh.closest('table');
+        return root.querySelector('table#membersTable') || root.querySelector('table');
+    }
+
+    function setBattleStatsTornStatsColumnsVisible(show) {
+        const visible = !!show;
+        const table = getBattleStatsFactionScoutMembersTable();
+        if (!table) return;
+        const cols = ['strength', 'defense', 'speed', 'dexterity'];
+        cols.forEach((col) => {
+            table.querySelectorAll(`th[data-column="${col}"], td[data-column="${col}"]`).forEach((el) => {
+                el.style.display = visible ? 'table-cell' : 'none';
+            });
+        });
+    }
+
+    function setBattleStatsEstimateHeaderLabel(useTotal) {
+        const table = getBattleStatsFactionScoutMembersTable();
+        if (!table) return;
+        const th = table.querySelector('th[data-column="stats"]');
+        if (!th) return;
+        const sortIndicator = th.querySelector('.sort-indicator');
+        const indicatorText = sortIndicator ? sortIndicator.textContent : '';
+        th.innerHTML = `${useTotal ? 'Total Stats' : 'Estimated Stats'} <span class="sort-indicator">${indicatorText}</span>`;
+    }
+
+    function refreshBattleStatsTableWithTornStats(tornStatsSpyByPlayer, battleStatsEstimates) {
+        const table = getBattleStatsFactionScoutMembersTable();
+        if (!table) return;
+        const nowUnix = Math.floor(Date.now() / 1000);
+        const rows = table.querySelectorAll('tbody tr');
+        rows.forEach((row) => {
+            const memberCell = row.querySelector('td[data-column="member"] a[href*="XID="]');
+            if (!memberCell) return;
+            const href = memberCell.getAttribute('href') || '';
+            const m = href.match(/XID=(\d+)/i);
+            if (!m) return;
+            const id = String(m[1]);
+            const spy = tornStatsSpyByPlayer && typeof tornStatsSpyByPlayer === 'object' ? tornStatsSpyByPlayer[id] : null;
+            const fresh = spy && isBattleStatsTornStatsSpyFresh(spy, nowUnix);
+            const effectiveEstimate = getBattleStatsEffectiveEstimate(
+                battleStatsEstimates?.[id] ?? 'N/A',
+                spy,
+                nowUnix
+            );
+
+            const setCell = (col, text, value) => {
+                const cell = row.querySelector(`td[data-column="${col}"]`);
+                if (!cell) return;
+                cell.textContent = text;
+                if (value != null) cell.setAttribute('data-value', String(value));
+            };
+
+            setCell(
+                'stats',
+                effectiveEstimate !== 'N/A' ? Number(effectiveEstimate).toLocaleString() : 'N/A',
+                effectiveEstimate !== 'N/A' ? Number(effectiveEstimate) : -1
+            );
+            setCell('strength', fresh && spy?.strength != null ? Number(spy.strength).toLocaleString() : '—', fresh && spy?.strength != null ? spy.strength : -1);
+            setCell('defense', fresh && spy?.defense != null ? Number(spy.defense).toLocaleString() : '—', fresh && spy?.defense != null ? spy.defense : -1);
+            setCell('speed', fresh && spy?.speed != null ? Number(spy.speed).toLocaleString() : '—', fresh && spy?.speed != null ? spy.speed : -1);
+            setCell('dexterity', fresh && spy?.dexterity != null ? Number(spy.dexterity).toLocaleString() : '—', fresh && spy?.dexterity != null ? spy.dexterity : -1);
+        });
+        const imported = Object.keys(tornStatsSpyByPlayer || {}).length > 0;
+        setBattleStatsTornStatsColumnsVisible(imported);
+        setBattleStatsEstimateHeaderLabel(imported);
     }
 
     function hasActivityTimeplayedSnapshot(store, playerId, timestamp) {
@@ -4741,7 +5047,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Persist signups on the roster we’re viewing so refresh / next load skips bulk profile calls.
         if (bs && bs.factionID != null && membersObject === bs.membersObject) {
             try {
-                setBattleStatsMainCache(bs.factionID, {
+                await setBattleStatsMainCache(bs.factionID, {
                     tornData: bs.tornData,
                     ffData: bs.ffData,
                     factionName: bs.factionName,
@@ -4750,7 +5056,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     membersObject: bs.membersObject,
                     ffScores: bs.ffScores,
                     battleStatsEstimates: bs.battleStatsEstimates,
-                    lastUpdated: bs.lastUpdated
+                    lastUpdated: bs.lastUpdated,
+                    tornStatsSpyByPlayer: bs.tornStatsSpyByPlayer
                 });
             } catch (e) {
                 console.warn('Battle stats: could not persist member signups to main cache', e);
@@ -5075,10 +5382,194 @@ document.addEventListener('DOMContentLoaded', () => {
         return results;
     };
 
-    const handleBattleStatsFetch = async () => {
-        console.log("--- Starting Faction Battle Stats Fetch ---");
-        const startTime = performance.now();
+    function battleStatsTornStatsSpyLsKey(pid) {
+        return BATTLE_STATS_TORNSTATS_SPY_ENTRY_PREFIX + String(pid);
+    }
 
+    /** Cached row must look like a real parsed spy so we do not skip API after a bad write. */
+    function isBattleStatsCachedSpyPayloadValid(spy) {
+        if (!spy || typeof spy !== 'object') return false;
+        if (spy.total != null && Number.isFinite(Number(spy.total))) return true;
+        return ['strength', 'defense', 'speed', 'dexterity'].some((k) => {
+            const v = Number(spy[k]);
+            return Number.isFinite(v);
+        });
+    }
+
+    function parseBattleStatsTornStatsSpyRow(row) {
+        if (!row || typeof row !== 'object') return null;
+        const cachedAt = Number(row.cachedAt || 0);
+        if (!Number.isFinite(cachedAt) || (Date.now() - cachedAt) > BATTLE_STATS_TORNSTATS_SPY_CACHE_TTL_MS) return null;
+        const spy = row.spy && typeof row.spy === 'object' ? row.spy : null;
+        if (!isBattleStatsCachedSpyPayloadValid(spy)) return null;
+        return spy;
+    }
+
+    async function getBattleStatsTornStatsSpyCache(pid) {
+        const id = String(pid);
+        try {
+            const row = await battleStatsIdbGet(BATTLE_STATS_IDB_STORE_SPY, id);
+            const spy = parseBattleStatsTornStatsSpyRow(row);
+            if (spy) return spy;
+        } catch (e) { /* fall through */ }
+        try {
+            const raw = localStorage.getItem(battleStatsTornStatsSpyLsKey(id));
+            if (!raw) return null;
+            return parseBattleStatsTornStatsSpyRow(JSON.parse(raw));
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function mergeBattleStatsTornStatsSpyCacheEntries(entries) {
+        if (!Array.isArray(entries) || !entries.length) return;
+        try {
+            localStorage.removeItem(BATTLE_STATS_TORNSTATS_SPY_LEGACY_BLOB_KEY);
+        } catch (e) { /* ignore */ }
+        try {
+            const db = await openBattleStatsIdb();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction(BATTLE_STATS_IDB_STORE_SPY, 'readwrite');
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+                const st = tx.objectStore(BATTLE_STATS_IDB_STORE_SPY);
+                const now = Date.now();
+                entries.forEach(({ pid, spy }) => {
+                    if (spy == null || typeof spy !== 'object' || !isBattleStatsCachedSpyPayloadValid(spy)) return;
+                    st.put({ cachedAt: now, spy }, String(pid));
+                });
+            });
+        } catch (e) {
+            console.warn('[Battle Stats] IndexedDB TornStats spy batch persist failed', e && e.message);
+        }
+        entries.forEach(({ pid }) => {
+            try {
+                localStorage.removeItem(battleStatsTornStatsSpyLsKey(pid));
+            } catch (e) { /* ignore */ }
+        });
+    }
+
+    async function setBattleStatsTornStatsSpyCache(pid, spy) {
+        await mergeBattleStatsTornStatsSpyCacheEntries([{ pid, spy }]);
+    }
+
+    /**
+     * TornStats user spies: per-player local cache first (see getBattleStatsTornStatsSpyCache TTL),
+     * then batched HTTP for any member missing cache or expired cache.
+     * @param {(info: { pct: number, message: string, detail: string }) => void} [onProgress]
+     */
+    async function importBattleStatsTornStatsUserSpies(tornStatsApiKey, memberIDs, onProgress) {
+        const emit = typeof onProgress === 'function'
+            ? (info) => {
+                try {
+                    onProgress(info);
+                } catch (e) { /* ignore progress UI errors */ }
+            }
+            : () => {};
+        const key = String(tornStatsApiKey || '').trim();
+        if (!key) throw new Error('Enter your TornStats API key first.');
+        const ids = Array.isArray(memberIDs)
+            ? memberIDs.map((id) => String(id)).filter((id) => /^\d+$/.test(id))
+            : [];
+        if (!ids.length) throw new Error('No members found to import TornStats spies for.');
+        emit({ pct: 0, message: 'Importing TornStats…', detail: 'Checking local cache…' });
+        try {
+            localStorage.removeItem(BATTLE_STATS_TORNSTATS_SPY_LEGACY_BLOB_KEY);
+        } catch (e) { /* ignore */ }
+        const out = {};
+        const uncachedIds = [];
+        // Cache-first: only call TornStats for members without a valid cached spy row.
+        for (const pid of ids) {
+            const cachedSpy = await getBattleStatsTornStatsSpyCache(pid);
+            if (cachedSpy) out[pid] = cachedSpy;
+            else uncachedIds.push(pid);
+        }
+        const cacheHits = ids.length - uncachedIds.length;
+        const total = ids.length;
+        const pctAfterCache = total ? Math.round((100 * cacheHits) / total) : 100;
+        if (!uncachedIds.length) {
+            emit({
+                pct: 100,
+                message: 'Importing TornStats…',
+                detail: `All ${cacheHits} member(s) loaded from local cache — no API requests.`
+            });
+            return out;
+        }
+        emit({
+            pct: Math.max(3, Math.min(92, pctAfterCache || 3)),
+            message: 'Importing TornStats…',
+            detail: `${cacheHits} from local cache · fetching ${uncachedIds.length} from TornStats…`
+        });
+
+        const fetchOne = async (pid) => {
+            const url = `https://www.tornstats.com/api/v2/${encodeURIComponent(key)}/spy/user/${encodeURIComponent(pid)}`;
+            const response = await fetch(url);
+            const text = await response.text();
+            let data = null;
+            try {
+                data = text ? JSON.parse(text) : null;
+            } catch (e) {
+                throw new Error(`Non-JSON TornStats response for ${pid}`);
+            }
+            if (!response.ok) {
+                const msg = data?.message || `HTTP ${response.status}`;
+                throw new Error(`TornStats ${pid} failed (${msg})`);
+            }
+            if (!data || data.status === false) {
+                const msg = data?.message || 'status=false';
+                throw new Error(`TornStats ${pid} returned no data (${msg})`);
+            }
+            const spy = extractBattleStatsTornStatsSpy(data);
+            if (!spy) throw new Error(`TornStats ${pid} returned no spy payload`);
+            return spy;
+        };
+
+        const concurrency = 8;
+        let failures = 0;
+        for (let i = 0; i < uncachedIds.length; i += concurrency) {
+            const batch = uncachedIds.slice(i, i + concurrency);
+            const results = await Promise.all(batch.map(async (pid) => {
+                try {
+                    const spy = await fetchOne(pid);
+                    return { pid, spy };
+                } catch (e) {
+                    return { pid, spy: null };
+                }
+            }));
+            const cacheWrites = [];
+            results.forEach(({ pid, spy }) => {
+                if (!spy) {
+                    failures++;
+                    return;
+                }
+                out[pid] = spy;
+                cacheWrites.push({ pid, spy });
+            });
+            await mergeBattleStatsTornStatsSpyCacheEntries(cacheWrites);
+            const processedUncached = Math.min(i + concurrency, uncachedIds.length);
+            const doneUnits = cacheHits + processedUncached;
+            const pct = total ? Math.round((100 * doneUnits) / total) : 100;
+            emit({
+                pct: Math.min(99, Math.max(5, pct)),
+                message: 'Importing TornStats…',
+                detail: `TornStats API: ${processedUncached} / ${uncachedIds.length} · ${cacheHits} from cache`
+            });
+            if (i + concurrency < uncachedIds.length) {
+                await sleep(150);
+            }
+        }
+        if (failures > 0) {
+            console.warn('[Battle Stats] TornStats import:', failures, 'member(s) had no spy or an API error.');
+        }
+        emit({
+            pct: 100,
+            message: 'Importing TornStats…',
+            detail: 'Finished fetching — applying to table…'
+        });
+        return out;
+    }
+
+    const handleBattleStatsFetch = async () => {
         const spinner = document.getElementById('loading-spinner');
         const resultsContainer = document.getElementById('battle-stats-results');
         const toolContainer = document.getElementById('battle-stats-tool-container');
@@ -5096,14 +5587,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        console.log(`Using Faction ID: ${factionID}`);
-
         spinner.style.display = 'block';
         resultsContainer.style.display = 'none';
 
         try {
-            let tornData, factionName, membersArray, memberIDs, membersObject, ffScores, battleStatsEstimates, lastUpdated, hasVipLevel1, ffData;
-            const cachedMain = getBattleStatsMainCache(factionID);
+            try {
+                localStorage.removeItem(BATTLE_STATS_TORNSTATS_SPY_LEGACY_BLOB_KEY);
+            } catch (e) { /* ignore */ }
+            let tornData, factionName, membersArray, memberIDs, membersObject, ffScores, battleStatsEstimates, lastUpdated, hasVipLevel1, ffData, tornStatsSpyByPlayer;
+            const cachedMain = await getBattleStatsMainCache(factionID);
 
             if (cachedMain) {
                 tornData = cachedMain.tornData;
@@ -5130,7 +5622,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 ffScores = cachedMain.ffScores;
                 battleStatsEstimates = cachedMain.battleStatsEstimates;
                 lastUpdated = cachedMain.lastUpdated;
-                ffData = cachedMain.ffData;
+                tornStatsSpyByPlayer = (cachedMain.tornStatsSpyByPlayer && typeof cachedMain.tornStatsSpyByPlayer === 'object')
+                    ? cachedMain.tornStatsSpyByPlayer
+                    : {};
+                // Slim cache omits raw FF Scouter array (reconstruct in-memory only).
+                ffData = Array.isArray(cachedMain.ffData) ? cachedMain.ffData : [];
                 const userData = await getUserData(apiKey);
                 const userPlayerId = userData?.playerId;
                 hasVipLevel1 = false;
@@ -5140,7 +5636,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     hasVipLevel1 = vipData && vipData.vipLevel >= 1;
                 }
             } else {
-                const tornStartTime = performance.now();
                 const apiRequests = [
                     {
                         name: 'userStats',
@@ -5159,10 +5654,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 ];
 
-                console.log('Fetching Torn API data using batched requests...');
                 tornData = await batchTornApiCalls(apiKey, apiRequests);
-                const tornEndTime = performance.now();
-                console.log(`Torn API calls completed in ${(tornEndTime - tornStartTime).toFixed(2)}ms`);
 
                 const userData = await getUserData(apiKey);
                 const userPlayerId = userData?.playerId;
@@ -5174,7 +5666,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     hasVipLevel1 = vipData && vipData.vipLevel >= 1;
                 }
 
-                console.log('Faction info object:', tornData.factionInfo);
                 factionName = tornData.factionInfo?.basic?.name;
                 if (!factionName && tornData.factionInfo?.name) {
                     factionName = tornData.factionInfo.name;
@@ -5189,18 +5680,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 memberIDs = membersArray.map(member => member.id.toString());
                 membersObject = buildBattleStatsMembersObject(membersArray);
 
-                console.log(`Successfully fetched ${memberIDs.length} members.`);
-
-                const ffStartTime = performance.now();
                 const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
-                console.log(`Fetching FF Scouter data for ${memberIDs.length} members using parallel batching...`);
                 ffData = await fetchInParallelChunks(ffScouterUrl, memberIDs, 200, 3, 1000);
-                const ffEndTime = performance.now();
-                console.log(`FF Scouter API calls completed in ${(ffEndTime - ffStartTime).toFixed(2)}ms`);
 
                 ffScores = {};
                 battleStatsEstimates = {};
                 lastUpdated = {};
+                tornStatsSpyByPlayer = {};
                 ffData.forEach(player => {
                     if (player.fair_fight) {
                         ffScores[player.player_id] = player.fair_fight;
@@ -5209,7 +5695,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
 
-                setBattleStatsMainCache(factionID, {
+                await setBattleStatsMainCache(factionID, {
                     tornData,
                     ffData,
                     factionName,
@@ -5218,7 +5704,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     membersObject,
                     ffScores,
                     battleStatsEstimates,
-                    lastUpdated
+                    lastUpdated,
+                    tornStatsSpyByPlayer
                 });
             }
 
@@ -5233,17 +5720,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const myTotalStats = tornData?.userStats?.personalstats?.totalstats;
 
-            const totalTime = performance.now() - startTime;
-            const cacheStats = getCacheStats();
-            console.log(`🎉 Total fetch time: ${totalTime.toFixed(2)}ms (${(totalTime / 1000).toFixed(2)}s)`);
-            if (!cachedMain) {
-                console.log(`📊 Performance breakdown:`);
-                console.log(`   - Torn API / FF Scouter / Processing`);
-                console.log(`💾 Cache stats: ${cacheStats.hits} hits, ${cacheStats.misses} misses (${cacheStats.hitRate}% hit rate)`);
-            } else {
-                console.log(`💾 Battle stats loaded from cache (1-day TTL)`);
-            }
-
             // Hide the form and show the results section
             // toolContainer.style.display = 'none'; // Don't hide the input fields
 
@@ -5255,6 +5731,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     </button>
                     <button id="collectDetailedStatsBtn" class="btn" style="background-color: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px;">
                         Collect Detailed Stats
+                    </button>
+                    <button id="importTornStatsBtn" class="btn" style="background-color: #7a3ff2; color: #fff; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-left: 10px;" title="Import TornStats faction spies (≤30 days old) to replace FF estimates where available">
+                        Import from TornStats
                     </button>
                     <div style="position: relative; display: inline-block; margin-left: 10px;">
                         <button id="compareActivityBtn" class="btn" style="background-color: ${hasVipLevel1 ? '#2196F3' : '#666'}; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: ${hasVipLevel1 ? 'pointer' : 'not-allowed'}; margin-left: 0; white-space: nowrap; opacity: ${hasVipLevel1 ? '1' : '0.6'};" ${hasVipLevel1 ? '' : 'disabled'}>
@@ -5305,7 +5784,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             <tr>
                                 <th data-column="member" style="min-width: 200px; cursor: pointer; text-align: left; user-select: text;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator"></span></span>', { align: 'flex-start' })}</th>
                                 <th data-column="level" style="min-width: 80px; cursor: pointer; text-align: left; user-select: text;">Level <span class="sort-indicator"></span></th>
-                                <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">Estimated Stats <span class="sort-indicator"></span></th>
+                                <th data-column="stats" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">${Object.keys(tornStatsSpyByPlayer || {}).length > 0 ? 'Total Stats' : 'Estimated Stats'} <span class="sort-indicator"></span></th>
+                                <th data-column="strength" style="min-width: 115px; cursor: pointer; text-align: left; user-select: text;">Strength <span class="sort-indicator"></span></th>
+                                <th data-column="defense" style="min-width: 115px; cursor: pointer; text-align: left; user-select: text;">Defence <span class="sort-indicator"></span></th>
+                                <th data-column="speed" style="min-width: 115px; cursor: pointer; text-align: left; user-select: text;">Speed <span class="sort-indicator"></span></th>
+                                <th data-column="dexterity" style="min-width: 115px; cursor: pointer; text-align: left; user-select: text;">Dexterity <span class="sort-indicator"></span></th>
                                 <th data-column="ffscore" style="min-width: 100px; cursor: pointer; text-align: left; user-select: text;">FF Score <span class="sort-indicator"></span></th>
                                 <th data-column="lastonline" style="min-width: 130px; cursor: pointer; text-align: left; user-select: text;">Last online <span class="sort-indicator"></span></th>
                                 <th data-column="lastupdated" style="min-width: 150px; cursor: pointer; text-align: left; user-select: text;">FFS Last Updated <span class="sort-indicator"></span></th>
@@ -5324,7 +5807,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // Use FF Scouter's precise battle stats estimate instead of calculating
                 const rawEstimatedStat = battleStatsEstimates[id] ?? battleStatsEstimates[memberID] ?? 'N/A';
-                const displayEstimatedStat = (rawEstimatedStat !== 'N/A') ? rawEstimatedStat.toLocaleString() : 'N/A';
+                const nowUnix = Math.floor(Date.now() / 1000);
+                const tornStatsSpy = tornStatsSpyByPlayer && typeof tornStatsSpyByPlayer === 'object' ? tornStatsSpyByPlayer[id] : null;
+                const effectiveEstimatedStat = getBattleStatsEffectiveEstimate(rawEstimatedStat, tornStatsSpy, nowUnix);
+                const displayEstimatedStat = (effectiveEstimatedStat !== 'N/A') ? Number(effectiveEstimatedStat).toLocaleString() : 'N/A';
+                const showSpyBreakdown = tornStatsSpy && isBattleStatsTornStatsSpyFresh(tornStatsSpy, nowUnix);
+                const strengthDisplay = showSpyBreakdown && tornStatsSpy.strength != null ? Number(tornStatsSpy.strength).toLocaleString() : '—';
+                const defenseDisplay = showSpyBreakdown && tornStatsSpy.defense != null ? Number(tornStatsSpy.defense).toLocaleString() : '—';
+                const speedDisplay = showSpyBreakdown && tornStatsSpy.speed != null ? Number(tornStatsSpy.speed).toLocaleString() : '—';
+                const dexterityDisplay = showSpyBreakdown && tornStatsSpy.dexterity != null ? Number(tornStatsSpy.dexterity).toLocaleString() : '—';
                 
                 const lastUpdatedDate = lastUpdatedTimestamp 
                     ? formatRelativeTime(lastUpdatedTimestamp * 1000) 
@@ -5336,7 +5827,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     <tr>
                         <td data-column="member"><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" style="color: #FFD700; text-decoration: none;"${window.toolsMemberLinkAttrs(member.name, id)}>${window.toolsFormatMemberDisplayLabel({ name: member.name, id }, window.toolsGetShowMemberIdInBrackets())}</a></td>
                         <td data-column="level" data-value="${member.level === 'Unknown' ? -1 : member.level}">${member.level}</td>
-                        <td data-column="stats" data-value="${rawEstimatedStat === 'N/A' ? -1 : rawEstimatedStat}">${displayEstimatedStat}</td>
+                        <td data-column="stats" data-value="${effectiveEstimatedStat === 'N/A' ? -1 : effectiveEstimatedStat}">${displayEstimatedStat}</td>
+                        <td data-column="strength" data-value="${showSpyBreakdown && tornStatsSpy.strength != null ? tornStatsSpy.strength : -1}">${strengthDisplay}</td>
+                        <td data-column="defense" data-value="${showSpyBreakdown && tornStatsSpy.defense != null ? tornStatsSpy.defense : -1}">${defenseDisplay}</td>
+                        <td data-column="speed" data-value="${showSpyBreakdown && tornStatsSpy.speed != null ? tornStatsSpy.speed : -1}">${speedDisplay}</td>
+                        <td data-column="dexterity" data-value="${showSpyBreakdown && tornStatsSpy.dexterity != null ? tornStatsSpy.dexterity : -1}">${dexterityDisplay}</td>
                         <td data-column="ffscore" data-value="${fairFightScore === 'Unknown' ? -1 : fairFightScore}">${fairFightScore}</td>
                         <td data-column="lastonline" data-value="${lastOnlineSort}">${lastOnlineDisplay}</td>
                         <td data-column="lastupdated" data-value="${lastUpdatedTimestamp || 0}">${lastUpdatedDate}</td>
@@ -5349,9 +5844,20 @@ document.addEventListener('DOMContentLoaded', () => {
             resultsContainer.innerHTML = tableHtml;
             resultsContainer.style.display = 'block';
             wireBattleStatsActivityPeriodRadios(resultsContainer);
+            // Breakdown columns only after a successful "Import from TornStats" in this session (not from cache alone).
+            setBattleStatsTornStatsColumnsVisible(false);
+            const hasSpyPayloadInCache = Object.keys(tornStatsSpyByPlayer || {}).length > 0;
+            setBattleStatsEstimateHeaderLabel(hasSpyPayloadInCache);
 
             // Add sorting functionality (matching consumption tracker style)
-            const table = document.getElementById('membersTable');
+            const table =
+                getBattleStatsFactionScoutMembersTable() ||
+                resultsContainer.querySelector('table#membersTable') ||
+                resultsContainer.querySelector('table');
+            if (!table) {
+                console.error('Battle stats: members table missing after render');
+                throw new Error('Battle stats table failed to render');
+            }
             const headers = table.querySelectorAll('th[data-column]');
             let currentSortColumn = 'stats'; // Default sort column
             let currentSortDirection = 'desc'; // Default sort direction (biggest first)
@@ -5433,6 +5939,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ffData,
                 ffScores,
                 battleStatsEstimates,
+                tornStatsSpyByPlayer,
                 lastUpdated,
                 factionName,
                 factionID,
@@ -5466,8 +5973,96 @@ document.addEventListener('DOMContentLoaded', () => {
             const copyTableBtn = document.getElementById('copyTableBtn');
             if (copyTableBtn) {
                 copyTableBtn.addEventListener('click', async () => {
-                    const table = document.getElementById('membersTable');
+                    const table = getBattleStatsFactionScoutMembersTable() || resultsContainer.querySelector('table#membersTable');
                     await battleStatsCopyTableToClipboard(copyTableBtn, table, { factionTitle: factionName, excludeColumns: ['ffscore'] });
+                });
+            }
+
+            const importTornStatsBtn = document.getElementById('importTornStatsBtn');
+            if (importTornStatsBtn) {
+                importTornStatsBtn.addEventListener('click', async () => {
+                    const keyInput = document.getElementById('battleStatsTornStatsApiKey');
+                    const tornStatsApiKey = keyInput ? String(keyInput.value || '').trim() : '';
+                    if (!tornStatsApiKey) {
+                        alert('Enter your TornStats API key in the field above first.');
+                        if (keyInput) keyInput.focus();
+                        return;
+                    }
+                    importTornStatsBtn.disabled = true;
+                    const prevText = importTornStatsBtn.textContent;
+                    importTornStatsBtn.textContent = 'Importing…';
+                    const progressContainer = document.getElementById('progressContainer');
+                    const progressMessage = document.getElementById('progressMessage');
+                    const progressPercentage = document.getElementById('progressPercentage');
+                    const progressFill = document.getElementById('progressFill');
+                    const progressDetails = document.getElementById('progressDetails');
+                    const showTornStatsImportProgress = (pct, message, detail) => {
+                        if (progressContainer) {
+                            progressContainer.style.display = 'block';
+                            try {
+                                progressContainer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                            } catch (e) { /* ignore */ }
+                        }
+                        const p = Math.min(100, Math.max(0, Math.round(Number(pct) || 0)));
+                        if (progressMessage) progressMessage.textContent = message || 'Importing TornStats…';
+                        if (progressPercentage) progressPercentage.textContent = `${p}%`;
+                        if (progressFill) progressFill.style.width = `${p}%`;
+                        if (progressDetails) progressDetails.textContent = detail || '';
+                    };
+                    const hideTornStatsImportProgress = () => {
+                        if (progressContainer) progressContainer.style.display = 'none';
+                    };
+                    try {
+                        const importedMap = await importBattleStatsTornStatsUserSpies(
+                            tornStatsApiKey,
+                            memberIDs,
+                            ({ pct, message, detail }) => showTornStatsImportProgress(pct, message, detail)
+                        );
+                        const nowUnix = Math.floor(Date.now() / 1000);
+                        const replacedEstimates = { ...(battleStatsEstimates || {}) };
+                        const importedCount = Object.keys(importedMap).length;
+                        let freshCount = 0;
+                        let replacedCount = 0;
+                        Object.entries(importedMap).forEach(([pid, spy]) => {
+                            if (!spy || !isBattleStatsTornStatsSpyFresh(spy, nowUnix) || spy.total == null) return;
+                            freshCount++;
+                            if (replacedEstimates[pid] !== spy.total) replacedCount++;
+                            replacedEstimates[pid] = spy.total;
+                        });
+                        battleStatsEstimates = replacedEstimates;
+                        tornStatsSpyByPlayer = importedMap;
+                        const bsState = window.battleStatsData || {};
+                        bsState.battleStatsEstimates = replacedEstimates;
+                        bsState.tornStatsSpyByPlayer = importedMap;
+                        window.battleStatsData = bsState;
+                        await setBattleStatsMainCache(factionID, {
+                            tornData,
+                            ffData,
+                            factionName,
+                            membersArray,
+                            memberIDs,
+                            membersObject,
+                            ffScores,
+                            battleStatsEstimates: replacedEstimates,
+                            lastUpdated,
+                            tornStatsSpyByPlayer: importedMap
+                        });
+                        refreshBattleStatsTableWithTornStats(importedMap, replacedEstimates);
+                        showBattleStatsStyledModal('TornStats Import Complete', [
+                            `Spies parsed: ${importedCount}`,
+                            `Fresh (<=30 days): ${freshCount}`,
+                            `Rows replaced: ${replacedCount}`
+                        ]);
+                    } catch (e) {
+                        console.error('[Battle Stats] TornStats import failed', e);
+                        showBattleStatsStyledModal('TornStats Import Failed', [
+                            e && e.message ? e.message : 'Failed to import TornStats spies.'
+                        ]);
+                    } finally {
+                        hideTornStatsImportProgress();
+                        importTornStatsBtn.disabled = false;
+                        importTornStatsBtn.textContent = prevText;
+                    }
                 });
             }
 
@@ -5479,11 +6074,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!member) return null;
                     const fairFightScore = ffScores[id] || ffScores[memberID] || 'Unknown';
                     const rawEstimatedStat = battleStatsEstimates[id] ?? battleStatsEstimates[memberID] ?? 'N/A';
+                    const nowUnix = Math.floor(Date.now() / 1000);
+                    const tornSpy = tornStatsSpyByPlayer && typeof tornStatsSpyByPlayer === 'object' ? tornStatsSpyByPlayer[id] : null;
+                    const effectiveEstimatedStat = getBattleStatsEffectiveEstimate(rawEstimatedStat, tornSpy, nowUnix);
+                    const freshSpy = tornSpy && isBattleStatsTornStatsSpyFresh(tornSpy, nowUnix);
                     return {
                         memberID: id,
                         name: member.name,
                         fairFightScore,
-                        rawEstimatedStat
+                        rawEstimatedStat: effectiveEstimatedStat,
+                        strength: freshSpy && tornSpy.strength != null ? tornSpy.strength : null,
+                        defense: freshSpy && tornSpy.defense != null ? tornSpy.defense : null,
+                        speed: freshSpy && tornSpy.speed != null ? tornSpy.speed : null,
+                        dexterity: freshSpy && tornSpy.dexterity != null ? tornSpy.dexterity : null
                     };
                 }).filter(Boolean);
 
@@ -5497,17 +6100,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 const csvData = [
                     [`Faction: ${factionName}`],
                     [], // Blank row for spacing
-                    ['Member', 'Estimated Stats']
+                    ['Member', 'Estimated Stats', 'Strength', 'Defence', 'Speed', 'Dexterity']
                 ];
                 
                 memberExportData.forEach(data => {
                     const displayEstimatedStat = (data.rawEstimatedStat !== 'N/A') ? data.rawEstimatedStat.toLocaleString() : 'N/A';
+                    const strengthOut = data.strength != null ? Number(data.strength).toLocaleString() : '—';
+                    const defenseOut = data.defense != null ? Number(data.defense).toLocaleString() : '—';
+                    const speedOut = data.speed != null ? Number(data.speed).toLocaleString() : '—';
+                    const dexterityOut = data.dexterity != null ? Number(data.dexterity).toLocaleString() : '—';
                     const linkLabel = window.toolsFormatMemberDisplayLabel({ name: data.name, id: data.memberID }, window.toolsGetShowMemberIdInBrackets()).replace(/"/g, '""');
                     const memberLinkFormula = `=HYPERLINK("https://www.torn.com/profiles.php?XID=${data.memberID}", "${linkLabel}")`;
 
                     csvData.push([
                         memberLinkFormula,
-                        displayEstimatedStat
+                        displayEstimatedStat,
+                        strengthOut,
+                        defenseOut,
+                        speedOut,
+                        dexterityOut
                     ]);
                 });
                 
@@ -6472,6 +7083,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const syncComparisonGraphModeButtons = () => {
         const mode = window.comparisonGraphContext?.mode || 'activity';
+        const ignoreTop = Math.max(0, parseInt(window.comparisonGraphContext?.ignoreTopCount || 0, 10) || 0);
         const a = document.getElementById('comparison-graph-mode-activity');
         const s = document.getElementById('comparison-graph-mode-stats');
         const cls = 'comparison-graph-mode-btn';
@@ -6488,9 +7100,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const sub = document.getElementById('comparison-graph-x-subtitle');
         if (sub) {
-            sub.textContent = mode === 'stats'
+            const base = mode === 'stats'
                 ? 'Each faction ranked by estimated stats (highest → lowest); paired by rank.'
                 : 'Each faction ranked by activity (most → least); paired by rank.';
+            sub.textContent = ignoreTop > 0 ? `${base} Top ${ignoreTop} ignored.` : base;
         }
     };
 
@@ -6507,9 +7120,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window.activityChart) window.activityChart.destroy();
 
         const isStats = mode === 'stats';
-        const labels = isStats ? g.labelsStats : g.labelsActivity;
-        const currentFactionData = isStats ? g.currentFactionDataStats : g.currentFactionDataActivity;
-        const ownFactionData = isStats ? g.ownFactionDataStats : g.ownFactionDataActivity;
+        const ignoreTopCount = Math.max(0, parseInt(g.ignoreTopCount || 0, 10) || 0);
+        const rawLabels = isStats ? g.labelsStats : g.labelsActivity;
+        const rawCurrentFactionData = isStats ? g.currentFactionDataStats : g.currentFactionDataActivity;
+        const rawOwnFactionData = isStats ? g.ownFactionDataStats : g.ownFactionDataActivity;
+        const labels = rawLabels.slice(ignoreTopCount);
+        const currentFactionData = rawCurrentFactionData.slice(ignoreTopCount);
+        const ownFactionData = rawOwnFactionData.slice(ignoreTopCount);
         const { currentFactionName, ownFactionName, labelTitle } = g;
 
         const currentLabel = isStats ? `${currentFactionName} (est. stats)` : `${currentFactionName} (${labelTitle})`;
@@ -6737,8 +7354,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const currentFfScores = battleStatsDataForTable.ffScores || {};
+        const prevIgnoreTopCount = Math.max(0, parseInt(window.comparisonGraphContext?.ignoreTopCount || 0, 10) || 0);
         window.comparisonGraphContext = {
             mode: 'activity',
+            ignoreTopCount: prevIgnoreTopCount,
             labelTitle,
             currentFactionName: currentData.factionName,
             ownFactionName,
@@ -6808,6 +7427,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             <button type="button" id="comparison-graph-mode-activity" class="comparison-graph-mode-btn comparison-graph-mode-btn--active" onclick="window.setComparisonGraphMode && window.setComparisonGraphMode('activity')">Activity</button>
                             <button type="button" id="comparison-graph-mode-stats" class="comparison-graph-mode-btn comparison-graph-mode-btn--inactive" onclick="window.setComparisonGraphMode && window.setComparisonGraphMode('stats')">Stats</button>
                         </div>
+                        <label for="comparison-graph-ignore-top" style="color: #bbb; font-size: 12px; display: inline-flex; align-items: center; gap: 8px;">
+                            Ignore top players
+                            <input type="number" id="comparison-graph-ignore-top" min="0" max="500" step="1" value="${Math.max(0, parseInt(window.comparisonGraphContext?.ignoreTopCount || 0, 10) || 0)}" style="width: 72px; padding: 4px 6px; border-radius: 4px; border: 1px solid #555; background: var(--primary-color); color: var(--text-color);">
+                        </label>
                     </div>
                 </div>
                 <div style="position: relative; height: 400px;">
@@ -6896,6 +7519,24 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsContainer.style.display = 'block';
         
         // Chart is drawn in updateGraphWithComparison (renderComparisonChartFromContext); buttons use window.setComparisonGraphMode.
+        const ignoreTopInput = document.getElementById('comparison-graph-ignore-top');
+        if (ignoreTopInput) {
+            const applyIgnoreTop = () => {
+                const parsed = parseInt(String(ignoreTopInput.value || '0').trim(), 10);
+                const normalized = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+                ignoreTopInput.value = String(normalized);
+                if (!window.comparisonGraphContext) return;
+                window.comparisonGraphContext.ignoreTopCount = normalized;
+                renderComparisonChartFromContext(window.comparisonGraphContext.mode || 'activity');
+                syncComparisonGraphModeButtons();
+            };
+            ignoreTopInput.addEventListener('change', applyIgnoreTop);
+            ignoreTopInput.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                applyIgnoreTop();
+            });
+        }
         
         // Add sorting functionality for comparison table
         const table = document.getElementById('membersTable');
