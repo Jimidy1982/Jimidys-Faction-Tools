@@ -2,6 +2,8 @@ console.log('[ORGANISED CRIME STATS] organised-crime-stats.js LOADED');
 
 const OC_STATS_DATE_FILTERS_LS_KEY = 'organisedCrimeStats_dateFilters';
 const OC_STATS_CRIMES_CACHE_KEY = 'organisedCrimeStats_crimesCache_v1';
+/** Payload `crimes` array version inside that key (bump when merge keys change — v1 caches break incremental dedup). */
+const OC_STATS_CRIMES_CACHE_DATA_VERSION = 2;
 const OC_STATS_PULL_META_KEY = 'organisedCrimeStats_apiPullMeta_v1';
 const OC_STATS_ALLOWED_PRESETS = new Set(['all', '7', '14', '30', '90', '365', 'custom']);
 const OC_STATS_ALLOWED_UNITS = new Set(['days', 'months', 'years']);
@@ -90,7 +92,7 @@ function getOcStatsDateFilterHumanLabel(section) {
 
 /** Stable fingerprint for the API key (never store the raw key in the crimes cache payload beyond this). */
 function ocStatsApiKeyFingerprint(apiKey) {
-    const s = String(apiKey || '');
+    const s = String(apiKey || '').trim();
     let h = 2166136261 >>> 0;
     for (let i = 0; i < s.length; i++) {
         h ^= s.charCodeAt(i);
@@ -136,7 +138,7 @@ function saveOcStatsCrimesCache(apiKey, allCrimes, crimePages) {
         localStorage.setItem(
             OC_STATS_CRIMES_CACHE_KEY,
             JSON.stringify({
-                v: 1,
+                v: OC_STATS_CRIMES_CACHE_DATA_VERSION,
                 keyFp: ocStatsApiKeyFingerprint(apiKey),
                 savedAt: Date.now(),
                 crimePages: Number(crimePages) || 0,
@@ -153,12 +155,41 @@ function loadOcStatsCrimesFromCache(apiKey) {
         const raw = localStorage.getItem(OC_STATS_CRIMES_CACHE_KEY);
         if (!raw) return null;
         const o = JSON.parse(raw);
-        if (!o || o.v !== 1 || o.keyFp !== ocStatsApiKeyFingerprint(apiKey) || !Array.isArray(o.crimes)) return null;
+        if (!o || !Array.isArray(o.crimes) || o.keyFp !== ocStatsApiKeyFingerprint(apiKey)) return null;
+        if (o.v !== OC_STATS_CRIMES_CACHE_DATA_VERSION) {
+            if (o.v === 1) {
+                try {
+                    localStorage.removeItem(OC_STATS_CRIMES_CACHE_KEY);
+                    console.warn(
+                        '[ORGANISED CRIME STATS] Removed legacy v1 crime cache (keys incompatible with incremental merge). Fetch once to rebuild v2 cache.'
+                    );
+                } catch (e) {
+                    /* ignore */
+                }
+            }
+            return null;
+        }
         return o.crimes;
     } catch (e) {
         console.warn('[ORGANISED CRIME STATS] Could not read crimes cache:', e);
         return null;
     }
+}
+
+/** Torn v2 may return `crimes` as an array or as an object map — normalize to an array (newest first if map). */
+function ocStatsNormalizeCrimesArray(raw) {
+    if (raw == null) return [];
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw === 'object') {
+        const arr = Object.values(raw);
+        arr.sort((a, b) => {
+            const ta = a && a.executed_at != null ? Number(a.executed_at) : 0;
+            const tb = b && b.executed_at != null ? Number(b.executed_at) : 0;
+            return tb - ta;
+        });
+        return arr;
+    }
+    return [];
 }
 
 function formatOcStatsCacheDate(ts) {
@@ -169,10 +200,23 @@ function formatOcStatsCacheDate(ts) {
     }
 }
 
+/** `executed_at` from Torn OC payload is Unix time in seconds. Month + day only (keeps reward breakdown compact). */
+function formatOcCrimeExecutedShort(tsSeconds) {
+    if (tsSeconds == null || !Number.isFinite(Number(tsSeconds))) return '';
+    try {
+        return new Date(Number(tsSeconds) * 1000).toLocaleDateString(undefined, {
+            month: 'short',
+            day: 'numeric'
+        });
+    } catch {
+        return '';
+    }
+}
+
 function updateOcStatsCacheHint() {
     const el = document.getElementById('ocStatsCacheHint');
     const btn = document.getElementById('loadOcStatsCache');
-    const apiKey = localStorage.getItem('tornApiKey');
+    const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
     if (!el) return;
     if (!apiKey) {
         el.textContent = '';
@@ -188,9 +232,22 @@ function updateOcStatsCacheHint() {
     }
     const when = formatOcStatsCacheDate(meta.savedAt);
     el.textContent =
-        `Last full fetch used about ${meta.totalApiCalls} API calls (${meta.crimePages} crime page${meta.crimePages === 1 ? '' : 's'} at 100 crimes each + faction members + item prices). ` +
-        `${crimesCached ? `Crimes are cached locally (${meta.crimeCount} rows, saved ${when}). "Load from cache" uses members + items plus planning/recruiting crime pages (for the missing-items list).` : `Crime list was not cached (too large or first run); next fetch will re-pull all crime pages.`}`;
+        `Last run used about ${meta.totalApiCalls} API calls (${meta.crimePages} completed-crime page${meta.crimePages === 1 ? '' : 's'} at 100 per page, plus members + items). ` +
+        `${crimesCached ? `Crimes are cached locally (${meta.crimeCount} rows, saved ${when}). "Fetch Crime Data" loads that cache first (like Consumption Tracker), then only pulls API pages until it hits crimes you already have. Progress shows cache → API merge → members/items. "Load from cache" skips completed-crime API calls and only refreshes members, items, and planning/recruiting OCs.` : `Crime list was not cached (too large or first run); the next fetch downloads all completed-crime pages once, then caches them.`}`;
     if (btn) btn.style.display = crimesCached ? 'inline-block' : 'none';
+}
+
+/** Update OC stats progress bar (same pattern as consumption tracker / MPR: percentage + fill). */
+function ocStatsSetProgress(progressRefs, pct, message, details) {
+    if (!progressRefs) return;
+    const { progressMessage, progressDetails, progressPercentage, progressFill } = progressRefs;
+    if (message != null && progressMessage) progressMessage.textContent = message;
+    if (details != null && progressDetails) progressDetails.textContent = details;
+    if (pct != null && progressPercentage && progressFill) {
+        const p = Math.min(100, Math.max(0, Number(pct)));
+        progressPercentage.textContent = `${Math.round(p)}%`;
+        progressFill.style.width = `${p}%`;
+    }
 }
 
 /**
@@ -201,13 +258,14 @@ async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
     const {
         progressMessage,
         progressDetails,
+        progressPercentage,
+        progressFill,
         resultsSection
     } = progressRefs;
 
-    if (progressMessage) progressMessage.textContent = 'Fetching current faction members...';
-    if (progressDetails) progressDetails.textContent = 'Loading member list...';
+    ocStatsSetProgress(progressRefs, 72, 'Fetching current faction members...', 'Loading member list...');
 
-    const apiKey = localStorage.getItem('tornApiKey');
+    const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
     const membersResponse = await fetch(ocStatsTornFetchUrl(`https://api.torn.com/v2/faction/members?key=${apiKey}`));
     const membersData = await membersResponse.json();
 
@@ -224,15 +282,18 @@ async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
         playerNames[member.id.toString()] = member.name;
     });
 
-    if (progressMessage) progressMessage.textContent = 'Processing crime data...';
-    if (progressDetails) progressDetails.textContent = 'Analyzing crimes (filtering by current members)...';
+    ocStatsSetProgress(
+        progressRefs,
+        78,
+        'Processing crime data...',
+        `Analyzing ${allCrimes.length} crimes (filtering by current members)...`
+    );
 
     const factionCutInput = document.getElementById('ocFactionCutPercent');
     const factionCutPercent = factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 20)) : 20;
     const { difficultyStats, playerStats } = processCrimeData(allCrimes, playerNames, currentMemberIds, factionCutPercent);
 
-    if (progressMessage) progressMessage.textContent = 'Loading item details...';
-    if (progressDetails) progressDetails.textContent = 'Fetching item names and values...';
+    ocStatsSetProgress(progressRefs, 84, 'Loading item details...', 'Fetching item names and values...');
     try {
         const itemsResponse = await fetch(ocStatsTornFetchUrl(`https://api.torn.com/torn/?selections=items&key=${apiKey}`));
         const itemsData = await itemsResponse.json();
@@ -242,8 +303,12 @@ async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
         ocStatsData.itemsMap = {};
     }
 
-    if (progressMessage) progressMessage.textContent = 'Checking planning & recruiting OCs…';
-    if (progressDetails) progressDetails.textContent = 'Missing item requirements on active crimes…';
+    ocStatsSetProgress(
+        progressRefs,
+        90,
+        'Checking planning & recruiting OCs…',
+        'Missing item requirements on active crimes…'
+    );
 
     let plannedFetchWarnings = [];
     let plannedMissingRows = [];
@@ -273,6 +338,8 @@ async function runOcStatsAfterCrimesReady(allCrimes, progressRefs) {
     updateOCStatsUI(difficultyStats, playerStats, totalCrimes);
     reapplyOcStatsDateFiltersToTables();
     renderOcPlannedMissingItemsPanel(plannedMissingRows, plannedFetchWarnings);
+
+    ocStatsSetProgress(progressRefs, 100, 'Done', 'Tables updated.');
 
     if (resultsSection) {
         resultsSection.style.display = 'block';
@@ -363,6 +430,44 @@ let ocStatsData = {
     },
     isFetching: false // Guard to prevent multiple simultaneous fetches
 };
+
+let ocStatsDifficultyTableClickDelegated = false;
+
+/** One listener on #difficultyStatsTable: survives innerHTML rebuilds; avoids stacked handlers from updateOCStatsUI / updateDifficultyStatsUI. */
+function handleDifficultyStatsTableDelegatedClick(e) {
+    const container = document.getElementById('difficultyStatsTable');
+    if (!container || !container.contains(e.target)) return;
+
+    const toggle = e.target.closest('.difficulty-expand-toggle');
+    if (toggle && container.contains(toggle)) {
+        e.preventDefault();
+        e.stopPropagation();
+        const d = toggle.getAttribute('data-difficulty');
+        const expanded = toggle.getAttribute('data-expanded') === '1';
+        const rows = container.querySelectorAll(`tr.crime-type-row[data-difficulty="${d}"]`);
+        rows.forEach(r => {
+            r.style.display = expanded ? 'none' : 'table-row';
+        });
+        toggle.setAttribute('data-expanded', expanded ? '0' : '1');
+        toggle.textContent = expanded ? '▶' : '▼';
+        toggle.setAttribute('title', expanded ? 'Show subtypes' : 'Hide subtypes');
+        return;
+    }
+
+    const th = e.target.closest('th[data-column]');
+    if (!th || !container.contains(th)) return;
+    const table = th.closest('table');
+    if (!table || table.id !== 'difficultyTable') return;
+    const column = th.dataset.column;
+    if (column) sortDifficultyTable(column);
+}
+
+function ensureOcStatsDifficultyTableDelegation() {
+    const el = document.getElementById('difficultyStatsTable');
+    if (!el || ocStatsDifficultyTableClickDelegated) return;
+    ocStatsDifficultyTableClickDelegated = true;
+    el.addEventListener('click', handleDifficultyStatsTableDelegatedClick);
+}
 
 function initOrganisedCrimeStats() {
     console.log('[ORGANISED CRIME STATS] initOrganisedCrimeStats CALLED');
@@ -455,6 +560,8 @@ function initOrganisedCrimeStats() {
 
     // Apply saved time filters AFTER selects are cloned — cloneNode can drop programmatic .value
     loadOcStatsDateFiltersFromStorage();
+
+    ensureOcStatsDifficultyTableDelegation();
     
     console.log('[ORGANISED CRIME STATS] Initialization complete - waiting for user interaction');
 }
@@ -469,7 +576,7 @@ const handleOCDataFetch = async () => {
         return;
     }
     
-    const apiKey = localStorage.getItem('tornApiKey');
+    const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
     if (!apiKey) {
         alert('Please enter your API key in the sidebar first');
         return;
@@ -494,67 +601,28 @@ const handleOCDataFetch = async () => {
         if (progressContainer) progressContainer.style.display = 'block';
 
         console.log('[ORGANISED CRIME STATS] Fetching organised crime data...');
-        
-        // Fetch completed crimes with pagination
-        let allCrimes = [];
-        let currentOffset = 0;
-        const limit = 100; // API limit per request
-        let hasMore = true;
-        let pageCount = 0;
 
-        while (hasMore) {
-            pageCount++;
-            if (progressDetails) progressDetails.textContent = `Fetching page ${pageCount}...`;
-            
-            const url = `https://api.torn.com/v2/faction/crimes?cat=completed&offset=${currentOffset}&limit=${limit}&sort=DESC&key=${apiKey}`;
-            console.log(`[ORGANISED CRIME STATS] Fetching page ${pageCount} from offset ${currentOffset}...`);
-            
-            const response = await fetch(ocStatsTornFetchUrl(url));
-            const data = await response.json();
-            
-            if (data.error) {
-                throw new Error(`API error: ${data.error.error}`);
-            }
-            
-            const crimes = data.crimes || [];
-            console.log(`[ORGANISED CRIME STATS] Page ${pageCount}: Found ${crimes.length} crimes`);
-            
-            if (crimes.length === 0) {
-                hasMore = false;
-            } else {
-                allCrimes = allCrimes.concat(crimes);
-                currentOffset += limit;
-                
-                // Update progress
-                if (progressPercentage) progressPercentage.textContent = `${pageCount} pages`;
-                if (progressFill) progressFill.style.width = `${Math.min(100, pageCount * 10)}%`;
-                
-                // Check if there's a next link in metadata
-                if (!data._metadata?.links?.next) {
-                    hasMore = false;
-                }
-                
-                // Safety limit to prevent infinite loops
-                if (pageCount >= 50) {
-                    console.warn('Reached safety limit of 50 pages');
-                    hasMore = false;
-                }
-                
-                // Small delay between requests to avoid rate limiting
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-        }
-        
-        console.log(`[ORGANISED CRIME STATS] Total crimes fetched: ${allCrimes.length}`);
-
-        if (progressFill) progressFill.style.width = '100%';
-        if (progressPercentage) progressPercentage.textContent = `${pageCount} pages`;
-
-        await runOcStatsAfterCrimesReady(allCrimes, {
+        const progressRefs = {
             progressMessage,
             progressDetails,
+            progressPercentage,
+            progressFill,
             resultsSection
-        });
+        };
+
+        const cachedCrimes = loadOcStatsCrimesFromCache(apiKey);
+        const { mergedCrimes: allCrimes, pageCount, newCrimesAdded, hadCache } =
+            await ocStatsFetchCompletedCrimesMerged(apiKey, cachedCrimes, progressRefs);
+
+        if (hadCache) {
+            console.log(
+                `[ORGANISED CRIME STATS] Merge complete: ${allCrimes.length} total crimes (+${newCrimesAdded} new, ${pageCount} page(s) fetched)`
+            );
+        } else {
+            console.log(`[ORGANISED CRIME STATS] Total crimes fetched: ${allCrimes.length}`);
+        }
+
+        await runOcStatsAfterCrimesReady(allCrimes, progressRefs);
 
         saveOcStatsCrimesCache(apiKey, allCrimes, pageCount);
         updateOcStatsCacheHint();
@@ -594,7 +662,7 @@ const handleOCDataLoadFromCache = async () => {
         console.warn('[ORGANISED CRIME STATS] Load already in progress');
         return;
     }
-    const apiKey = localStorage.getItem('tornApiKey');
+    const apiKey = (localStorage.getItem('tornApiKey') || '').trim();
     if (!apiKey) {
         alert('Please enter your API key in the sidebar first');
         return;
@@ -621,16 +689,22 @@ const handleOCDataLoadFromCache = async () => {
         if (fetchBtn) fetchBtn.disabled = true;
         if (loadCacheBtn) loadCacheBtn.disabled = true;
         if (progressContainer) progressContainer.style.display = 'block';
-        if (progressMessage) progressMessage.textContent = 'Loading from local cache...';
-        if (progressDetails) progressDetails.textContent = `${crimes.length} crimes in cache — live API: members, items, then planning/recruiting OCs (missing items list)`;
-        if (progressPercentage) progressPercentage.textContent = 'API…';
-        if (progressFill) progressFill.style.width = '30%';
 
-        await runOcStatsAfterCrimesReady(crimes, {
+        const progressRefs = {
             progressMessage,
             progressDetails,
+            progressPercentage,
+            progressFill,
             resultsSection
-        });
+        };
+        ocStatsSetProgress(
+            progressRefs,
+            18,
+            'Loading from local cache…',
+            `${crimes.length} completed crimes from localStorage — fetching live members, items, planning/recruiting OCs…`
+        );
+
+        await runOcStatsAfterCrimesReady(crimes, progressRefs);
 
         updateOcStatsCacheHint();
         if (progressContainer) progressContainer.style.display = 'none';
@@ -655,11 +729,145 @@ function escapeHtml(text) {
 /** v2 /faction/crimes categories for in-flight OCs (Torn UI: Planning / Recruiting). */
 const OC_STATS_ACTIVE_CRIME_CATS = ['planning', 'recruiting'];
 
+/**
+ * Stable key for deduping crimes across sessions (localStorage cache ↔ API).
+ * Prefer API occurrence id; otherwise executed_at + difficulty + name slug.
+ */
 function ocStatsCrimeStableId(crime) {
     if (!crime || typeof crime !== 'object') return '';
-    if (crime.id != null) return String(crime.id);
+    const nestedCrimeId =
+        crime.crime && typeof crime.crime === 'object' && crime.crime.id != null ? crime.crime.id : null;
+    const rawId =
+        crime.id ??
+        nestedCrimeId ??
+        crime.crime_log_id ??
+        crime.log_id ??
+        crime.crime_instance_id ??
+        crime.instance_id;
+    if (rawId != null && String(rawId).trim() !== '') return String(rawId);
+    const ex = crime.executed_at != null ? Number(crime.executed_at) : NaN;
+    const d = crime.difficulty != null ? String(crime.difficulty) : '';
+    const nm = String(crime.crime_name ?? crime.name ?? crime.title ?? '').trim().toLowerCase();
+    const nmSlug = nm.replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '').slice(0, 96);
+    if (Number.isFinite(ex) && nmSlug) return `__oc_${ex}_${d}_${nmSlug}`;
+    if (crime.crime_id != null && Number.isFinite(ex)) return `cid_${crime.crime_id}_t_${ex}`;
     if (crime.crime_id != null) return `cid_${crime.crime_id}`;
     return '';
+}
+
+/**
+ * Completed crimes are immutable; cache stays valid. API returns newest first (sort=DESC).
+ * Merge: walk pages until an entire page is already in cache, then stop (older pages unchanged).
+ */
+async function ocStatsFetchCompletedCrimesMerged(apiKey, cachedCrimes, progressRefs) {
+    const limit = 100;
+    const mergedById = new Map();
+    const hadCache = Array.isArray(cachedCrimes) && cachedCrimes.length > 0;
+
+    ocStatsSetProgress(
+        progressRefs,
+        5,
+        'Fetching organised crime data…',
+        hadCache ? 'Loading crimes from local cache…' : 'No local cache — will download full completed-crime history…'
+    );
+
+    let skippedCachedNoKey = 0;
+    if (hadCache) {
+        for (const c of cachedCrimes) {
+            const id = ocStatsCrimeStableId(c);
+            if (id) mergedById.set(id, c);
+            else skippedCachedNoKey++;
+        }
+        if (skippedCachedNoKey > 0) {
+            console.warn(
+                `[ORGANISED CRIME STATS] ${skippedCachedNoKey} cached crime(s) lacked a stable id (re-fetch may re-add them)`
+            );
+        }
+        ocStatsSetProgress(
+            progressRefs,
+            12,
+            'Fetching organised crime data…',
+            `${mergedById.size} crime(s) from local cache — fetching only new completions from API…`
+        );
+    } else {
+        ocStatsSetProgress(progressRefs, 8, 'Fetching organised crime data…', 'Downloading completed crimes from API…');
+    }
+
+    let newCrimesAdded = 0;
+    let pageCount = 0;
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+        pageCount++;
+        const pct = hadCache
+            ? Math.min(64, 16 + pageCount * 18)
+            : Math.min(64, 10 + pageCount * 6);
+        const detail = hadCache
+            ? `API page ${pageCount} — ${mergedById.size} total, +${newCrimesAdded} new (stops when a full page matches cache)`
+            : `Downloading page ${pageCount}…`;
+        ocStatsSetProgress(progressRefs, pct, 'Fetching organised crime data…', detail);
+
+        const url = `https://api.torn.com/v2/faction/crimes?cat=completed&offset=${offset}&limit=${limit}&sort=DESC&key=${apiKey}`;
+        const response = await fetch(ocStatsTornFetchUrl(url));
+        const data = await response.json();
+
+        if (data.error) {
+            throw new Error(`API error: ${data.error.error}`);
+        }
+
+        const crimes = ocStatsNormalizeCrimesArray(data.crimes);
+
+        if (crimes.length === 0) {
+            hasMore = false;
+            break;
+        }
+
+        let allSeenBefore = true;
+        for (let i = 0; i < crimes.length; i++) {
+            const crime = crimes[i];
+            const id = ocStatsCrimeStableId(crime);
+            if (!id) {
+                console.warn('[ORGANISED CRIME STATS] Skipping API crime without stable id', crime);
+                allSeenBefore = false;
+                continue;
+            }
+            if (!mergedById.has(id)) {
+                mergedById.set(id, crime);
+                newCrimesAdded++;
+                allSeenBefore = false;
+            }
+        }
+
+        if (hadCache && allSeenBefore) {
+            hasMore = false;
+        } else if (!data._metadata?.links?.next) {
+            hasMore = false;
+        } else if (pageCount >= 50) {
+            console.warn('[ORGANISED CRIME STATS] Reached safety limit of 50 crime pages');
+            hasMore = false;
+        } else {
+            offset += limit;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    ocStatsSetProgress(
+        progressRefs,
+        66,
+        'Fetching organised crime data…',
+        hadCache
+            ? `Crimes ready: ${mergedById.size} total (${newCrimesAdded} new from API, ${pageCount} page(s))`
+            : `Crimes ready: ${mergedById.size} from API (${pageCount} page(s))`
+    );
+
+    return {
+        mergedCrimes: Array.from(mergedById.values()),
+        pageCount,
+        newCrimesAdded,
+        hadCache
+    };
 }
 
 async function ocStatsFetchFactionCrimesPage(apiKey, cat, offset, limit, sort) {
@@ -684,7 +892,7 @@ async function ocStatsFetchAllPagesForCat(apiKey, cat, progressDetails, label) {
             errObj = data.error;
             break;
         }
-        const crimes = data.crimes || [];
+        const crimes = ocStatsNormalizeCrimesArray(data.crimes);
         all = all.concat(crimes);
         if (!data._metadata?.links?.next || crimes.length === 0) break;
         offset += limit;
@@ -720,8 +928,8 @@ async function fetchActiveFactionCrimesForPlannedItemNeeds(apiKey, progressDetai
     const byId = new Map();
     merged.forEach((c) => {
         const sid = ocStatsCrimeStableId(c);
-        const key = sid || `__noid_${byId.size}`;
-        if (!byId.has(key)) byId.set(key, c);
+        if (!sid) return;
+        if (!byId.has(sid)) byId.set(sid, c);
     });
     return { crimes: [...byId.values()], warnings };
 }
@@ -1144,12 +1352,26 @@ function getDifficultySortValue(stat, column) {
     }
 }
 
+function ocStatsFactionCutPercentActive() {
+    const factionCutInput = document.getElementById('ocFactionCutPercent');
+    return factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 0)) : 20;
+}
+
+/** Cash + item-dollar share for one logged participation row (matches Rewards column split logic). */
+function ocStatsPlayerParticipationRowEarnings(row, itemsMap, factionCutPct) {
+    const cash = Number(row && row.cashShare) || 0;
+    const cut = Math.min(100, Math.max(0, Number(factionCutPct)));
+    const afterCut = 1 - cut / 100;
+    const crimeItemsValue = getTotalItemsValue(row && row.itemsBreakdown, itemsMap);
+    const participants = (row && row.participantsInCrime) || 1;
+    return cash + (crimeItemsValue * afterCut) / participants;
+}
+
 // Player's total reward value: their share of cash (already stored) + their share of item value per crime (faction cut and split)
 function getPlayerTotalRewardValue(player) {
     const cashShare = player.totalRewardMoney || 0;
     const itemsMap = ocStatsData.itemsMap || {};
-    const factionCutInput = document.getElementById('ocFactionCutPercent');
-    const factionCutPct = factionCutInput ? Math.min(100, Math.max(0, parseFloat(factionCutInput.value) || 0)) : 0;
+    const factionCutPct = ocStatsFactionCutPercentActive();
     const afterCutMultiplier = 1 - factionCutPct / 100;
     let itemsShare = 0;
     (player.rewardParticipations || []).forEach(part => {
@@ -1158,6 +1380,53 @@ function getPlayerTotalRewardValue(player) {
         itemsShare += crimeItemsValue * afterCutMultiplier / participants;
     });
     return cashShare + itemsShare;
+}
+
+/** HTML for the expandable player section: one table row per OC slot participation. */
+function ocStatsRenderPlayerCrimeParticipationsTableHtml(player, itemsMap, factionCutPct) {
+    const rows = player.playerCrimeParticipations || [];
+    if (!rows.length) {
+        return '<p style="color:#888;margin:0;">No crime rows recorded.</p>';
+    }
+    const map = itemsMap || {};
+    let tbody = '';
+    rows.forEach(row => {
+        const dateStr =
+            row.executedAt != null && Number.isFinite(Number(row.executedAt))
+                ? formatOcCrimeExecutedShort(row.executedAt) || '—'
+                : '—';
+        const earn = ocStatsPlayerParticipationRowEarnings(row, map, factionCutPct);
+        const earnCell =
+            earn > 0
+                ? `<span style="color: var(--accent-color); font-weight: bold;">${formatDollars(earn)}</span>`
+                : '—';
+        const outcomeHtml = row.slotSuccessful
+            ? '<span style="color: #4ecdc4; font-weight: bold;">Success</span>'
+            : '<span style="color: #ff6b6b; font-weight: bold;">Failed</span>';
+        tbody += `
+                            <tr style="border-bottom: 1px solid var(--border-color);">
+                                <td style="padding: 8px; text-align: center; color: #ddd;">${escapeHtml(dateStr)}</td>
+                                <td style="padding: 8px; text-align: center; font-weight: bold;">${Number(row.difficulty) || 0}/10</td>
+                                <td style="padding: 8px; text-align: left;">${escapeHtml(row.crimeName || 'Unknown crime')}</td>
+                                <td style="padding: 8px; text-align: center;">${outcomeHtml}</td>
+                                <td style="padding: 8px; text-align: center; white-space: nowrap;">${earnCell}</td>
+                            </tr>`;
+    });
+    return `
+                                <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">Crimes for ${escapeHtml(player.name)}</h4>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr>
+                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Date</th>
+                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Difficulty</th>
+                                            <th style="padding: 8px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Crime</th>
+                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Your outcome</th>
+                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);" title="Your estimated share when this crime paid out (cash + priced items), after faction cut %">Earnings</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>${tbody}
+                                    </tbody>
+                                </table>`;
 }
 
 /** Sort key for player rows — must match Rewards column (cash + item share), not totalRewardMoney alone. */
@@ -1175,6 +1444,34 @@ function getPlayerSortValue(player, column) {
 // Format amount as whole dollars (no decimals)
 function formatDollars(n) {
     return '$' + Math.round(Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0, minimumFractionDigits: 0 });
+}
+
+/** HTML lines for one reward item breakdown (matches Rewards column styling). */
+function formatOcRewardItemsBreakdownHtml(breakdown, itemsMap) {
+    if (!breakdown || !itemsMap) return '';
+    const entries = Object.entries(breakdown).filter(([, v]) => v && v.quantity > 0);
+    return entries
+        .map(([id, v]) => {
+            const item = itemsMap[id] || itemsMap[String(id)];
+            const name = (item && item.name) ? item.name : (v.name || `Item #${id}`);
+            const qty = v.quantity || 1;
+            const marketVal = item && item.market_value != null ? item.market_value : null;
+            const totalVal = marketVal != null && marketVal > 0 ? marketVal * qty : null;
+            const imgSrc = item && item.image ? String(item.image).replace(/"/g, '&quot;') : '';
+            const img = imgSrc
+                ? `<img src="${imgSrc}" alt="" class="reward-item-img" style="width:20px;height:20px;vertical-align:middle;margin-right:4px;">`
+                : '';
+            const valueStr =
+                totalVal != null ? ` <span style="color: var(--accent-color);">(${formatDollars(totalVal)})</span>` : '';
+            return img + `${qty}× ${escapeHtml(name)}` + valueStr;
+        })
+        .join('<br>');
+}
+
+function ocStatsPayoutHasRewardItems(p) {
+    const b = p && p.rewardItemsBreakdown;
+    if (!b || typeof b !== 'object') return false;
+    return Object.values(b).some(v => v && v.quantity > 0);
 }
 
 // Format reward summary text (money + item count) — used for CSV export
@@ -1208,7 +1505,48 @@ function formatRewardsCell(record) {
 
     if (!hasDetails) return totalDisplay;
 
-    const cashLine = cash > 0 ? `<div>Cash: <span style="color: var(--accent-color);">(${formatDollars(cash)})</span></div>` : '';
+    const cashPayouts = Array.isArray(record.successfulCashPayouts) ? record.successfulCashPayouts : null;
+    const usePerCrimeRewards =
+        cashPayouts &&
+        cashPayouts.length > 0 &&
+        (cash > 0 || entries.length > 0 || cashPayouts.some(ocStatsPayoutHasRewardItems));
+
+    let cashBlock = '';
+    if (usePerCrimeRewards) {
+        const sorted = [...cashPayouts].sort(
+            (a, b) => (Number(a.executedAt) || 0) - (Number(b.executedAt) || 0)
+        );
+        const lines = sorted
+            .map((p, i) => {
+                const dateStr = formatOcCrimeExecutedShort(p.executedAt);
+                const perItems = p.rewardItemsBreakdown || {};
+                const hasPerItems = ocStatsPayoutHasRewardItems(p);
+                const cashAmt =
+                    (p.cash || 0) > 0
+                        ? `<span style="color: var(--accent-color);">${formatDollars(p.cash)}</span>`
+                        : hasPerItems
+                          ? ''
+                          : '<span style="color:#888;">$0</span>';
+                const headBits = [`${i + 1}.`];
+                if (p.crimeName) {
+                    headBits.push(`<span style="color:#ddd;">${escapeHtml(String(p.crimeName))}</span>`);
+                }
+                if (dateStr) {
+                    headBits.push(`<span style="color:#aaa;">${escapeHtml(dateStr)}</span>`);
+                }
+                if (cashAmt) headBits.push(cashAmt);
+                const lineMain = headBits.join(' · ');
+                const itemsSub = hasPerItems
+                    ? `<div style="margin:4px 0 8px 14px;font-size:0.92em;line-height:1.35;"><span style="color:#bbb;">Items:</span><br>${formatOcRewardItemsBreakdownHtml(perItems, itemsMap)}</div>`
+                    : '';
+                return `<div style="text-align:left;">${lineMain}</div>${itemsSub}`;
+            })
+            .join('');
+        cashBlock = `<div style="margin-bottom:6px;"><strong style="color:#bbb;font-size:0.9em;">Rewards per successful crime</strong>${lines}</div>`;
+    } else if (cash > 0) {
+        cashBlock = `<div>Cash: <span style="color: var(--accent-color);">(${formatDollars(cash)})</span></div>`;
+    }
+
     const listHtml = entries.map(([id, v]) => {
         const item = itemsMap[id] || itemsMap[String(id)];
         const name = (item && item.name) ? item.name : (v.name || `Item #${id}`);
@@ -1220,9 +1558,11 @@ function formatRewardsCell(record) {
         const valueStr = totalVal != null ? ` <span style="color: var(--accent-color);">(${formatDollars(totalVal)})</span>` : '';
         return img + `${qty}× ${name}` + valueStr;
     }).join('<br>');
-    const itemsBlock = listHtml ? (cashLine ? '<br>' : '') + listHtml : '';
+    const itemsBlock = listHtml ? (cashBlock ? '<br>' : '') + listHtml : '';
 
-    const detailsContent = `<div style="margin-top: 4px; padding: 6px 8px; background: var(--secondary-color); border-radius: 4px; font-size: 0.85em; max-width: 320px;">${cashLine}${itemsBlock}</div>`;
+    const scrollExtra =
+        usePerCrimeRewards && cashPayouts.length > 8 ? 'max-height:260px;overflow-y:auto;' : '';
+    const detailsContent = `<div style="margin-top: 4px; padding: 6px 8px; background: var(--secondary-color); border-radius: 4px; font-size: 0.85em; max-width: 380px; ${scrollExtra}">${cashBlock}${itemsBlock}</div>`;
     return totalDisplay + ' <details class="reward-details" style="display: inline; margin-left: 6px;"><summary style="cursor: pointer; color: var(--accent-color); font-size: 0.85em;">Details</summary>' + detailsContent + '</details>';
 }
 
@@ -1279,6 +1619,119 @@ function formatCostCell(record) {
     return totalDisplayHtml + ' <details class="cost-details" style="display: inline; margin-left: 6px;"><summary style="cursor: pointer; color: var(--accent-color); font-size: 0.85em;">Details</summary>' + detailsContent + '</details>';
 }
 
+function ocStatsMergeDifficultyBreakdown(difficultyStats, field) {
+    const out = {};
+    (difficultyStats || []).forEach(stat => {
+        const b = stat[field];
+        if (!b || typeof b !== 'object') return;
+        Object.entries(b).forEach(([id, v]) => {
+            if (!v || !v.quantity) return;
+            const q = Number(v.quantity) || 0;
+            if (!out[id]) out[id] = { name: v.name, quantity: 0 };
+            out[id].quantity += q;
+            if (v.name && !out[id].name) out[id].name = v.name;
+        });
+    });
+    return out;
+}
+
+function ocStatsSummaryTotalRewardCash(difficultyStats) {
+    return (difficultyStats || []).reduce((s, st) => s + (Number(st.totalRewardMoney) || 0), 0);
+}
+
+function ocStatsSummaryTotalCostCash(difficultyStats) {
+    return (difficultyStats || []).reduce((s, st) => s + (Number(st.totalCostMoney) || 0), 0);
+}
+
+function formatOcSummaryRewardsDetailsBody(difficultyStats) {
+    const itemsMap = ocStatsData.itemsMap || {};
+    const cash = ocStatsSummaryTotalRewardCash(difficultyStats);
+    const merged = ocStatsMergeDifficultyBreakdown(difficultyStats, 'rewardItemsBreakdown');
+    const itemsVal = getTotalItemsValue(merged, itemsMap);
+    const itemsListHtml = formatOcRewardItemsBreakdownHtml(merged, itemsMap);
+    if (cash <= 0 && !itemsListHtml) return '';
+
+    const cashLine =
+        cash > 0
+            ? `<div>Cash: <span style="color: var(--accent-color);">${formatDollars(cash)}</span></div>`
+            : '';
+    const itemsSection = itemsListHtml
+        ? `<div style="margin-top:${cashLine ? '10px' : '0'};"><strong style="color:#bbb;font-size:0.95em;">Items</strong><br>${itemsListHtml}<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border-color);">Combined item value: <span style="color:var(--accent-color);">${formatDollars(itemsVal)}</span></div></div>`
+        : '';
+    return `<div style="margin-top: 4px; padding: 8px 10px; background: var(--secondary-color); border-radius: 4px; font-size: 0.88em; max-width: min(420px, 92vw); max-height: 300px; overflow-y: auto;">${cashLine}${itemsSection}</div>`;
+}
+
+function formatOcSummaryCostDetailsBody(difficultyStats) {
+    const itemsMap = ocStatsData.itemsMap || {};
+    const cash = ocStatsSummaryTotalCostCash(difficultyStats);
+    const breakdown = ocStatsMergeDifficultyBreakdown(difficultyStats, 'costItemsBreakdown');
+    const usedBreakdown = ocStatsMergeDifficultyBreakdown(difficultyStats, 'usedNotConsumedBreakdown');
+    const consumedVal = getTotalItemsValue(breakdown, itemsMap);
+    const entries = Object.entries(breakdown).filter(([, v]) => v && v.quantity > 0);
+    const usedEntries = Object.entries(usedBreakdown).filter(([, v]) => v && v.quantity > 0);
+    if (cash <= 0 && entries.length === 0 && usedEntries.length === 0) return '';
+
+    const cashLine = cash > 0 ? `<div>Money: <span style="color: #ffab91;">${formatDollars(cash)}</span></div>` : '';
+    const listHtml = entries
+        .map(([id, v]) => {
+            const item = itemsMap[id] || itemsMap[String(id)];
+            const name = (item && item.name) ? item.name : (v.name || `Item #${id}`);
+            const qty = v.quantity || 1;
+            const marketVal = item && item.market_value != null ? item.market_value : null;
+            const totalVal = marketVal != null && marketVal > 0 ? marketVal * qty : null;
+            const imgSrc = item && item.image ? String(item.image).replace(/"/g, '&quot;') : '';
+            const img = imgSrc
+                ? `<img src="${imgSrc}" alt="" class="reward-item-img" style="width:20px;height:20px;vertical-align:middle;margin-right:4px;">`
+                : '';
+            const valueStr = totalVal != null ? ` <span style="color: #ffab91;">(${formatDollars(totalVal)})</span>` : '';
+            return img + `${qty}× ${escapeHtml(name)} <span style="color:#aaa;">(consumed)</span>` + valueStr;
+        })
+        .join('<br>');
+
+    const usedHtml = usedEntries
+        .map(([id, v]) => {
+            const item = itemsMap[id] || itemsMap[String(id)];
+            const name = (item && item.name) ? item.name : (v.name || `Item #${id}`);
+            const qty = v.quantity || 1;
+            const imgSrc = item && item.image ? String(item.image).replace(/"/g, '&quot;') : '';
+            const img = imgSrc
+                ? `<img src="${imgSrc}" alt="" class="reward-item-img" style="width:20px;height:20px;vertical-align:middle;margin-right:4px;">`
+                : '';
+            return img + `${qty}× ${escapeHtml(name)} <span style="color:#888;">(used, not consumed)</span>`;
+        })
+        .join('<br>');
+
+    const consumedItemsFooter =
+        listHtml && consumedVal > 0
+            ? `<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border-color);">Consumed items value: <span style="color:#ffab91;">${formatDollars(consumedVal)}</span></div>`
+            : '';
+
+    const consumedInner = `${cashLine}${listHtml ? (cashLine ? '<br>' : '') + listHtml : ''}${consumedItemsFooter}`;
+    const consumedBlock =
+        cashLine || listHtml
+            ? `<div style="margin-bottom:10px;"><strong style="color:#bbb;font-size:0.95em;">Counted toward cost</strong><br>${consumedInner}</div>`
+            : '';
+    const usedBlock = usedHtml
+        ? `<div><strong style="color:#bbb;font-size:0.95em;">Used but not consumed</strong><br>${usedHtml}</div>`
+        : '';
+
+    return `<div style="margin-top: 4px; padding: 8px 10px; background: var(--secondary-color); border-radius: 4px; font-size: 0.88em; max-width: min(420px, 92vw); max-height: 300px; overflow-y: auto;">${consumedBlock}${usedBlock}</div>`;
+}
+
+function formatOcSummaryRewardValueWithDetails(difficultyStats, totalValue) {
+    const body = formatOcSummaryRewardsDetailsBody(difficultyStats);
+    const main = `<span style="color: var(--accent-color);">${formatDollars(totalValue)}</span>`;
+    if (!body) return main;
+    return `<div style="display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start;gap:6px;max-width:100%;"><span>${main}</span><details class="oc-summary-totals-details"><summary style="cursor:pointer;color:var(--accent-color);font-size:1em;line-height:1;user-select:none;" title="Cash &amp; items breakdown">▼</summary>${body}</details></div>`;
+}
+
+function formatOcSummaryCostValueWithDetails(difficultyStats, totalCostValue) {
+    const body = formatOcSummaryCostDetailsBody(difficultyStats);
+    const main = `<span style="color: #ffab91;">${formatDollars(totalCostValue)}</span>`;
+    if (!body) return main;
+    return `<div style="display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start;gap:6px;max-width:100%;"><span>${main}</span><details class="oc-summary-totals-details"><summary style="cursor:pointer;color:var(--accent-color);font-size:1em;line-height:1;user-select:none;" title="Money &amp; items breakdown">▼</summary>${body}</details></div>`;
+}
+
 function formatNetCell(stat) {
     const n = getDifficultyStatNetValue(stat);
     const color = n >= 0 ? '#4ecdc4' : '#ff6b6b';
@@ -1302,10 +1755,11 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             totalRewardItemCount: 0,
             totalRewardRespect: 0,
             rewardItemsBreakdown: {},
+            successfulCashPayouts: [],
             totalCostMoney: 0,
             costItemsBreakdown: {},
             usedNotConsumedBreakdown: {},
-            crimeTypes: {} // { [crimeId]: { crimeId, crimeName, total, successful, failed, totalRewardMoney, rewardItemsBreakdown } }
+            crimeTypes: {} // { [key]: { ..., rewardItemsBreakdown, successfulCashPayouts[] per success } }
         };
     }
     
@@ -1326,7 +1780,8 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             rewardItemsBreakdown: {},
             rewardParticipations: [], // Per-crime: { itemsBreakdown, participantsInCrime } for computing player share of total value
             difficultyBreakdown: {},
-            difficultyCrimeTypeBreakdown: {} // { [difficulty]: { [crimeTypeKey]: { crimeName, total, successful, failed } } }
+            difficultyCrimeTypeBreakdown: {}, // { [difficulty]: { [crimeTypeKey]: { crimeName, total, successful, failed } } }
+            playerCrimeParticipations: [] // One row per slot: details table + CSV crime log
         };
         
         // Initialize difficulty breakdown
@@ -1358,10 +1813,11 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                 ? parseCrimeRewards(crime.rewards)
                 : { money: 0, itemCount: 0, items: [], respect: 0 };
         
-        // Count current members in this crime (for splitting player share)
+        // All filled slots split the crime reward in-game (includes members who left the faction).
+        // Using only current roster count inflated each tracked member's share (e.g. 6 real slots / 4 current = ~1.5×).
         let participantsInCrime = 0;
         if (crime.slots && Array.isArray(crime.slots)) {
-            participantsInCrime = crime.slots.filter(slot => slot.user && slot.user.id && currentMemberIds.has(slot.user.id.toString())).length;
+            participantsInCrime = crime.slots.filter(slot => slot.user && slot.user.id).length;
         }
         
         // Group by subtype name (used for both difficulty stats and player breakdown)
@@ -1379,6 +1835,14 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                     difficultyMap[difficulty].totalRewardItemCount += rewardParsed.itemCount;
                     difficultyMap[difficulty].totalRewardRespect += rewardParsed.respect || 0;
                     mergeItemBreakdown(difficultyMap[difficulty].rewardItemsBreakdown, rewardParsed.items);
+                    const payoutRewardItems = {};
+                    mergeItemBreakdown(payoutRewardItems, rewardParsed.items);
+                    difficultyMap[difficulty].successfulCashPayouts.push({
+                        cash: rewardParsed.money || 0,
+                        executedAt: crime.executed_at != null ? Number(crime.executed_at) : null,
+                        crimeName,
+                        rewardItemsBreakdown: payoutRewardItems
+                    });
                 } else {
                     difficultyMap[difficulty].failed++;
                 }
@@ -1394,6 +1858,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                         totalRewardItemCount: 0,
                         totalRewardRespect: 0,
                         rewardItemsBreakdown: {},
+                        successfulCashPayouts: [],
                         totalCostMoney: 0,
                         costItemsBreakdown: {},
                         usedNotConsumedBreakdown: {}
@@ -1407,6 +1872,13 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                     ct.totalRewardItemCount += rewardParsed.itemCount;
                     ct.totalRewardRespect += rewardParsed.respect || 0;
                     mergeItemBreakdown(ct.rewardItemsBreakdown, rewardParsed.items);
+                    const ctPayoutItems = {};
+                    mergeItemBreakdown(ctPayoutItems, rewardParsed.items);
+                    ct.successfulCashPayouts.push({
+                        cash: rewardParsed.money || 0,
+                        executedAt: crime.executed_at != null ? Number(crime.executed_at) : null,
+                        rewardItemsBreakdown: ctPayoutItems
+                    });
                 } else {
                     ct.failed++;
                 }
@@ -1442,7 +1914,8 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                                 rewardItemsBreakdown: {},
                                 rewardParticipations: [],
                                 difficultyBreakdown: {},
-                                difficultyCrimeTypeBreakdown: {}
+                                difficultyCrimeTypeBreakdown: {},
+                                playerCrimeParticipations: []
                             };
                             for (let i = 1; i <= 10; i++) playerMap[playerId].difficultyBreakdown[i] = { successful: 0, failed: 0, total: 0 };
                         }
@@ -1450,27 +1923,62 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                         // Count participation
                         playerMap[playerId].totalParticipations++;
                         
-                        // Credit this player with their share of rewards (faction takes cut, rest split between participants)
-                        if (status === 'Successful' && (rewardParsed.money > 0 || rewardParsed.items.length > 0)) {
-                            playerMap[playerId].totalRewardMoney += rewardParsed.money * playerShareMultiplier;
+                        const difficulty = crime.difficulty;
+                        
+                        if (!playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty]) {
+                            playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty] = {};
+                        }
+                        const pct = playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty];
+                        if (!pct[crimeTypeKey]) {
+                            pct[crimeTypeKey] = {
+                                crimeTypeKey,
+                                crimeName,
+                                total: 0,
+                                successful: 0,
+                                failed: 0,
+                                successfulEarningsMoney: 0
+                            };
+                        }
+                        
+                        // Credit this player with their share only if their slot succeeded (crime can succeed while one member is left behind / fails).
+                        const ocOut = outcome == null ? '' : String(outcome).toLowerCase();
+                        const slotGetsPaid =
+                            !ocOut || ocOut === 'successful' || ocOut === 'success';
+                        const execAt = crime.executed_at != null ? Number(crime.executed_at) : null;
+                        let paidCashShare = 0;
+                        const paidItemsBreakdown = {};
+                        if (
+                            status === 'Successful' &&
+                            slotGetsPaid &&
+                            (rewardParsed.money > 0 || rewardParsed.items.length > 0)
+                        ) {
+                            paidCashShare = rewardParsed.money * playerShareMultiplier;
+                            playerMap[playerId].totalRewardMoney += paidCashShare;
                             playerMap[playerId].totalRewardItemCount += rewardParsed.itemCount;
-                            // Store per-crime item breakdown and participant count so we can compute their share of item value when itemsMap is available
-                            const crimeItemsBreakdown = {};
-                            mergeItemBreakdown(crimeItemsBreakdown, rewardParsed.items);
+                            pct[crimeTypeKey].successfulEarningsMoney += paidCashShare;
+                            mergeItemBreakdown(paidItemsBreakdown, rewardParsed.items);
                             playerMap[playerId].rewardParticipations.push({
-                                itemsBreakdown: crimeItemsBreakdown,
+                                crimeTypeKey,
+                                itemsBreakdown: paidItemsBreakdown,
                                 participantsInCrime
                             });
                         }
+                        playerMap[playerId].playerCrimeParticipations.push({
+                            executedAt: execAt,
+                            difficulty,
+                            crimeName,
+                            crimeTypeKey,
+                            slotSuccessful: outcome === 'Successful',
+                            cashShare: paidCashShare,
+                            itemsBreakdown: paidItemsBreakdown,
+                            participantsInCrime: participantsInCrime || 1
+                        });
                         
-                        // Calculate participation-based score
-                        const difficulty = crime.difficulty;
                         const totalParticipants = crime.slots ? crime.slots.length : 0;
-                        const participationRatio = totalParticipants / 6; // 6 is 100% participation
+                        const participationRatio = totalParticipants / 6;
                         const participationScore = Math.round(difficulty * participationRatio);
                         playerMap[playerId].totalScore += participationScore;
                         
-                        // Track difficulty-specific stats
                         if (playerMap[playerId].difficultyBreakdown[difficulty]) {
                             playerMap[playerId].difficultyBreakdown[difficulty].total++;
                             if (outcome === 'Successful') {
@@ -1479,12 +1987,6 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                                 playerMap[playerId].difficultyBreakdown[difficulty].failed++;
                             }
                         }
-                        // Track per-difficulty per-crime-type for player details
-                        if (!playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty]) {
-                            playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty] = {};
-                        }
-                        const pct = playerMap[playerId].difficultyCrimeTypeBreakdown[difficulty];
-                        if (!pct[crimeTypeKey]) pct[crimeTypeKey] = { crimeName, total: 0, successful: 0, failed: 0 };
                         pct[crimeTypeKey].total++;
                         if (outcome === 'Successful') pct[crimeTypeKey].successful++; else pct[crimeTypeKey].failed++;
                         
@@ -1517,6 +2019,20 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
         if (player.totalParticipations > 0) {
             player.successRate = Math.round((player.successfulParticipations / player.totalParticipations) * 100);
         }
+    });
+
+    Object.values(playerMap).forEach(player => {
+        const rows = player.playerCrimeParticipations;
+        if (!Array.isArray(rows) || rows.length < 2) return;
+        rows.sort((a, b) => {
+            const ta = Number(a.executedAt) || 0;
+            const tb = Number(b.executedAt) || 0;
+            if (tb !== ta) return tb - ta;
+            const da = Number(a.difficulty) || 0;
+            const db = Number(b.difficulty) || 0;
+            if (db !== da) return db - da;
+            return String(b.crimeName || '').localeCompare(String(a.crimeName || ''));
+        });
     });
     
     // Convert to arrays and sort
@@ -1568,7 +2084,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Total rewards:</span>
-                        <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
+                        <span class="summary-value">${formatOcSummaryRewardValueWithDetails(difficultyStats, totalValue)}</span>
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Total respect (from rewards):</span>
@@ -1576,7 +2092,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Total cost:</span>
-                        <span class="summary-value" style="color: #ffab91;">${formatDollars(totalCostValue)}</span>
+                        <span class="summary-value">${formatOcSummaryCostValueWithDetails(difficultyStats, totalCostValue)}</span>
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Net profit:</span>
@@ -1597,7 +2113,6 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                         <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
                         <li>Reward and consumed-item values use current market value, not the value at the time of the crime.</li>
                         <li>Cost = Current Market Value of consumed items</li>
-                        <li>Respect total = sum of rewards.respect on successful crimes (not split per player).</li>
                     </ul>
                 </div>
             </div>
@@ -1664,31 +2179,10 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
         `;
         
         difficultyTableContainer.innerHTML = html;
-        
-        difficultyTableContainer.addEventListener('click', (e) => {
-            const toggle = e.target.closest('.difficulty-expand-toggle');
-            if (!toggle) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const d = toggle.getAttribute('data-difficulty');
-            const expanded = toggle.getAttribute('data-expanded') === '1';
-            const rows = difficultyTableContainer.querySelectorAll(`tr.crime-type-row[data-difficulty="${d}"]`);
-            rows.forEach(r => { r.style.display = expanded ? 'none' : 'table-row'; });
-            toggle.setAttribute('data-expanded', expanded ? '0' : '1');
-            toggle.textContent = expanded ? '▶' : '▼';
-            toggle.setAttribute('title', expanded ? 'Show subtypes' : 'Hide subtypes');
-        });
+
+        ensureOcStatsDifficultyTableDelegation();
         
         attachFactionCutListener();
-        
-        // Add sort handlers for difficulty table
-        const difficultyHeaders = difficultyTableContainer.querySelectorAll('th[data-column]');
-        difficultyHeaders.forEach(header => {
-            header.addEventListener('click', () => {
-                const column = header.dataset.column;
-                sortDifficultyTable(column);
-            });
-        });
         
         // Update sort indicators
         updateDifficultySortIndicators();
@@ -1735,6 +2229,9 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     <tbody>
         `;
         
+        const ocDetailItemsMap = ocStatsData.itemsMap || {};
+        const ocDetailCutPct = ocStatsFactionCutPercentActive();
+        
         playerStats.forEach((player, index) => {
             const rateColor = player.successRate >= 70 ? '#4ecdc4' : 
                              player.successRate >= 50 ? '#ffd700' : '#ff6b6b';
@@ -1774,57 +2271,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                     <tr class="details-row" data-player-id="${player.id}" style="display: none; background-color: rgba(255, 215, 0, 0.05);">
                         <td colspan="9" style="padding: 20px;">
                             <div style="background-color: var(--secondary-color); padding: 15px; border-radius: 8px; border-left: 3px solid var(--accent-color);">
-                                <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">Difficulty Breakdown for ${player.name}</h4>
-                                <table style="width: 100%; border-collapse: collapse;">
-                                    <thead>
-                                        <tr>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Difficulty</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Total</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Successful</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Failed</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Success Rate</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                `;
-                
-                // Add rows for each difficulty level that has participation, then subtype rows
-                for (let diff = 1; diff <= 10; diff++) {
-                    const breakdown = player.difficultyBreakdown[diff];
-                    if (breakdown && breakdown.total > 0) {
-                        const diffSuccessRate = Math.round((breakdown.successful / breakdown.total) * 100);
-                        const diffRateColor = diffSuccessRate >= 70 ? '#4ecdc4' : 
-                                            diffSuccessRate >= 50 ? '#ffd700' : '#ff6b6b';
-                        html += `
-                            <tr style="border-bottom: 1px solid var(--border-color);">
-                                <td style="padding: 8px; text-align: center; font-weight: bold;">${diff}/10</td>
-                                <td style="padding: 8px; text-align: center;">${breakdown.total}</td>
-                                <td style="padding: 8px; text-align: center; color: #4ecdc4; font-weight: bold;">${breakdown.successful}</td>
-                                <td style="padding: 8px; text-align: center; color: #ff6b6b; font-weight: bold;">${breakdown.failed}</td>
-                                <td style="padding: 8px; text-align: center; font-weight: bold; color: ${diffRateColor};">${diffSuccessRate}%</td>
-                            </tr>
-                        `;
-                        const crimeTypes = player.difficultyCrimeTypeBreakdown && player.difficultyCrimeTypeBreakdown[diff] ? Object.values(player.difficultyCrimeTypeBreakdown[diff]) : [];
-                        crimeTypes.forEach(ct => {
-                            const ctTotal = ct.total || 0;
-                            const ctRate = ctTotal > 0 ? Math.round(((ct.successful || 0) / ctTotal) * 100) : 0;
-                            const ctRateColor = ctRate >= 70 ? '#4ecdc4' : ctRate >= 50 ? '#ffd700' : '#ff6b6b';
-                            html += `
-                            <tr style="border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.03);">
-                                <td style="padding: 6px 8px 6px 20px; font-size: 0.9em; color: var(--text-color);">${escapeHtml(ct.crimeName || 'Unknown crime')}</td>
-                                <td style="padding: 6px 8px; text-align: center;">${ctTotal}</td>
-                                <td style="padding: 6px 8px; text-align: center; color: #4ecdc4;">${ct.successful || 0}</td>
-                                <td style="padding: 6px 8px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
-                                <td style="padding: 6px 8px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
-                            </tr>
-                        `;
-                        });
-                    }
-                }
-                
-                html += `
-                                    </tbody>
-                                </table>
+                                ${ocStatsRenderPlayerCrimeParticipationsTableHtml(player, ocDetailItemsMap, ocDetailCutPct)}
                             </div>
                         </td>
                     </tr>
@@ -2074,18 +2521,25 @@ function exportOCStatsToCSV() {
         csvContent += `${window.toolsCsvMemberCell(player)},${player.id},${player.totalParticipations},${player.totalScore},${player.successfulParticipations},${player.failedParticipations},${player.successRate}%,${hiDcsv},"${Array.isArray(player.rewardParticipations) ? formatDollars(getPlayerTotalRewardValue(player)) : formatRewardsSummary(player)}"\n`;
     });
     
-    csvContent += '\n\nPLAYER DIFFICULTY BREAKDOWN\n';
-    csvContent += 'Player Name,Difficulty (of 10 max),Total,Successful,Failed,Success Rate\n';
+    csvContent += '\n\nPLAYER CRIME LOG (one row per participation)\n';
+    csvContent +=
+        'Player Name,Player ID,Date completed (month day),Difficulty (of 10 max),Crime,Your outcome,Earnings ($)\n';
+    const csvItemsMap = ocStatsData.itemsMap || {};
+    const csvCutPct = ocStatsFactionCutPercentActive();
     sortedPlayerStats.forEach(player => {
-        if (player.totalParticipations > 0) {
-            for (let diff = 1; diff <= 10; diff++) {
-                const breakdown = player.difficultyBreakdown[diff];
-                if (breakdown && breakdown.total > 0) {
-                    const diffSuccessRate = Math.round((breakdown.successful / breakdown.total) * 100);
-                    csvContent += `${window.toolsCsvMemberCell(player)},${formatOcDifficultyForCsv(diff)},${breakdown.total},${breakdown.successful},${breakdown.failed},${diffSuccessRate}%\n`;
-                }
-            }
-        }
+        if (player.totalParticipations <= 0) return;
+        (player.playerCrimeParticipations || []).forEach(row => {
+            const dateStr =
+                row.executedAt != null && Number.isFinite(Number(row.executedAt))
+                    ? formatOcCrimeExecutedShort(row.executedAt) || ''
+                    : '';
+            const outcomeStr = row.slotSuccessful ? 'Success' : 'Failed';
+            const earn = ocStatsPlayerParticipationRowEarnings(row, csvItemsMap, csvCutPct);
+            const earnStr = earn > 0 ? formatDollars(earn) : '';
+            const diffCsv = formatOcDifficultyForCsv(row.difficulty);
+            const crimeCsv = String(row.crimeName || '').replace(/"/g, '""');
+            csvContent += `${window.toolsCsvMemberCell(player)},${player.id},"${dateStr}",${diffCsv},"${crimeCsv}",${outcomeStr},"${earnStr}"\n`;
+        });
     });
     
     // Create and download the CSV file
@@ -2266,7 +2720,7 @@ function updateDifficultyStatsUI(difficultyStats) {
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Total rewards:</span>
-                        <span class="summary-value" style="color: var(--accent-color);">${formatDollars(totalValue)}</span>
+                        <span class="summary-value">${formatOcSummaryRewardValueWithDetails(difficultyStats, totalValue)}</span>
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Total respect (from rewards):</span>
@@ -2274,7 +2728,7 @@ function updateDifficultyStatsUI(difficultyStats) {
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Total cost:</span>
-                        <span class="summary-value" style="color: #ffab91;">${formatDollars(totalCostValue)}</span>
+                        <span class="summary-value">${formatOcSummaryCostValueWithDetails(difficultyStats, totalCostValue)}</span>
                     </div>
                     <div class="summary-item">
                         <span class="summary-label">Net profit:</span>
@@ -2295,7 +2749,6 @@ function updateDifficultyStatsUI(difficultyStats) {
                         <li>Showing current faction members only; stats include crimes where at least one current member participated.</li>
                         <li>Reward and consumed-item values use current market value, not the value at the time of the crime.</li>
                         <li>Cost = Current Market Value of consumed items</li>
-                        <li>Respect total = sum of rewards.respect on successful crimes (not split per player).</li>
                     </ul>
                 </div>
             </div>
@@ -2360,35 +2813,10 @@ function updateDifficultyStatsUI(difficultyStats) {
         `;
         
         difficultyTable.innerHTML = html;
-        
-        difficultyTable.addEventListener('click', (e) => {
-            const toggle = e.target.closest('.difficulty-expand-toggle');
-            if (!toggle) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const d = toggle.getAttribute('data-difficulty');
-            const expanded = toggle.getAttribute('data-expanded') === '1';
-            const container = document.getElementById('difficultyStatsTable');
-            const rows = container ? container.querySelectorAll(`tr.crime-type-row[data-difficulty="${d}"]`) : [];
-            rows.forEach(r => { r.style.display = expanded ? 'none' : 'table-row'; });
-            toggle.setAttribute('data-expanded', expanded ? '0' : '1');
-            toggle.textContent = expanded ? '▶' : '▼';
-            toggle.setAttribute('title', expanded ? 'Show subtypes' : 'Hide subtypes');
-        });
+
+        ensureOcStatsDifficultyTableDelegation();
         
         attachFactionCutListener();
-        
-        // Add sorting functionality
-        const difficultyTableElement = document.getElementById('difficultyTable');
-        if (difficultyTableElement) {
-            const headers = difficultyTableElement.querySelectorAll('th[data-column]');
-            headers.forEach(header => {
-                header.addEventListener('click', () => {
-                    const column = header.dataset.column;
-                    sortDifficultyTable(column);
-                });
-            });
-        }
         
         // Update sort indicators
         updateDifficultySortIndicators();
@@ -2443,6 +2871,9 @@ function updatePlayerStatsUI(playerStats) {
                 <tbody>
         `;
         
+        const ocDetailItemsMapRefresh = ocStatsData.itemsMap || {};
+        const ocDetailCutPctRefresh = ocStatsFactionCutPercentActive();
+        
         playerStats.forEach((player, index) => {
             const rateColor = player.successRate >= 70 ? '#4ecdc4' : 
                             player.successRate >= 50 ? '#ffd700' : '#ff6b6b';
@@ -2481,56 +2912,7 @@ function updatePlayerStatsUI(playerStats) {
                     <tr class="details-row" data-player-id="${player.id}" style="display: none; background-color: rgba(255, 215, 0, 0.05);">
                         <td colspan="9" style="padding: 20px;">
                             <div style="background-color: var(--secondary-color); padding: 15px; border-radius: 8px; border-left: 3px solid var(--accent-color);">
-                                <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">Difficulty Breakdown for ${player.name}</h4>
-                                <table style="width: 100%; border-collapse: collapse;">
-                                    <thead>
-                                        <tr>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Difficulty</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Total</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Successful</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Failed</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Success Rate</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                `;
-                
-                for (let diff = 1; diff <= 10; diff++) {
-                    const breakdown = player.difficultyBreakdown[diff];
-                    if (breakdown && breakdown.total > 0) {
-                        const diffSuccessRate = Math.round((breakdown.successful / breakdown.total) * 100);
-                        const diffRateColor = diffSuccessRate >= 70 ? '#4ecdc4' : 
-                                            diffSuccessRate >= 50 ? '#ffd700' : '#ff6b6b';
-                        html += `
-                            <tr style="border-bottom: 1px solid var(--border-color);">
-                                <td style="padding: 8px; text-align: center; font-weight: bold;">${diff}/10</td>
-                                <td style="padding: 8px; text-align: center;">${breakdown.total}</td>
-                                <td style="padding: 8px; text-align: center; color: #4ecdc4; font-weight: bold;">${breakdown.successful}</td>
-                                <td style="padding: 8px; text-align: center; color: #ff6b6b; font-weight: bold;">${breakdown.failed}</td>
-                                <td style="padding: 8px; text-align: center; font-weight: bold; color: ${diffRateColor};">${diffSuccessRate}%</td>
-                            </tr>
-                        `;
-                        const crimeTypes = player.difficultyCrimeTypeBreakdown && player.difficultyCrimeTypeBreakdown[diff] ? Object.values(player.difficultyCrimeTypeBreakdown[diff]) : [];
-                        crimeTypes.forEach(ct => {
-                            const ctTotal = ct.total || 0;
-                            const ctRate = ctTotal > 0 ? Math.round(((ct.successful || 0) / ctTotal) * 100) : 0;
-                            const ctRateColor = ctRate >= 70 ? '#4ecdc4' : ctRate >= 50 ? '#ffd700' : '#ff6b6b';
-                            html += `
-                            <tr style="border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.03);">
-                                <td style="padding: 6px 8px 6px 20px; font-size: 0.9em; color: var(--text-color);">${escapeHtml(ct.crimeName || 'Unknown crime')}</td>
-                                <td style="padding: 6px 8px; text-align: center;">${ctTotal}</td>
-                                <td style="padding: 6px 8px; text-align: center; color: #4ecdc4;">${ct.successful || 0}</td>
-                                <td style="padding: 6px 8px; text-align: center; color: #ff6b6b;">${ct.failed || 0}</td>
-                                <td style="padding: 6px 8px; text-align: center; color: ${ctRateColor};">${ctRate}%</td>
-                            </tr>
-                        `;
-                        });
-                    }
-                }
-                
-                html += `
-                                    </tbody>
-                                </table>
+                                ${ocStatsRenderPlayerCrimeParticipationsTableHtml(player, ocDetailItemsMapRefresh, ocDetailCutPctRefresh)}
                             </div>
                         </td>
                     </tr>

@@ -2676,6 +2676,14 @@ th small {
   text-align: left;
 }
 
+/* Organised Crime Stats — summary Total rewards / Total cost breakdown */
+.oc-summary-totals-details summary {
+  list-style: none;
+}
+.oc-summary-totals-details summary::-webkit-details-marker {
+  display: none;
+}
+
 /* Organised Crime Stats — planned / recruiting OC missing items */
 .oc-planned-missing-panel.summary-section {
   margin-bottom: 0;

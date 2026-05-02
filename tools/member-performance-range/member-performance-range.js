@@ -1050,19 +1050,18 @@
             if (!crime.slots || !Array.isArray(crime.slots)) return;
 
             const crimeStatus = crime.status == null ? '' : String(crime.status);
-            const participantsInCrime = crime.slots.filter(
-                slot => slot.user && slot.user.id && currentMemberIds.has(slot.user.id.toString())
-            ).length;
+            // Match Organised Crime Stats: split among every filled slot, not only current roster (ex-members still shared the pool).
+            const rewardSplitCount = crime.slots.filter(slot => slot.user && slot.user.id).length;
             const rewardParsed =
                 crimeStatus === 'Successful' && crime.rewards ? mprParseCrimeRewards(crime.rewards) : { money: 0, items: [] };
             const itemDollars = mprRewardItemsDollarValue(rewardParsed.items, iv);
             const totalRewardDollars = (rewardParsed.money || 0) + itemDollars;
             const shareReward =
                 crimeStatus === 'Successful' &&
-                participantsInCrime > 0 &&
+                rewardSplitCount > 0 &&
                 (rewardParsed.money > 0 || (rewardParsed.items && rewardParsed.items.length > 0));
-            const playerMoneyMult = shareReward ? (1 - cut / 100) / participantsInCrime : 0;
-            const factionMoneyMult = shareReward ? (cut / 100) / participantsInCrime : 0;
+            const playerMoneyMult = shareReward ? (1 - cut / 100) / rewardSplitCount : 0;
+            const factionMoneyMult = shareReward ? (cut / 100) / rewardSplitCount : 0;
 
             crime.slots.forEach(slot => {
                 if (!slot.user || !slot.user.id) return;
@@ -1098,7 +1097,11 @@
                 pm.totalScore += participationScore;
 
                 if (shareReward) {
-                    pm.ocEarningsEstimate += totalRewardDollars * playerMoneyMult;
+                    const oc = slot.user.outcome == null ? '' : String(slot.user.outcome).toLowerCase();
+                    const slotPaid = !oc || oc === 'successful' || oc === 'success';
+                    if (slotPaid) {
+                        pm.ocEarningsEstimate += totalRewardDollars * playerMoneyMult;
+                    }
                     pm.ocFactionCutEstimate += totalRewardDollars * factionMoneyMult;
                 }
 
