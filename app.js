@@ -4162,6 +4162,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     else if (window.initWarDashboard) window.initWarDashboard();
                 };
                 document.head.appendChild(script);
+            } else if (page.includes('alliance-dashboard')) {
+                const oldScript = document.getElementById('alliance-dashboard-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src = 'tools/alliance-dashboard/alliance-dashboard.js';
+                script.id = 'alliance-dashboard-script';
+                script.onload = () => {
+                    if (typeof window.initAllianceDashboard === 'function') window.initAllianceDashboard();
+                };
+                document.head.appendChild(script);
             } else if (page.includes('vault-checker')) {
                 const oldScript = document.getElementById('vault-checker-script');
                 if (oldScript) oldScript.remove();

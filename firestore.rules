@@ -38,5 +38,22 @@ service cloud.firestore {
     match /factionChainWatch/{factionId} {
       allow read, write: if false;
     }
+    // Alliance Dashboard: roster + vault. Clients read for live UI; all writes go through Cloud Functions (Torn-verified).
+    match /alliances/{allianceId} {
+      allow read: if true;
+      allow write: if false;
+      match /vaultItems/{itemId} {
+        allow read: if true;
+        allow write: if false;
+      }
+      match /factionTerritory/{factionId} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+    // Alliance ↔ faction index (callable-only writes; clients use allianceListMine).
+    match /allianceFactionMemberships/{docId} {
+      allow read, write: if false;
+    }
   }
 }

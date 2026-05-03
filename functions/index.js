@@ -1797,3 +1797,17 @@ exports.chainWatchSaveConfig = chainWatch.chainWatchSaveConfig;
 exports.chainWatchSignup = chainWatch.chainWatchSignup;
 exports.chainWatchRemoveSelf = chainWatch.chainWatchRemoveSelf;
 exports.chainWatchSyncChain = chainWatch.chainWatchSyncChain;
+
+/** Alliance roster + shared vault — see functions/allianceDashboard.js */
+const allianceDashboard = require('./allianceDashboard');
+exports.allianceCreate = allianceDashboard.allianceCreate;
+exports.allianceAddFaction = allianceDashboard.allianceAddFaction;
+exports.allianceRename = allianceDashboard.allianceRename;
+exports.allianceRemoveFaction = allianceDashboard.allianceRemoveFaction;
+exports.allianceListMine = allianceDashboard.allianceListMine;
+exports.allianceBackfillMembershipIndex = allianceDashboard.allianceBackfillMembershipIndex;
+exports.allianceVaultUpsert = allianceDashboard.allianceVaultUpsert;
+exports.allianceVaultDelete = allianceDashboard.allianceVaultDelete;
+exports.allianceTerritorySyncFromApi = allianceDashboard.allianceTerritorySyncFromApi;
+exports.allianceTerritorySetManual = allianceDashboard.allianceTerritorySetManual;
+exports.allianceTerritorySetManualTileCodes = allianceDashboard.allianceTerritorySetManualTileCodes;

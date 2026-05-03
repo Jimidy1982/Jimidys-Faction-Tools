@@ -1,0 +1,249 @@
+<div class="container alliance-dash">
+    <header class="alliance-dash-hero">
+        <div class="alliance-dash-hero-text">
+            <h1 class="alliance-dash-title">Alliance Dashboard</h1>
+            <p class="alliance-dash-sub">
+                Live war snapshots, chains, and a <strong>shared weapon vault</strong> synced in the cloud. The alliance <strong>creator</strong> can add any faction IDs to the roster; each faction’s <strong>Leader / Co-leader</strong> can see every alliance they’ve been added to and hide any from their personal list.
+                <span class="alliance-dash-pill alliance-dash-pill--accent">Creator + leader tools</span>
+            </p>
+        </div>
+    </header>
+
+    <section class="alliance-dash-panel alliance-dash-my-wrap" aria-labelledby="alliance-dash-my-heading">
+        <div class="alliance-dash-panel-head">
+            <h2 id="alliance-dash-my-heading" class="alliance-dash-panel-title">My alliances</h2>
+            <div class="alliance-dash-panel-head-btns">
+                <button type="button" class="btn alliance-dash-open-modal">Create or join…</button>
+                <button type="button" id="alliance-dash-refresh-mine" class="btn alliance-dash-btn-primary">Refresh list</button>
+            </div>
+        </div>
+        <p class="alliance-dash-hint">Shown when your Torn account is <strong>Leader</strong> or <strong>Co-leader</strong> of your faction and that faction was added to an alliance. Use <strong>Open</strong> to load intel and vault for that alliance; <strong>Settings</strong> opens the alliance panel (ID, roster, add faction, etc.); <strong>Hide</strong> only hides the card in this browser.</p>
+        <div class="alliance-dash-my-toolbar">
+            <label class="alliance-dash-cb-label">
+                <input type="checkbox" id="alliance-dash-show-hidden"> Show hidden
+            </label>
+            <span id="alliance-dash-my-status" class="alliance-dash-status" style="margin-top:0;"></span>
+        </div>
+        <div id="alliance-dash-my-list" class="alliance-dash-my-list"></div>
+    </section>
+
+    <section class="alliance-dash-panel alliance-dash-panel--accent alliance-dash-intel-full" aria-labelledby="alliance-dash-intel-heading">
+        <div class="alliance-dash-panel-head">
+            <h2 id="alliance-dash-intel-heading" class="alliance-dash-panel-title alliance-dash-intel-panel-title">
+                Alliance Intel<span id="alliance-dash-intel-alliance-name" class="alliance-dash-intel-alliance-name"></span>
+            </h2>
+            <div class="alliance-dash-panel-head-btns alliance-dash-intel-head-tools">
+                <span class="alliance-dash-intel-auto-toggle-text">Auto</span>
+                <label
+                    id="alliance-dash-intel-auto-slider-wrap"
+                    class="war-dashboard-refresh-slider-wrap alliance-dash-intel-auto-slider-wrap"
+                    title="Auto-refresh war scores and chain data for loaded factions"
+                >
+                    <input
+                        type="checkbox"
+                        id="alliance-dash-intel-auto"
+                        class="war-dashboard-chain-track-input"
+                        aria-label="Auto refresh alliance intel"
+                    >
+                    <span class="war-dashboard-chain-track-slider"></span>
+                </label>
+                <span
+                    id="alliance-dash-intel-auto-countdown"
+                    class="alliance-dash-intel-auto-countdown"
+                    hidden
+                    title="Time until next auto-refresh"
+                ></span>
+                <div id="alliance-dash-intel-interval-wrap" class="alliance-dash-intel-interval-wrap" style="display: none;">
+                    <label for="alliance-dash-intel-interval" class="alliance-dash-intel-interval-lbl">Every</label>
+                    <select id="alliance-dash-intel-interval" class="alliance-dash-select" aria-label="Auto refresh interval">
+                        <option value="30000">30 seconds</option>
+                        <option value="60000">1 minute</option>
+                        <option value="120000">2 minutes</option>
+                        <option value="180000">3 minutes</option>
+                        <option value="300000">5 minutes</option>
+                        <option value="600000">10 minutes</option>
+                    </select>
+                </div>
+                <span id="alliance-dash-intel-auto-status" class="alliance-dash-intel-auto-status" aria-live="polite"></span>
+                <button type="button" id="alliance-dash-refresh-intel" class="btn alliance-dash-btn-primary">Refresh intel</button>
+                <button type="button" id="alliance-dash-refresh-territory" class="btn alliance-dash-btn-secondary" style="display: none">
+                    Refresh territory
+                </button>
+                <span id="alliance-dash-territory-sync-status" class="alliance-dash-territory-sync-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <p id="alliance-dash-loaded-status" class="alliance-dash-loaded-status" role="status" aria-live="polite"></p>
+        <p class="alliance-dash-hint">Uses your sidebar API key against Torn (ranked war list + chain per faction, plus <code>torn?selections=territorywars</code> on each <strong>Refresh intel</strong>). Use <strong>Refresh territory</strong> to push <em>your</em> faction’s tiles from Torn into this alliance (others then see them on the cards). Tile letters show <strong>Safe</strong> or <strong>At War</strong> in each card’s dropdown; manual tile codes clear when that faction refreshes territory from Torn. Turn <strong>Auto</strong> on to poll on a schedule; short intervals may hit Torn rate limits.</p>
+        <div id="alliance-dash-intel-grid" class="alliance-dash-intel-grid"></div>
+    </section>
+
+    <section class="alliance-dash-panel alliance-dash-vault" aria-labelledby="alliance-dash-vault-heading">
+        <h2 id="alliance-dash-vault-heading" class="alliance-dash-panel-title">Shared weapon vault</h2>
+        <p class="alliance-dash-hint">Stored in Firestore. Any member of an <strong>allied faction</strong> can add or edit entries so everyone knows where gear is (armoury, loaned to player, etc.).</p>
+
+        <form id="alliance-dash-vault-form" class="alliance-dash-vault-form">
+            <input type="hidden" id="alliance-dash-vault-edit-id" value="">
+            <div class="alliance-dash-vault-grid">
+                <div class="alliance-dash-field">
+                    <label for="alliance-dash-vault-label">Item / weapon</label>
+                    <input type="text" id="alliance-dash-vault-label" class="alliance-dash-input" required maxlength="120" placeholder="e.g. Primary Xanax set">
+                </div>
+                <div class="alliance-dash-field">
+                    <label for="alliance-dash-vault-location">Current location</label>
+                    <input type="text" id="alliance-dash-vault-location" class="alliance-dash-input" maxlength="200" placeholder="e.g. Faction armoury · Player Name">
+                </div>
+                <div class="alliance-dash-field">
+                    <label for="alliance-dash-vault-holder">Held by faction (ID)</label>
+                    <input type="text" id="alliance-dash-vault-holder" class="alliance-dash-input" placeholder="Defaults to your faction">
+                </div>
+                <div class="alliance-dash-field alliance-dash-field--wide">
+                    <label for="alliance-dash-vault-notes">Notes</label>
+                    <input type="text" id="alliance-dash-vault-notes" class="alliance-dash-input" maxlength="500" placeholder="Optional">
+                </div>
+            </div>
+            <div class="alliance-dash-vault-actions">
+                <button type="submit" class="btn alliance-dash-btn-primary" id="alliance-dash-vault-submit">Save to vault</button>
+                <button type="button" class="btn" id="alliance-dash-vault-cancel-edit" style="display:none;">Cancel edit</button>
+            </div>
+        </form>
+
+        <div class="alliance-dash-table-wrap">
+            <table class="alliance-dash-table" id="alliance-dash-vault-table">
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Location</th>
+                        <th>Faction</th>
+                        <th>Updated</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="alliance-dash-vault-tbody">
+                    <tr><td colspan="5" class="alliance-dash-empty">Load an alliance to see the vault.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Create / join (keeps main page compact for people already in alliances) -->
+    <div id="alliance-dash-modal" class="alliance-dash-modal" aria-hidden="true">
+        <div class="alliance-dash-modal-backdrop" id="alliance-dash-modal-backdrop" tabindex="-1"></div>
+        <div class="alliance-dash-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="alliance-dash-modal-title">
+            <button type="button" class="alliance-dash-modal-close" id="alliance-dash-modal-close" aria-label="Close">&times;</button>
+            <h3 id="alliance-dash-modal-title" class="alliance-dash-modal-title">Create or join an alliance</h3>
+            <p class="alliance-dash-modal-lead">Join with an ID someone shared, or create a new alliance (your faction is added first; you must be Leader or Co-leader).</p>
+
+            <div class="alliance-dash-modal-section">
+                <h4 class="alliance-dash-modal-section-title">Join existing</h4>
+                <p class="alliance-dash-modal-desc">Paste the alliance ID, then load. You can still use <strong>Open</strong> under My alliances when you’re listed there.</p>
+                <div class="alliance-dash-field">
+                    <label for="alliance-dash-id-input">Alliance ID</label>
+                    <div class="alliance-dash-row">
+                        <input type="text" id="alliance-dash-id-input" class="alliance-dash-input" placeholder="Paste alliance ID" autocomplete="off" spellcheck="false">
+                        <button type="button" id="alliance-dash-load-btn" class="btn alliance-dash-btn-primary">Load</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="alliance-dash-modal-divider"></div>
+
+            <div class="alliance-dash-modal-section">
+                <h4 class="alliance-dash-modal-section-title">Create new</h4>
+                <p class="alliance-dash-modal-desc">Starts a new alliance document and adds your current faction to the roster.</p>
+                <div class="alliance-dash-field">
+                    <label for="alliance-dash-create-name">Display name</label>
+                    <input type="text" id="alliance-dash-create-name" class="alliance-dash-input" maxlength="80" placeholder="e.g. Crimson pact">
+                </div>
+                <button type="button" id="alliance-dash-create-btn" class="btn alliance-dash-btn-primary alliance-dash-modal-primary-btn">Create alliance</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alliance settings (ID, rename, roster — creator-only actions server-verified) -->
+    <div id="alliance-dash-settings-modal" class="alliance-dash-modal" aria-hidden="true">
+        <div class="alliance-dash-modal-backdrop" id="alliance-dash-settings-modal-backdrop" tabindex="-1"></div>
+        <div class="alliance-dash-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="alliance-dash-settings-title">
+            <button type="button" class="alliance-dash-modal-close" id="alliance-dash-settings-modal-close" aria-label="Close">&times;</button>
+            <div class="alliance-dash-settings-modal-scroll">
+            <h3 id="alliance-dash-settings-title" class="alliance-dash-modal-title">Alliance settings</h3>
+            <p class="alliance-dash-modal-lead" id="alliance-dash-settings-lead">Load an alliance to use this panel.</p>
+
+            <div class="alliance-dash-modal-section">
+                <h4 class="alliance-dash-modal-section-title">Alliance ID</h4>
+                <p class="alliance-dash-modal-desc">Share this ID so other faction leaders can load the alliance here or under <strong>My alliances</strong> once their faction is on the roster.</p>
+                <div class="alliance-dash-row alliance-dash-settings-id-row">
+                    <code id="alliance-dash-settings-id-display" class="alliance-dash-current-id alliance-dash-settings-id-code"></code>
+                    <button type="button" id="alliance-dash-copy-id" class="btn alliance-dash-btn-primary">Copy ID</button>
+                </div>
+            </div>
+
+            <div id="alliance-dash-settings-meta" class="alliance-dash-modal-section" style="display:none;">
+                <p class="alliance-dash-modal-desc" id="alliance-dash-settings-created"></p>
+            </div>
+
+            <div class="alliance-dash-modal-section">
+                <h4 class="alliance-dash-modal-section-title">Faction roster</h4>
+                <p id="alliance-dash-settings-readonly-note" class="alliance-dash-modal-desc" style="display:none;">You are not the alliance creator. You can copy the ID, view the roster, and add your own faction (if you are Leader / Co-leader). Renaming, removing factions, and directory repair are creator-only.</p>
+                <div class="alliance-dash-table-wrap alliance-dash-settings-table-wrap">
+                    <table class="alliance-dash-table">
+                        <thead>
+                            <tr>
+                                <th>Faction</th>
+                                <th>ID</th>
+                                <th>Territory note</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="alliance-dash-settings-factions-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="alliance-dash-modal-section">
+                <h4 class="alliance-dash-modal-section-title">Territory text note</h4>
+                <p class="alliance-dash-modal-desc">
+                    Use <strong>Refresh territory</strong> on the <strong>Alliance Intel</strong> panel to sync tiles from Torn for your faction. If someone cannot sync, the alliance creator or any roster Leader / Co-leader may use <strong>Edit</strong> in the roster above for a plain-text note; when that faction later refreshes territory from Torn, the note is replaced.
+                </p>
+                <div id="alliance-dash-terr-manual-wrap" class="alliance-dash-terr-manual-wrap" style="display: none;">
+                    <label for="alliance-dash-terr-manual-ta" class="alliance-dash-terr-manual-lbl">Manual territory note</label>
+                    <input type="hidden" id="alliance-dash-terr-manual-fid" value="">
+                    <textarea id="alliance-dash-terr-manual-ta" class="alliance-dash-input alliance-dash-terr-manual-ta" rows="5" maxlength="8000" placeholder="Paste or describe territory status for this faction…"></textarea>
+                    <div class="alliance-dash-row">
+                        <button type="button" id="alliance-dash-terr-manual-save" class="btn alliance-dash-btn-primary">Save note</button>
+                        <button type="button" id="alliance-dash-terr-manual-cancel" class="btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="alliance-dash-modal-section">
+                <h4 class="alliance-dash-modal-section-title">Add faction</h4>
+                <p class="alliance-dash-modal-desc">Alliance <strong>creator</strong> may add any faction ID. Other <strong>Leader / Co-leader</strong> accounts (with their faction’s API key in the sidebar) may add only their own faction.</p>
+                <div class="alliance-dash-field">
+                    <label for="alliance-dash-add-fid">Faction ID</label>
+                    <div class="alliance-dash-row">
+                        <input type="text" id="alliance-dash-add-fid" class="alliance-dash-input" placeholder="Faction ID" inputmode="numeric">
+                        <button type="button" id="alliance-dash-add-btn" class="btn">Add faction</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="alliance-dash-settings-creator-block" class="alliance-dash-modal-section" style="display:none;">
+                <div class="alliance-dash-modal-divider"></div>
+                <h4 class="alliance-dash-modal-section-title">Rename alliance</h4>
+                <div class="alliance-dash-field">
+                    <label for="alliance-dash-settings-name">Display name</label>
+                    <div class="alliance-dash-row">
+                        <input type="text" id="alliance-dash-settings-name" class="alliance-dash-input" maxlength="80" placeholder="Alliance name">
+                        <button type="button" id="alliance-dash-rename-save" class="btn alliance-dash-btn-primary">Save name</button>
+                    </div>
+                </div>
+
+                <p class="alliance-dash-hint" id="alliance-dash-repair-wrap" style="display:none;">If this alliance existed before the “My alliances” directory, click once to sync faction rows to the directory.</p>
+                <button type="button" id="alliance-dash-repair-index" class="btn" style="display:none;">Repair directory index</button>
+            </div>
+
+            <p id="alliance-dash-settings-status" class="alliance-dash-status" role="status"></p>
+            </div>
+        </div>
+    </div>
+</div>
