@@ -126,15 +126,31 @@
             <table class="alliance-dash-table alliance-dash-vault-table" id="alliance-dash-vault-table">
                 <thead>
                     <tr>
-                        <th>Item</th>
-                        <th>Slot</th>
-                        <th>Bonuses</th>
-                        <th>Accuracy</th>
-                        <th>Damage</th>
-                        <th>Quality</th>
-                        <th>Faction</th>
-                        <th>Owned by</th>
-                        <th></th>
+                        <th scope="col">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="label" aria-label="Sort by item">Item<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="slot" aria-label="Sort by weapon slot">Slot<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="bonuses" aria-label="Sort by bonuses">Bonuses<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col" title="Accuracy">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="accuracy" aria-label="Sort by accuracy">Acc<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col" title="Damage">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="damage" aria-label="Sort by damage">Dmg<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col" title="Quality">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="quality" aria-label="Sort by quality">Qual<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="faction" aria-label="Sort by faction">Faction<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col">
+                            <button type="button" class="alliance-dash-vault-th-sort" data-vault-sort="owner" aria-label="Sort by owner">Owned by<span class="alliance-dash-vault-sort-ind" aria-hidden="true"></span></button>
+                        </th>
+                        <th scope="col" class="alliance-dash-vault-actions-th" aria-label="Actions"></th>
                     </tr>
                 </thead>
                 <tbody id="alliance-dash-vault-tbody">

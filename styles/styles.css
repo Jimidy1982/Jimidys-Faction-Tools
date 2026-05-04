@@ -6504,13 +6504,6 @@ textarea.alliance-dash-vault-paste {
     line-height: 1.4;
 }
 
-.alliance-dash-vault-bonuses-cell .alliance-dash-vault-bonus-slot-label {
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: #9a9a9a;
-    margin-right: 0.2rem;
-}
-
 .alliance-dash-vault-bonuses-cell .alliance-dash-vault-bonus-table-paren {
     color: #c4c4c4;
     font-weight: normal;
@@ -7750,7 +7743,8 @@ a.alliance-dash-intel-name:hover {
     gap: 0.75rem 1rem;
 }
 
-.alliance-dash-vault-actions {
+/* Modal / form only — must not target vault table action cells (same class name on td). */
+#alliance-dash-vault-modal .alliance-dash-vault-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
@@ -7811,6 +7805,51 @@ a.alliance-dash-intel-name:hover {
     min-width: 11rem;
 }
 
+.alliance-dash-vault-table thead th {
+    vertical-align: bottom;
+}
+
+.alliance-dash-vault-th-sort {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 0.1rem;
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: bold;
+    cursor: pointer;
+    text-align: left;
+    line-height: 1.2;
+}
+
+.alliance-dash-vault-th-sort:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.alliance-dash-vault-th-sort:focus-visible {
+    outline: 2px solid var(--accent-color, #ffd700);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.alliance-dash-vault-sort-ind {
+    display: inline-block;
+    font-size: 0.68em;
+    line-height: 1;
+    opacity: 0.75;
+    min-width: 0.85em;
+}
+
+.alliance-dash-vault-th-sort--active .alliance-dash-vault-sort-ind {
+    opacity: 1;
+}
+
 .alliance-dash-empty {
     color: #888;
     font-style: italic;
@@ -7828,6 +7867,125 @@ a.alliance-dash-intel-name:hover {
 
 .alliance-dash-actions {
     white-space: nowrap;
+}
+
+/* Dedicated column width — do not use display:flex on <td> here; it collapses the cell and icons overlap "Owned by". */
+.alliance-dash-vault-table .alliance-dash-vault-actions-th {
+    min-width: 5.75rem;
+    width: 5.75rem;
+    max-width: 5.75rem;
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+    box-sizing: border-box;
+}
+
+td.alliance-dash-vault-actions {
+    display: table-cell;
+    min-width: 5.75rem;
+    width: 5.75rem;
+    max-width: 5.75rem;
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+    box-sizing: border-box;
+    text-align: right;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+td.alliance-dash-vault-actions .alliance-dash-vault-icon-btn {
+    vertical-align: middle;
+}
+
+td.alliance-dash-vault-actions .alliance-dash-vault-icon-btn + .alliance-dash-vault-icon-btn {
+    margin-left: 0.35rem;
+}
+
+.alliance-dash-vault-icon-btn {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    margin: 0;
+    font-weight: normal;
+    color: inherit;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    flex-shrink: 0;
+    line-height: 0;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.alliance-dash-vault-icon-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.alliance-dash-vault-icon-btn:active:not(:disabled) {
+    transform: scale(0.96);
+}
+
+.alliance-dash-vault-icon-btn--edit {
+    color: var(--accent-color, #ffd700);
+    border-color: rgba(255, 215, 0, 0.45);
+}
+
+.alliance-dash-vault-icon-btn--edit:hover:not(:disabled) {
+    border-color: rgba(255, 215, 0, 0.75);
+    box-shadow: 0 0 0 1px rgba(255, 215, 0, 0.15);
+}
+
+.alliance-dash-vault-icon-btn--delete {
+    color: #ff5252;
+    border-color: rgba(255, 82, 82, 0.45);
+}
+
+.alliance-dash-vault-icon-btn--delete:hover:not(:disabled) {
+    border-color: rgba(255, 107, 107, 0.85);
+    box-shadow: 0 0 0 1px rgba(255, 82, 82, 0.12);
+}
+
+.alliance-dash-vault-icon-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.alliance-dash-vault-icon-btn:focus-visible {
+    outline: 2px solid var(--accent-color, #ffd700);
+    outline-offset: 2px;
+}
+
+.alliance-dash-vault-icon-btn--delete:focus-visible {
+    outline-color: #ff8a80;
+}
+
+.alliance-dash-vault-icon-btn__svg {
+    display: block;
+    flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+    .alliance-dash-vault-table .alliance-dash-vault-actions-th,
+    td.alliance-dash-vault-actions {
+        min-width: 6.5rem;
+        width: 6.5rem;
+        max-width: 6.5rem;
+    }
+
+    .alliance-dash-vault-icon-btn {
+        width: 2.75rem;
+        height: 2.75rem;
+        min-width: 2.75rem;
+        min-height: 2.75rem;
+    }
+
+    .alliance-dash-vault-icon-btn__svg {
+        width: 18px;
+        height: 18px;
+    }
 }
 
 .alliance-dash-mini-btn {

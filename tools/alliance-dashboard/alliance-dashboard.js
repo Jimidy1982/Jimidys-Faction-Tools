@@ -15,6 +15,9 @@
     let currentAllianceId = '';
     let lastAllianceDoc = null;
     let lastVaultRows = [];
+    /** Vault table column sort: key matches `data-vault-sort` on header buttons; empty = Firestore order. */
+    let vaultTableSortKey = '';
+    let vaultTableSortDir = 'asc';
     let intelAbort = null;
     let intelAutoRefreshTickId = null;
     /** Wall-clock target for next auto refresh (ms since epoch). */
@@ -2074,22 +2077,17 @@
     }
 
     /**
-     * One vault table segment: `Bonus N` then type with value only in brackets, e.g. Bonus 1 Wither (21%).
-     * Empty slots omitted.
+     * One vault table segment: type with value in brackets, e.g. Wither (21%). Empty slots omitted.
      */
-    function vaultBonusTableSegment(slotNum, bType, bVal) {
+    function vaultBonusTableSegment(bType, bVal) {
         const t = bType != null ? String(bType).trim() : '';
         const v = bVal != null ? String(bVal).trim() : '';
         if (!t && !v) return '';
         const tH = t ? escapeHtml(t) : '';
         const vH = v ? escapeHtml(v) : '';
-        const head =
-            '<span class="alliance-dash-vault-bonus-slot-label">Bonus ' +
-            String(slotNum) +
-            '</span> ';
-        if (t && v) return head + tH + ' <span class="alliance-dash-vault-bonus-table-paren">(' + vH + ')</span>';
-        if (t) return head + tH;
-        return head + '<span class="alliance-dash-vault-bonus-table-paren">(' + vH + ')</span>';
+        if (t && v) return tH + ' <span class="alliance-dash-vault-bonus-table-paren">(' + vH + ')</span>';
+        if (t) return tH;
+        return '<span class="alliance-dash-vault-bonus-table-paren">(' + vH + ')</span>';
     }
 
     /** Rarity tier for filters: legacy / empty counts as yellow (same as vault defaults). */
@@ -2188,6 +2186,140 @@
         return Number.isFinite(n) ? n : null;
     }
 
+    function vaultNumericSortValueForCompare(val) {
+        const n = parseVaultDocStatNumber(val);
+        if (n == null || !Number.isFinite(n)) return null;
+        return n;
+    }
+
+    function vaultCompareNumeric(va, vb, desc) {
+        const na = vaultNumericSortValueForCompare(va);
+        const nb = vaultNumericSortValueForCompare(vb);
+        if (na == null && nb == null) return 0;
+        if (na == null) return 1;
+        if (nb == null) return -1;
+        const diff = na - nb;
+        if (diff !== 0) return desc ? -diff : diff;
+        return 0;
+    }
+
+    function vaultCompareStrings(a, b, desc) {
+        const c = a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+        if (c !== 0) return desc ? -c : c;
+        return 0;
+    }
+
+    function vaultRowSortLabelLower(d) {
+        return String((d && d.label) || '').trim().toLowerCase();
+    }
+
+    function vaultRowSortOwnerLower(d) {
+        return String((d && d.owner) || '').trim().toLowerCase();
+    }
+
+    function vaultRowSortBonusesLower(d) {
+        const bn = vaultRowBonusesFromDoc(d);
+        return [bn.b1t, bn.b1v, bn.b2t, bn.b2v]
+            .map(function (x) {
+                return String(x || '').trim().toLowerCase();
+            })
+            .join('\u0001');
+    }
+
+    function vaultRowSortSlotLower(d) {
+        const st = vaultNormalizeWeaponSlotStored(d && d.weaponSlot);
+        if (st) return st;
+        return vaultWeaponSlotLabelForDoc(d).trim().toLowerCase();
+    }
+
+    function vaultRowSortFactionLower(row) {
+        const d = row.data || {};
+        const facId = String(d.holderFactionId || '').trim();
+        const meta = lastAllianceDoc && facId ? getFactionMeta(lastAllianceDoc, facId) : null;
+        const facName = meta && meta.name ? String(meta.name) : facId;
+        return (facName + '\u0000' + String(d.location || '').trim()).toLowerCase();
+    }
+
+    function vaultCompareRows(rowA, rowB) {
+        const key = vaultTableSortKey;
+        const desc = vaultTableSortDir === 'desc';
+        const da = rowA.data || {};
+        const db = rowB.data || {};
+        var cmp = 0;
+        if (key === 'label') {
+            cmp = vaultCompareStrings(vaultRowSortLabelLower(da), vaultRowSortLabelLower(db), desc);
+        } else if (key === 'slot') {
+            cmp = vaultCompareStrings(vaultRowSortSlotLower(da), vaultRowSortSlotLower(db), desc);
+        } else if (key === 'bonuses') {
+            cmp = vaultCompareStrings(vaultRowSortBonusesLower(da), vaultRowSortBonusesLower(db), desc);
+        } else if (key === 'accuracy') {
+            cmp = vaultCompareNumeric(da.accuracy, db.accuracy, desc);
+        } else if (key === 'damage') {
+            cmp = vaultCompareNumeric(da.damage, db.damage, desc);
+        } else if (key === 'quality') {
+            cmp = vaultCompareNumeric(da.quality, db.quality, desc);
+        } else if (key === 'faction') {
+            cmp = vaultCompareStrings(vaultRowSortFactionLower(rowA), vaultRowSortFactionLower(rowB), desc);
+        } else if (key === 'owner') {
+            cmp = vaultCompareStrings(vaultRowSortOwnerLower(da), vaultRowSortOwnerLower(db), desc);
+        }
+        if (cmp !== 0) return cmp;
+        return String(rowA.id || '').localeCompare(String(rowB.id || ''));
+    }
+
+    function sortVaultTableRows(rows) {
+        if (!vaultTableSortKey) return rows;
+        const out = rows.slice();
+        out.sort(vaultCompareRows);
+        return out;
+    }
+
+    function syncVaultTableSortHeaderUi() {
+        const table = document.getElementById('alliance-dash-vault-table');
+        if (!table) return;
+        const head = table.querySelector('thead');
+        if (!head) return;
+        const btns = head.querySelectorAll('[data-vault-sort]');
+        for (var i = 0; i < btns.length; i++) {
+            const btn = btns[i];
+            const key = btn.getAttribute('data-vault-sort');
+            const th = btn.closest('th');
+            const ind = btn.querySelector('.alliance-dash-vault-sort-ind');
+            if (key === vaultTableSortKey && vaultTableSortKey) {
+                btn.classList.add('alliance-dash-vault-th-sort--active');
+                if (th) th.setAttribute('aria-sort', vaultTableSortDir === 'asc' ? 'ascending' : 'descending');
+                if (ind) ind.textContent = vaultTableSortDir === 'asc' ? '\u00a0\u25B2' : '\u00a0\u25BC';
+            } else {
+                btn.classList.remove('alliance-dash-vault-th-sort--active');
+                if (th) th.removeAttribute('aria-sort');
+                if (ind) ind.textContent = '';
+            }
+        }
+    }
+
+    function onVaultTableSortHeaderClick(e) {
+        const btn = e.target && e.target.closest && e.target.closest('[data-vault-sort]');
+        if (!btn) return;
+        e.preventDefault();
+        const key = btn.getAttribute('data-vault-sort');
+        if (!key) return;
+        if (vaultTableSortKey === key) {
+            vaultTableSortDir = vaultTableSortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            vaultTableSortKey = key;
+            vaultTableSortDir = 'asc';
+        }
+        renderVaultTable();
+    }
+
+    function bindVaultTableHeaderSort() {
+        const table = document.getElementById('alliance-dash-vault-table');
+        if (!table || table._vaultHeaderSortBound) return;
+        table._vaultHeaderSortBound = true;
+        const thead = table.querySelector('thead');
+        if (thead) thead.addEventListener('click', onVaultTableSortHeaderClick);
+    }
+
     function filterVaultRowsForTable(rows) {
         const q = getVaultTableFilterSearchNorm();
         const fid = getVaultTableFilterFactionId();
@@ -2227,7 +2359,10 @@
 
     function renderVaultTable() {
         const tbody = document.getElementById('alliance-dash-vault-tbody');
-        if (!tbody) return;
+        if (!tbody) {
+            syncVaultTableSortHeaderUi();
+            return;
+        }
         populateVaultTableFactionFilter();
         const allRows = lastVaultRows;
         if (!allRows.length) {
@@ -2237,14 +2372,17 @@
             tbody.innerHTML =
                 '<tr><td colspan="9" class="alliance-dash-empty">' + escapeHtml(msg) + '</td></tr>';
             updateVaultTableFilterCount(0, 0);
+            syncVaultTableSortHeaderUi();
             return;
         }
-        const rows = filterVaultRowsForTable(allRows);
-        updateVaultTableFilterCount(rows.length, allRows.length);
-        if (!rows.length) {
+        const filtered = filterVaultRowsForTable(allRows);
+        updateVaultTableFilterCount(filtered.length, allRows.length);
+        if (!filtered.length) {
             tbody.innerHTML = '<tr><td colspan="9" class="alliance-dash-empty">No entries match your filters.</td></tr>';
+            syncVaultTableSortHeaderUi();
             return;
         }
+        const rows = sortVaultTableRows(filtered);
         const apiKey = getApiKey();
         tbody.innerHTML = rows
             .map(function (row) {
@@ -2253,8 +2391,8 @@
                 const facId = d.holderFactionId || '';
                 const meta = lastAllianceDoc && facId ? getFactionMeta(lastAllianceDoc, String(facId)) : { name: facId || '—' };
                 const bn = vaultRowBonusesFromDoc(d);
-                const seg1 = vaultBonusTableSegment(1, bn.b1t, bn.b1v);
-                const seg2 = vaultBonusTableSegment(2, bn.b2t, bn.b2v);
+                const seg1 = vaultBonusTableSegment(bn.b1t, bn.b1v);
+                const seg2 = vaultBonusTableSegment(bn.b2t, bn.b2v);
                 var bonusCombinedHtml;
                 if (seg1 && seg2) {
                     bonusCombinedHtml =
@@ -2334,20 +2472,25 @@
                     '<td>' +
                     vaultTableCell(d.owner) +
                     '</td>' +
-                    '<td class="alliance-dash-actions">' +
-                    '<button type="button" class="btn alliance-dash-mini-btn alliance-dash-edit-vault" data-id="' +
+                    '<td class="alliance-dash-actions alliance-dash-vault-actions">' +
+                    '<button type="button" class="alliance-dash-vault-icon-btn alliance-dash-vault-icon-btn--edit alliance-dash-edit-vault" data-id="' +
                     escapeHtml(id) +
-                    '">Edit</button> ' +
-                    '<button type="button" class="btn alliance-dash-mini-btn alliance-dash-del-vault" data-id="' +
+                    '" aria-label="Edit item" title="Edit">' +
+                    '<svg class="alliance-dash-vault-icon-btn__svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a.996.996 0 0 0 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>' +
+                    '</button>' +
+                    '<button type="button" class="alliance-dash-vault-icon-btn alliance-dash-vault-icon-btn--delete alliance-dash-del-vault" data-id="' +
                     escapeHtml(id) +
                     '"' +
                     (apiKey ? '' : ' disabled title="API key required"') +
-                    '>Delete</button>' +
+                    ' aria-label="Delete item" title="Delete">' +
+                    '<svg class="alliance-dash-vault-icon-btn__svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>' +
+                    '</button>' +
                     '</td>' +
                     '</tr>'
                 );
             })
             .join('');
+        syncVaultTableSortHeaderUi();
     }
 
     function bindVaultTableFilters() {
@@ -3216,6 +3359,7 @@
         }
 
         bindVaultTableFilters();
+        bindVaultTableHeaderSort();
         bindVaultTableActions();
         bindPurchaserByCombobox();
 
