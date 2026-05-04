@@ -6482,6 +6482,9 @@ textarea.alliance-dash-vault-paste {
 
 .alliance-dash-vault-table-wrap {
     max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
 }
 
 .alliance-dash-vault-table th,
@@ -7777,6 +7780,35 @@ a.alliance-dash-intel-name:hover {
     background: rgba(0, 0, 0, 0.25);
     color: var(--accent-color, #ffd700);
     font-weight: bold;
+}
+
+/* Vault: keep a readable column layout on narrow screens — scroll horizontally instead of crushing cells. */
+.alliance-dash-table.alliance-dash-vault-table {
+    width: max-content;
+    min-width: 100%;
+    table-layout: auto;
+}
+
+.alliance-dash-vault-table .alliance-dash-vault-item-cell {
+    min-width: 11rem;
+}
+
+.alliance-dash-vault-table .alliance-dash-vault-item-name {
+    flex: 0 1 auto;
+    min-width: 9rem;
+    white-space: nowrap;
+    word-break: normal;
+    overflow: visible;
+}
+
+.alliance-dash-vault-table th,
+.alliance-dash-vault-table td:not(.alliance-dash-vault-bonuses-cell):not(.alliance-dash-empty) {
+    white-space: nowrap;
+}
+
+.alliance-dash-vault-table .alliance-dash-vault-bonuses-cell {
+    white-space: normal;
+    min-width: 11rem;
 }
 
 .alliance-dash-empty {
