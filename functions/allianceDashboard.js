@@ -479,7 +479,25 @@ exports.allianceBackfillMembershipIndex = onCall(callableOpts({ maxInstances: 5 
 
 /** Upsert a vault row (any member of an allied faction). */
 exports.allianceVaultUpsert = onCall(callableOpts({ maxInstances: 20 }), async (request) => {
-  const { apiKey, allianceId, itemId, label, location, notes, holderFactionId } = request.data || {};
+  const {
+    apiKey,
+    allianceId,
+    itemId,
+    label,
+    location,
+    holderFactionId,
+    bonus1Type,
+    bonus1Value,
+    bonus2Type,
+    bonus2Value,
+    accuracy,
+    damage,
+    quality,
+    owner,
+    tornItemId,
+    weaponRarity,
+    weaponSlot,
+  } = request.data || {};
   const user = await fetchUserFromApiKey(apiKey);
   const aid = String(allianceId || '').trim();
   if (!aid) throw new HttpsError('invalid-argument', 'allianceId required');
@@ -491,17 +509,52 @@ exports.allianceVaultUpsert = onCall(callableOpts({ maxInstances: 20 }), async (
   const labelClean = String(label || '').trim().slice(0, 120);
   const locClean = String(location || '').trim().slice(0, 200);
   if (!labelClean) throw new HttpsError('invalid-argument', 'Weapon / item label is required.');
-  const notesClean = String(notes || '').trim().slice(0, 500);
+  const bonus1TypeClean = String(bonus1Type || '').trim().slice(0, 80);
+  const bonus1ValueClean = String(bonus1Value || '').trim().slice(0, 48);
+  const bonus2TypeClean = String(bonus2Type || '').trim().slice(0, 80);
+  const bonus2ValueClean = String(bonus2Value || '').trim().slice(0, 48);
+  const accuracyClean = String(accuracy || '').trim().slice(0, 24);
+  const damageClean = String(damage || '').trim().slice(0, 24);
+  const qualityClean = String(quality || '').trim().slice(0, 48);
+  // owner: "Owned by" label (player name, alliance, or faction)—not holder; field name kept for compatibility.
+  const ownerClean = String(owner || '').trim().slice(0, 120);
+  const tornItemIdClean = String(tornItemId || '')
+    .trim()
+    .replace(/\D/g, '')
+    .slice(0, 12);
+  const wr = String(weaponRarity || '')
+    .trim()
+    .toLowerCase();
+  const weaponRarityClean = ['yellow', 'orange', 'red'].includes(wr) ? wr : 'yellow';
+  const ws = String(weaponSlot || '')
+    .trim()
+    .toLowerCase();
+  const weaponSlotClean = ['melee', 'primary', 'secondary', 'temporary'].includes(ws) ? ws : '';
   const holder = holderFactionId != null && String(holderFactionId).trim() !== '' ? String(holderFactionId).trim() : user.factionId;
   assertFactionInAlliance(snap.data(), holder);
   const now = Date.now();
   const vaultCol = ref.collection(VAULT);
   const docRef = itemId ? vaultCol.doc(String(itemId)) : vaultCol.doc();
+  const del = admin.firestore.FieldValue.delete();
   const payload = {
     label: labelClean,
     location: locClean,
-    notes: notesClean,
+    notes: del,
     holderFactionId: holder,
+    bonus1Type: bonus1TypeClean,
+    bonus1Value: bonus1ValueClean,
+    bonus2Type: bonus2TypeClean,
+    bonus2Value: bonus2ValueClean,
+    bonus1: del,
+    bonus2: del,
+    accuracy: accuracyClean,
+    damage: damageClean,
+    quality: qualityClean,
+    owner: ownerClean,
+    purchasedFor: del,
+    tornItemId: tornItemIdClean,
+    weaponRarity: weaponRarityClean,
+    weaponSlot: weaponSlotClean ? weaponSlotClean : del,
     updatedAt: now,
     updatedByPlayerId: user.playerId,
     updatedByPlayerName: user.name,
@@ -564,40 +617,9 @@ exports.allianceTerritorySyncFromApi = onCall(callableOpts({ maxInstances: 20 })
 });
 
 /**
- * Manual territory note for any roster faction. Creator or Leader/Co-leader of a roster faction may edit.
- * Overwritten when that faction’s leader later runs allianceTerritorySyncFromApi.
- */
-exports.allianceTerritorySetManual = onCall(callableOpts({ maxInstances: 20 }), async (request) => {
-  const { apiKey, allianceId, factionId, summary } = request.data || {};
-  const user = await fetchUserFromApiKey(apiKey);
-  const aid = String(allianceId || '').trim();
-  const fid = String(factionId || '').trim();
-  const text = String(summary || '').trim().slice(0, 8000);
-  if (!aid || !fid) throw new HttpsError('invalid-argument', 'allianceId and factionId are required.');
-  if (!text) throw new HttpsError('invalid-argument', 'Territory text is required.');
-  const ref = getDb().collection(ALLIANCES).doc(aid);
-  const snap = await ref.get();
-  if (!snap.exists) throw new HttpsError('not-found', 'Alliance not found.');
-  const d = snap.data();
-  const fmap = factionsMapFromAlliance(d);
-  if (!fmap[fid]) throw new HttpsError('not-found', 'That faction is not on this alliance roster.');
-  await assertCanManualTerritory(d, user, apiKey);
-
-  await ref.collection(FACTION_TERRITORY).doc(fid).set({
-    source: 'manual',
-    summary: text,
-    payload: null,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    manualEditorPlayerId: user.playerId,
-    lastApiSyncPlayerId: admin.firestore.FieldValue.delete(),
-  });
-  return { ok: true, factionId: fid };
-});
-
-/**
  * Manual territory tile codes (2–4 letters) for a roster faction; merged on intel cards with Torn payload.
  * Cleared when that faction runs allianceTerritorySyncFromApi.
- * Same permission as allianceTerritorySetManual.
+ * Creator or Leader/Co-leader of a roster faction may edit (see assertCanManualTerritory).
  */
 exports.allianceTerritorySetManualTileCodes = onCall(callableOpts({ maxInstances: 20 }), async (request) => {
   const { apiKey, allianceId, factionId, tileCodes } = request.data || {};

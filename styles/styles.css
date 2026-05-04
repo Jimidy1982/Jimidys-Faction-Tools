@@ -6375,6 +6375,508 @@ button.comparison-graph-mode-btn:focus-visible {
     background: rgba(26, 26, 26, 0.92);
 }
 
+/* Vault item modal: wide dialog + dense form rows */
+#alliance-dash-vault-modal .alliance-dash-vault-modal-dialog {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(1280px, calc(100vw - 2rem));
+    max-width: min(1280px, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+#alliance-dash-vault-modal .alliance-dash-modal-close {
+    z-index: 6;
+    background: rgba(26, 26, 26, 0.92);
+}
+
+.alliance-dash-vault-modal-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 2.75rem 2rem 1.75rem 2rem;
+    font-size: 0.95rem;
+}
+
+textarea.alliance-dash-vault-paste {
+    width: 100%;
+    min-height: 5.5rem;
+    resize: vertical;
+    font-family: ui-monospace, monospace;
+    font-size: 0.84rem;
+    line-height: 1.4;
+}
+
+.alliance-dash-vault-filters {
+    margin-bottom: 0.75rem;
+}
+
+.alliance-dash-vault-filters-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.65rem 1rem;
+}
+
+.alliance-dash-vault-filter-field {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.alliance-dash-vault-filter-field label {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    margin-bottom: 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #9a9a9a;
+}
+
+.alliance-dash-vault-filter-field--search {
+    flex: 2 1 14rem;
+    min-width: min(100%, 14rem);
+}
+
+.alliance-dash-vault-filter-field:not(.alliance-dash-vault-filter-field--search) {
+    flex: 1 1 9rem;
+    max-width: 100%;
+}
+
+.alliance-dash-vault-filter-field--statnum {
+    flex: 0 1 7.25rem;
+    min-width: 6.5rem;
+    max-width: 9rem;
+}
+
+.alliance-dash-vault-filter-field .alliance-dash-input {
+    width: 100%;
+}
+
+.alliance-dash-vault-filter-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    /* Line up with inputs: label line (~0.72rem) + gap (0.2rem) */
+    padding-top: calc(0.72rem + 0.2rem);
+}
+
+.alliance-dash-vault-filter-count {
+    margin: 0.45rem 0 0;
+    font-size: 0.8rem;
+}
+
+.alliance-dash-vault-table-wrap {
+    max-width: 100%;
+}
+
+.alliance-dash-vault-table th,
+.alliance-dash-vault-table td {
+    vertical-align: top;
+}
+
+.alliance-dash-vault-table .alliance-dash-vault-slot-cell {
+    white-space: nowrap;
+    font-size: 0.88rem;
+}
+
+.alliance-dash-vault-bonuses-cell {
+    min-width: 9rem;
+    max-width: 26rem;
+    word-break: break-word;
+    line-height: 1.4;
+}
+
+.alliance-dash-vault-bonuses-cell .alliance-dash-vault-bonus-slot-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #9a9a9a;
+    margin-right: 0.2rem;
+}
+
+.alliance-dash-vault-bonuses-cell .alliance-dash-vault-bonus-table-paren {
+    color: #c4c4c4;
+    font-weight: normal;
+}
+
+.alliance-dash-vault-bonuses-cell .alliance-dash-vault-bonus-table-sep {
+    margin: 0 0.4rem;
+    color: #6a6a6a;
+    font-weight: normal;
+}
+
+/* Vault modal: item / stats line / faction / purchaser / notes */
+#alliance-dash-vault-modal .alliance-dash-vault-grid {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 0.75rem 1.25rem;
+    align-items: start;
+}
+
+#alliance-dash-vault-modal .alliance-dash-vault-grid > .alliance-dash-field--wide {
+    grid-column: 1 / -1;
+}
+
+/* Faction + Owned by: half row each on desktop; mobile stacks via grid > .alliance-dash-field rule */
+#alliance-dash-vault-modal .alliance-dash-vault-grid > .alliance-dash-vault-faction-cell,
+#alliance-dash-vault-modal .alliance-dash-vault-grid > .alliance-dash-vault-field-owned-by {
+    grid-column: span 6;
+}
+
+/* One desktop row: [Bonus1 type|value] [gap] [Bonus2 type|value] | Acc | Dmg | Qual */
+.alliance-dash-vault-stats-line-inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.65rem 1rem;
+}
+
+.alliance-dash-vault-bonuses-pair {
+    display: flex;
+    align-items: flex-end;
+    gap: 1.35rem;
+    min-width: 0;
+}
+
+.alliance-dash-vault-bonus-block {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.alliance-dash-vault-bonus-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.alliance-dash-vault-bonus-heading {
+    flex: 0 0 auto;
+    margin: 0;
+    font-size: 0.8rem;
+    color: #b8b8b8;
+    white-space: nowrap;
+}
+
+.alliance-dash-vault-bonus-block .alliance-dash-vault-type-value {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.alliance-dash-vault-stat-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+}
+
+.alliance-dash-vault-stat-group > label {
+    font-size: 0.8rem;
+    color: #b8b8b8;
+    white-space: nowrap;
+}
+
+.alliance-dash-vault-type-value {
+    display: flex;
+    align-items: stretch;
+    gap: 0.3rem;
+    min-width: 0;
+}
+
+/* Type ~3x value width within the type|value pair */
+.alliance-dash-vault-bonus-type-in {
+    flex: 3 1 0;
+    min-width: 0;
+}
+
+.alliance-dash-vault-bonus-value-in {
+    flex: 1 1 0;
+    min-width: 1.85rem;
+    max-width: 3.35rem;
+    text-align: center;
+    padding-left: 0.22rem;
+    padding-right: 0.22rem;
+    font-size: 0.84rem;
+}
+
+.alliance-dash-vault-stat-group--narrow {
+    flex: 0 1 auto;
+}
+
+.alliance-dash-vault-stat-in {
+    width: 100%;
+    min-width: 0;
+    max-width: 5rem;
+    text-align: center;
+    padding-left: 0.28rem;
+    padding-right: 0.28rem;
+    font-size: 0.84rem;
+}
+
+@media (min-width: 901px) {
+    .alliance-dash-vault-stats-line-inner {
+        flex-wrap: nowrap;
+    }
+
+    .alliance-dash-vault-bonuses-pair {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+
+    .alliance-dash-vault-stat-group--narrow {
+        flex: 0 0 4.85rem;
+        max-width: 5.15rem;
+    }
+
+    .alliance-dash-vault-rarity-cell.alliance-dash-vault-stat-group--narrow {
+        flex: 0 0 5.1rem;
+        max-width: 5.35rem;
+    }
+
+    .alliance-dash-vault-weapon-slot-cell.alliance-dash-vault-stat-group--narrow {
+        flex: 0 0 6.85rem;
+        max-width: 7.25rem;
+    }
+}
+
+select.alliance-dash-vault-faction-select {
+    cursor: pointer;
+    min-height: 2.35rem;
+}
+
+.alliance-dash-vault-item-row-inner {
+    display: flex;
+    gap: 0.85rem;
+    align-items: flex-start;
+}
+
+.alliance-dash-vault-item-preview {
+    width: 64px;
+    height: 64px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+    background: radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.08), transparent 55%);
+}
+
+.alliance-dash-vault-item-preview img {
+    max-width: 90%;
+    max-height: 90%;
+    object-fit: contain;
+    image-rendering: auto;
+}
+
+.alliance-dash-vault-item-preview--yellow {
+    border-color: rgba(255, 215, 0, 0.85);
+    background: linear-gradient(145deg, rgba(90, 70, 20, 0.95) 0%, rgba(40, 35, 10, 0.98) 100%);
+}
+
+.alliance-dash-vault-item-preview--orange {
+    border-color: rgba(255, 140, 50, 0.9);
+    background: linear-gradient(145deg, rgba(90, 45, 15, 0.95) 0%, rgba(45, 22, 8, 0.98) 100%);
+}
+
+.alliance-dash-vault-item-preview--red {
+    border-color: rgba(255, 80, 80, 0.9);
+    background: linear-gradient(145deg, rgba(70, 20, 20, 0.95) 0%, rgba(35, 10, 10, 0.98) 100%);
+}
+
+.alliance-dash-vault-item-preview--none {
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+.alliance-dash-vault-item-fields {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.alliance-dash-vault-torn-match-status {
+    margin-top: 0.4rem;
+    min-height: 1.1em;
+}
+
+.alliance-dash-vault-item-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.alliance-dash-vault-item-thumb {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+    vertical-align: middle;
+}
+
+.alliance-dash-vault-item-thumb img {
+    max-width: 90%;
+    max-height: 90%;
+    object-fit: contain;
+}
+
+.alliance-dash-vault-item-thumb--yellow {
+    border-color: rgba(255, 215, 0, 0.75);
+    background: linear-gradient(145deg, rgba(70, 55, 15, 0.9), rgba(30, 26, 8, 0.95));
+}
+
+.alliance-dash-vault-item-thumb--orange {
+    border-color: rgba(255, 140, 50, 0.8);
+    background: linear-gradient(145deg, rgba(70, 38, 12, 0.9), rgba(32, 18, 6, 0.95));
+}
+
+.alliance-dash-vault-item-thumb--red {
+    border-color: rgba(255, 80, 80, 0.8);
+    background: linear-gradient(145deg, rgba(55, 18, 18, 0.9), rgba(28, 10, 10, 0.95));
+}
+
+.alliance-dash-vault-item-thumb--none {
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+.alliance-dash-vault-item-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+}
+
+.alliance-dash-vault-combobox {
+    position: relative;
+}
+
+.alliance-dash-vault-suggest {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 2px);
+    z-index: 20;
+    margin: 0;
+    padding: 0.25rem 0;
+    list-style: none;
+    max-height: 240px;
+    overflow-y: auto;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 215, 0, 0.35);
+    background: #1e1e1e;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+}
+
+.alliance-dash-vault-suggest__item {
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 0.45rem 0.65rem;
+    border: none;
+    background: transparent;
+    color: #e8e8e8;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    line-height: 1.25;
+}
+
+.alliance-dash-vault-suggest__item:hover,
+.alliance-dash-vault-suggest__item:focus,
+.alliance-dash-vault-suggest__item--active {
+    background: rgba(255, 215, 0, 0.12);
+    color: var(--accent-color, #ffd700);
+    outline: none;
+}
+
+.alliance-dash-vault-suggest__main {
+    display: block;
+    font-size: 0.9rem;
+}
+
+.alliance-dash-vault-suggest__sub {
+    display: block;
+    font-size: 0.72rem;
+    color: #888;
+    margin-top: 0.1rem;
+}
+
+.alliance-dash-vault-suggest__main--player-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.55rem;
+}
+
+.alliance-dash-vault-suggest__player {
+    font-weight: 600;
+}
+
+.alliance-dash-vault-suggest__fac-tag {
+    font-size: 0.78rem;
+    font-weight: normal;
+    color: #9a9a9a;
+}
+
+.alliance-dash-vault-suggest__item:hover .alliance-dash-vault-suggest__sub,
+.alliance-dash-vault-suggest__item:focus .alliance-dash-vault-suggest__sub,
+.alliance-dash-vault-suggest__item--active .alliance-dash-vault-suggest__sub {
+    color: #aaa;
+}
+
+.alliance-dash-vault-suggest__item:hover .alliance-dash-vault-suggest__fac-tag,
+.alliance-dash-vault-suggest__item:focus .alliance-dash-vault-suggest__fac-tag,
+.alliance-dash-vault-suggest__item--active .alliance-dash-vault-suggest__fac-tag {
+    color: #b8b8b8;
+}
+
+@media (max-width: 900px) {
+    #alliance-dash-vault-modal .alliance-dash-vault-modal-dialog {
+        width: min(100%, calc(100vw - 1rem));
+        max-width: min(100%, calc(100vw - 1rem));
+    }
+
+    #alliance-dash-vault-modal .alliance-dash-vault-modal-scroll {
+        padding: 2.75rem 1.25rem 1.5rem 1.25rem;
+    }
+
+    #alliance-dash-vault-modal .alliance-dash-vault-grid > .alliance-dash-field {
+        grid-column: 1 / -1;
+    }
+
+    .alliance-dash-vault-bonuses-pair {
+        flex: 1 1 100%;
+        flex-direction: column;
+        gap: 0.7rem;
+    }
+
+    .alliance-dash-vault-stat-group--narrow {
+        flex: 1 1 5.5rem;
+        max-width: none;
+    }
+
+    .alliance-dash-vault-stat-in {
+        max-width: none;
+    }
+}
+
 body.alliance-dash-modal-open {
     overflow: hidden;
 }
@@ -6403,13 +6905,17 @@ body.alliance-dash-modal-open {
     right: 12px;
     width: 36px;
     height: 36px;
+    box-sizing: border-box;
     border: none;
     border-radius: 6px;
     background: transparent;
     color: #aaa;
-    font-size: 1.5rem;
-    line-height: 1;
+    font-size: 1.3rem;
+    line-height: 36px;
+    text-align: center;
     cursor: pointer;
+    padding: 0;
+    overflow: hidden;
 }
 
 .alliance-dash-modal-close:hover {
@@ -6482,6 +6988,24 @@ body.alliance-dash-modal-open {
     color: #eee;
     font: inherit;
     box-sizing: border-box;
+}
+
+/* Vault rarity: same visual weight as Accuracy / Damage / Quality (select defaults differ from text inputs) */
+#alliance-dash-vault-modal #alliance-dash-vault-weapon-rarity.alliance-dash-input,
+#alliance-dash-vault-modal #alliance-dash-vault-weapon-slot.alliance-dash-input {
+    min-height: 2.55rem;
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+    font-size: 0.84rem;
+    font-weight: 400;
+    line-height: 1.25;
+    color: #eee;
+    text-align: center;
+    cursor: pointer;
+}
+
+#alliance-dash-vault-modal #alliance-dash-vault-weapon-slot.alliance-dash-input {
+    max-width: 100%;
 }
 
 .alliance-dash-row {
@@ -7209,28 +7733,6 @@ a.alliance-dash-intel-name:hover {
     line-height: 1.35;
 }
 
-.alliance-dash-terr-manual-wrap {
-    margin-top: 0.75rem;
-    padding: 0.75rem 0.85rem;
-    border-radius: 8px;
-    border: 1px solid rgba(255, 215, 0, 0.2);
-    background: rgba(0, 0, 0, 0.25);
-}
-
-.alliance-dash-terr-manual-lbl {
-    display: block;
-    font-size: 0.82rem;
-    margin-bottom: 0.35rem;
-    color: #ccc;
-}
-
-.alliance-dash-terr-manual-ta {
-    width: 100%;
-    min-height: 6rem;
-    resize: vertical;
-    margin-bottom: 0.5rem;
-}
-
 .alliance-dash-vault {
     margin-top: 0.5rem;
 }
@@ -7335,7 +7837,7 @@ a.alliance-dash-intel-name:hover {
 
 @media (min-width: 620px) {
     .alliance-dash-my-list {
-        grid-template-columns: repeat(auto-fill, minmax(288px, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
@@ -7343,7 +7845,7 @@ a.alliance-dash-intel-name:hover {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 0.9rem;
+    gap: 0;
     min-width: 0;
     max-width: 100%;
     padding: 1.1rem 1.15rem 1.15rem;
@@ -7420,9 +7922,18 @@ a.alliance-dash-intel-name:hover {
     opacity: 1;
 }
 
-.alliance-dash-my-card-main {
-    min-width: 0;
+.alliance-dash-my-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.65rem 0.85rem;
     width: 100%;
+}
+
+.alliance-dash-my-card-main {
+    flex: 1 1 10rem;
+    min-width: 0;
 }
 
 .alliance-dash-card-settings {
@@ -7474,10 +7985,15 @@ a.alliance-dash-intel-name:hover {
 .alliance-dash-my-card-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    padding-top: 0.85rem;
-    margin-top: 0.1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    width: 100%;
+    gap: 0.45rem;
+    justify-content: flex-end;
+    align-items: center;
+    margin-left: auto;
+    flex: 0 1 auto;
     min-width: 0;
+}
+
+.alliance-dash-my-card-actions .btn {
+    padding: 0.38rem 0.65rem;
+    font-size: 0.82rem;
 }

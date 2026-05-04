@@ -19,9 +19,11 @@
         </div>
         <p class="alliance-dash-hint">Shown when your Torn account is <strong>Leader</strong> or <strong>Co-leader</strong> of your faction and that faction was added to an alliance. Use <strong>Open</strong> to load intel and vault for that alliance; <strong>Settings</strong> opens the alliance panel (ID, roster, add faction, etc.); <strong>Hide</strong> only hides the card in this browser.</p>
         <div class="alliance-dash-my-toolbar">
-            <label class="alliance-dash-cb-label">
-                <input type="checkbox" id="alliance-dash-show-hidden"> Show hidden
-            </label>
+            <span id="alliance-dash-show-hidden-wrap" class="alliance-dash-show-hidden-wrap" hidden>
+                <label class="alliance-dash-cb-label">
+                    <input type="checkbox" id="alliance-dash-show-hidden"> Show hidden
+                </label>
+            </span>
             <span id="alliance-dash-my-status" class="alliance-dash-status" style="margin-top:0;"></span>
         </div>
         <div id="alliance-dash-my-list" class="alliance-dash-my-list"></div>
@@ -73,53 +75,70 @@
             </div>
         </div>
         <p id="alliance-dash-loaded-status" class="alliance-dash-loaded-status" role="status" aria-live="polite"></p>
-        <p class="alliance-dash-hint">Uses your sidebar API key against Torn (ranked war list + chain per faction, plus <code>torn?selections=territorywars</code> on each <strong>Refresh intel</strong>). Use <strong>Refresh territory</strong> to push <em>your</em> faction’s tiles from Torn into this alliance (others then see them on the cards). Tile letters show <strong>Safe</strong> or <strong>At War</strong> in each card’s dropdown; manual tile codes clear when that faction refreshes territory from Torn. Turn <strong>Auto</strong> on to poll on a schedule; short intervals may hit Torn rate limits.</p>
+        <p class="alliance-dash-hint">This page uses the <strong>API key</strong> from the sidebar to load live data from Torn. <strong>Refresh intel</strong> updates war scores, chains, and whether each faction’s territory tiles are <strong>safe</strong> or <strong>at war</strong> (open a card’s territory list to see). <strong>Refresh territory</strong> uploads <em>your</em> faction’s map from Torn so everyone in the alliance can see it on the cards. Extra tile letters you add by hand are removed when that faction uses Refresh territory again. <strong>Auto</strong> refreshes on a timer; very short intervals may get rate-limited by Torn.</p>
         <div id="alliance-dash-intel-grid" class="alliance-dash-intel-grid"></div>
     </section>
 
     <section class="alliance-dash-panel alliance-dash-vault" aria-labelledby="alliance-dash-vault-heading">
-        <h2 id="alliance-dash-vault-heading" class="alliance-dash-panel-title">Shared weapon vault</h2>
-        <p class="alliance-dash-hint">Stored in Firestore. Any member of an <strong>allied faction</strong> can add or edit entries so everyone knows where gear is (armoury, loaned to player, etc.).</p>
+        <div class="alliance-dash-panel-head">
+            <h2 id="alliance-dash-vault-heading" class="alliance-dash-panel-title">Shared weapon vault</h2>
+            <button type="button" id="alliance-dash-vault-open-add" class="btn alliance-dash-btn-primary">Add new item</button>
+        </div>
+        <p class="alliance-dash-hint">Stored in Firestore. Any member of an <strong>allied faction</strong> can add or edit entries. Paste item text from Torn in the modal and use <strong>Extract</strong> to fill stats.</p>
 
-        <form id="alliance-dash-vault-form" class="alliance-dash-vault-form">
-            <input type="hidden" id="alliance-dash-vault-edit-id" value="">
-            <div class="alliance-dash-vault-grid">
-                <div class="alliance-dash-field">
-                    <label for="alliance-dash-vault-label">Item / weapon</label>
-                    <input type="text" id="alliance-dash-vault-label" class="alliance-dash-input" required maxlength="120" placeholder="e.g. Primary Xanax set">
+        <div class="alliance-dash-vault-filters" id="alliance-dash-vault-filters" role="search" aria-label="Filter vault entries">
+            <div class="alliance-dash-vault-filters-row">
+                <div class="alliance-dash-vault-filter-field alliance-dash-vault-filter-field--search">
+                    <label for="alliance-dash-vault-filter-search">Search</label>
+                    <input type="search" id="alliance-dash-vault-filter-search" class="alliance-dash-input" placeholder="Item, slot, bonuses, stats, owner…" autocomplete="off" spellcheck="false">
                 </div>
-                <div class="alliance-dash-field">
-                    <label for="alliance-dash-vault-location">Current location</label>
-                    <input type="text" id="alliance-dash-vault-location" class="alliance-dash-input" maxlength="200" placeholder="e.g. Faction armoury · Player Name">
+                <div class="alliance-dash-vault-filter-field">
+                    <label for="alliance-dash-vault-filter-faction">Faction</label>
+                    <select id="alliance-dash-vault-filter-faction" class="alliance-dash-input" title="Show items held by this faction">
+                        <option value="">All factions</option>
+                    </select>
                 </div>
-                <div class="alliance-dash-field">
-                    <label for="alliance-dash-vault-holder">Held by faction (ID)</label>
-                    <input type="text" id="alliance-dash-vault-holder" class="alliance-dash-input" placeholder="Defaults to your faction">
+                <div class="alliance-dash-vault-filter-field">
+                    <label for="alliance-dash-vault-filter-rarity">Rarity</label>
+                    <select id="alliance-dash-vault-filter-rarity" class="alliance-dash-input" title="Weapon tint">
+                        <option value="">All</option>
+                        <option value="yellow">Yellow</option>
+                        <option value="orange">Orange</option>
+                        <option value="red">Red</option>
+                    </select>
                 </div>
-                <div class="alliance-dash-field alliance-dash-field--wide">
-                    <label for="alliance-dash-vault-notes">Notes</label>
-                    <input type="text" id="alliance-dash-vault-notes" class="alliance-dash-input" maxlength="500" placeholder="Optional">
+                <div class="alliance-dash-vault-filter-field alliance-dash-vault-filter-field--statnum">
+                    <label for="alliance-dash-vault-filter-min-accuracy">Min accuracy</label>
+                    <input type="text" id="alliance-dash-vault-filter-min-accuracy" class="alliance-dash-input" inputmode="decimal" placeholder="Any" autocomplete="off" spellcheck="false" title="Show rows with accuracy greater than or equal to this value">
+                </div>
+                <div class="alliance-dash-vault-filter-field alliance-dash-vault-filter-field--statnum">
+                    <label for="alliance-dash-vault-filter-min-damage">Min damage</label>
+                    <input type="text" id="alliance-dash-vault-filter-min-damage" class="alliance-dash-input" inputmode="decimal" placeholder="Any" autocomplete="off" spellcheck="false" title="Show rows with damage greater than or equal to this value">
+                </div>
+                <div class="alliance-dash-vault-filter-actions">
+                    <button type="button" class="btn" id="alliance-dash-vault-filter-clear">Clear filters</button>
                 </div>
             </div>
-            <div class="alliance-dash-vault-actions">
-                <button type="submit" class="btn alliance-dash-btn-primary" id="alliance-dash-vault-submit">Save to vault</button>
-                <button type="button" class="btn" id="alliance-dash-vault-cancel-edit" style="display:none;">Cancel edit</button>
-            </div>
-        </form>
+            <p class="alliance-dash-vault-filter-count alliance-dash-muted" id="alliance-dash-vault-filter-count" aria-live="polite"></p>
+        </div>
 
-        <div class="alliance-dash-table-wrap">
-            <table class="alliance-dash-table" id="alliance-dash-vault-table">
+        <div class="alliance-dash-table-wrap alliance-dash-vault-table-wrap">
+            <table class="alliance-dash-table alliance-dash-vault-table" id="alliance-dash-vault-table">
                 <thead>
                     <tr>
                         <th>Item</th>
-                        <th>Location</th>
+                        <th>Slot</th>
+                        <th>Bonuses</th>
+                        <th>Accuracy</th>
+                        <th>Damage</th>
+                        <th>Quality</th>
                         <th>Faction</th>
-                        <th>Updated</th>
+                        <th>Owned by</th>
                         <th></th>
                     </tr>
                 </thead>
                 <tbody id="alliance-dash-vault-tbody">
-                    <tr><td colspan="5" class="alliance-dash-empty">Load an alliance to see the vault.</td></tr>
+                    <tr><td colspan="9" class="alliance-dash-empty">Load an alliance to see the vault.</td></tr>
                 </tbody>
             </table>
         </div>
@@ -190,28 +209,11 @@
                             <tr>
                                 <th>Faction</th>
                                 <th>ID</th>
-                                <th>Territory note</th>
                                 <th></th>
                             </tr>
                         </thead>
                         <tbody id="alliance-dash-settings-factions-tbody"></tbody>
                     </table>
-                </div>
-            </div>
-
-            <div class="alliance-dash-modal-section">
-                <h4 class="alliance-dash-modal-section-title">Territory text note</h4>
-                <p class="alliance-dash-modal-desc">
-                    Use <strong>Refresh territory</strong> on the <strong>Alliance Intel</strong> panel to sync tiles from Torn for your faction. If someone cannot sync, the alliance creator or any roster Leader / Co-leader may use <strong>Edit</strong> in the roster above for a plain-text note; when that faction later refreshes territory from Torn, the note is replaced.
-                </p>
-                <div id="alliance-dash-terr-manual-wrap" class="alliance-dash-terr-manual-wrap" style="display: none;">
-                    <label for="alliance-dash-terr-manual-ta" class="alliance-dash-terr-manual-lbl">Manual territory note</label>
-                    <input type="hidden" id="alliance-dash-terr-manual-fid" value="">
-                    <textarea id="alliance-dash-terr-manual-ta" class="alliance-dash-input alliance-dash-terr-manual-ta" rows="5" maxlength="8000" placeholder="Paste or describe territory status for this faction…"></textarea>
-                    <div class="alliance-dash-row">
-                        <button type="button" id="alliance-dash-terr-manual-save" class="btn alliance-dash-btn-primary">Save note</button>
-                        <button type="button" id="alliance-dash-terr-manual-cancel" class="btn">Cancel</button>
-                    </div>
                 </div>
             </div>
 
@@ -243,6 +245,118 @@
             </div>
 
             <p id="alliance-dash-settings-status" class="alliance-dash-status" role="status"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Shared weapon vault: add / edit + paste extract -->
+    <div id="alliance-dash-vault-modal" class="alliance-dash-modal" aria-hidden="true">
+        <div class="alliance-dash-modal-backdrop" id="alliance-dash-vault-modal-backdrop" tabindex="-1"></div>
+        <div class="alliance-dash-modal-dialog alliance-dash-vault-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="alliance-dash-vault-modal-title">
+            <button type="button" class="alliance-dash-modal-close" id="alliance-dash-vault-modal-close" aria-label="Close">&times;</button>
+            <div class="alliance-dash-vault-modal-scroll">
+                <h3 id="alliance-dash-vault-modal-title" class="alliance-dash-modal-title">Vault item</h3>
+                <p class="alliance-dash-modal-lead" id="alliance-dash-vault-modal-lead">Fill in manually or paste from Torn and extract.</p>
+
+                <div class="alliance-dash-modal-section">
+                    <h4 class="alliance-dash-modal-section-title">Paste from Torn</h4>
+                    <p class="alliance-dash-modal-desc">Copy the item block from the game (including the first line with stats if present), then extract to fill the form below.</p>
+                    <textarea id="alliance-dash-vault-paste" class="alliance-dash-input alliance-dash-vault-paste" rows="5" placeholder="Paste item text…" spellcheck="false"></textarea>
+                    <div class="alliance-dash-vault-actions" style="margin-top:0.5rem;">
+                        <button type="button" class="btn alliance-dash-btn-primary" id="alliance-dash-vault-extract">Extract</button>
+                    </div>
+                    <p id="alliance-dash-vault-extract-status" class="alliance-dash-status" role="status" style="margin-top:0.5rem;"></p>
+                </div>
+
+                <div class="alliance-dash-modal-divider"></div>
+
+                <form id="alliance-dash-vault-form" class="alliance-dash-vault-form">
+                    <input type="hidden" id="alliance-dash-vault-edit-id" value="">
+                    <div class="alliance-dash-vault-grid">
+                        <div class="alliance-dash-field alliance-dash-field--wide">
+                            <label for="alliance-dash-vault-label">Item</label>
+                            <div class="alliance-dash-vault-item-row-inner">
+                                <div id="alliance-dash-vault-item-preview" class="alliance-dash-vault-item-preview alliance-dash-vault-item-preview--none" aria-hidden="true"></div>
+                                <div class="alliance-dash-vault-item-fields">
+                                    <input type="text" id="alliance-dash-vault-label" class="alliance-dash-input" required maxlength="120" placeholder="e.g. 9mm Uzi" title="Paste or type a name — preview uses the Torn item catalog.">
+                                    <input type="hidden" id="alliance-dash-vault-torn-item-id" value="">
+                                    <p id="alliance-dash-vault-torn-match-status" class="alliance-dash-status alliance-dash-vault-torn-match-status" role="status"></p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="alliance-dash-field alliance-dash-field--wide alliance-dash-vault-stats-line">
+                            <div class="alliance-dash-vault-stats-line-inner" role="group" aria-label="Bonuses and weapon stats">
+                                <div class="alliance-dash-vault-bonuses-pair">
+                                    <div class="alliance-dash-vault-bonus-block">
+                                        <div class="alliance-dash-vault-bonus-row">
+                                            <label for="alliance-dash-vault-bonus1-type" class="alliance-dash-vault-bonus-heading">Bonus 1</label>
+                                            <div class="alliance-dash-vault-type-value">
+                                                <input type="text" id="alliance-dash-vault-bonus1-type" class="alliance-dash-input alliance-dash-vault-bonus-type-in" maxlength="80" placeholder="e.g. Wither" title="Bonus 1 type">
+                                                <input type="text" id="alliance-dash-vault-bonus1-value" class="alliance-dash-input alliance-dash-vault-bonus-value-in" maxlength="48" placeholder="%" title="Bonus 1 value" aria-label="Bonus 1 value">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="alliance-dash-vault-bonus-block">
+                                        <div class="alliance-dash-vault-bonus-row">
+                                            <label for="alliance-dash-vault-bonus2-type" class="alliance-dash-vault-bonus-heading">Bonus 2</label>
+                                            <div class="alliance-dash-vault-type-value">
+                                                <input type="text" id="alliance-dash-vault-bonus2-type" class="alliance-dash-input alliance-dash-vault-bonus-type-in" maxlength="80" placeholder="Optional type" title="Bonus 2 type">
+                                                <input type="text" id="alliance-dash-vault-bonus2-value" class="alliance-dash-input alliance-dash-vault-bonus-value-in" maxlength="48" placeholder="%" title="Bonus 2 value" aria-label="Bonus 2 value">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="alliance-dash-vault-stat-group alliance-dash-vault-stat-group--narrow">
+                                    <label for="alliance-dash-vault-accuracy">Accuracy</label>
+                                    <input type="text" id="alliance-dash-vault-accuracy" class="alliance-dash-input alliance-dash-vault-stat-in" maxlength="24" placeholder="48.57">
+                                </div>
+                                <div class="alliance-dash-vault-stat-group alliance-dash-vault-stat-group--narrow">
+                                    <label for="alliance-dash-vault-damage">Damage</label>
+                                    <input type="text" id="alliance-dash-vault-damage" class="alliance-dash-input alliance-dash-vault-stat-in" maxlength="24" placeholder="72.73">
+                                </div>
+                                <div class="alliance-dash-vault-stat-group alliance-dash-vault-stat-group--narrow">
+                                    <label for="alliance-dash-vault-quality">Quality</label>
+                                    <input type="text" id="alliance-dash-vault-quality" class="alliance-dash-input alliance-dash-vault-stat-in" maxlength="48" placeholder="132.98%">
+                                </div>
+                                <div class="alliance-dash-vault-stat-group alliance-dash-vault-stat-group--narrow alliance-dash-vault-rarity-cell">
+                                    <label for="alliance-dash-vault-weapon-rarity">Rarity</label>
+                                    <select id="alliance-dash-vault-weapon-rarity" class="alliance-dash-input alliance-dash-vault-stat-in" title="Tint behind the item preview (Extract sets colour when present in paste).">
+                                        <option value="yellow" selected>Yellow</option>
+                                        <option value="orange">Orange</option>
+                                        <option value="red">Red</option>
+                                    </select>
+                                </div>
+                                <div class="alliance-dash-vault-stat-group alliance-dash-vault-stat-group--narrow alliance-dash-vault-weapon-slot-cell">
+                                    <label for="alliance-dash-vault-weapon-slot">Slot</label>
+                                    <select id="alliance-dash-vault-weapon-slot" class="alliance-dash-input alliance-dash-vault-stat-in" title="Melee / Primary / Secondary / Temporary. Auto uses the Torn item ID when the catalog has a match.">
+                                        <option value="" selected>Auto (from item ID)</option>
+                                        <option value="melee">Melee</option>
+                                        <option value="primary">Primary</option>
+                                        <option value="secondary">Secondary</option>
+                                        <option value="temporary">Temporary</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="alliance-dash-field alliance-dash-vault-faction-cell">
+                            <label for="alliance-dash-vault-faction">Faction</label>
+                            <select id="alliance-dash-vault-faction" class="alliance-dash-input alliance-dash-vault-faction-select" required title="Which allied faction holds this item.">
+                                <option value="" disabled selected>—</option>
+                            </select>
+                        </div>
+                        <div class="alliance-dash-field alliance-dash-vault-field-owned-by">
+                            <label for="alliance-dash-vault-owner">Owned by</label>
+                            <div class="alliance-dash-vault-combobox">
+                                <input type="text" id="alliance-dash-vault-owner" class="alliance-dash-input" maxlength="120" placeholder="Faction or player name…" title="Type to filter factions and roster players." aria-autocomplete="list" aria-controls="alliance-dash-vault-owner-suggest" autocomplete="off" spellcheck="false">
+                                <ul id="alliance-dash-vault-owner-suggest" class="alliance-dash-vault-suggest" role="listbox" aria-label="Owned by suggestions" hidden></ul>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="alliance-dash-vault-actions">
+                        <button type="submit" class="btn alliance-dash-btn-primary" id="alliance-dash-vault-submit">Save to vault</button>
+                        <button type="button" class="btn" id="alliance-dash-vault-cancel-edit">Cancel</button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>

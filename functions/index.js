@@ -1809,5 +1809,4 @@ exports.allianceBackfillMembershipIndex = allianceDashboard.allianceBackfillMemb
 exports.allianceVaultUpsert = allianceDashboard.allianceVaultUpsert;
 exports.allianceVaultDelete = allianceDashboard.allianceVaultDelete;
 exports.allianceTerritorySyncFromApi = allianceDashboard.allianceTerritorySyncFromApi;
-exports.allianceTerritorySetManual = allianceDashboard.allianceTerritorySetManual;
 exports.allianceTerritorySetManualTileCodes = allianceDashboard.allianceTerritorySetManualTileCodes;
