@@ -115,9 +115,39 @@
         return raw || 'Could not load chain watch.';
     }
 
-    /** How VIP works for this app (matches app.js VIP tiers: level 2 at 50 Xanax balance). */
-    function chainWatchVipHowToHtml() {
-        return "VIP level is based on your Xanax balance in this app's VIP record. <strong>VIP 2</strong> (50 Xanax) is required to create or edit the schedule. Send Xanax to <strong>Jimidy</strong> in Torn; your balance and tier appear in the sidebar.";
+    function chainWatchOwnerLabel(p) {
+        const name = p && p.ownerName ? String(p.ownerName) : '';
+        const id = p && p.ownerPlayerId != null ? String(p.ownerPlayerId) : '';
+        if (name && id) return escapeHtml(name) + ' (' + escapeHtml(id) + ')';
+        if (id) return 'player ' + escapeHtml(id);
+        return '';
+    }
+
+    function chainWatchRenderOrganizerUl(ids) {
+        const ul = document.getElementById('war-dashboard-cw-organizer-ul');
+        const listEl = document.getElementById('war-dashboard-cw-organizer-ids');
+        if (!ul || !listEl) return;
+        const clean = (Array.isArray(ids) ? ids : [])
+            .map(function (s) {
+                return String(s).trim();
+            })
+            .filter(function (s) {
+                return /^\d+$/.test(s);
+            });
+        listEl.value = clean.join(',');
+        ul.innerHTML = clean.length
+            ? clean
+                  .map(function (id) {
+                      return (
+                          '<li style="display:flex;align-items:center;gap:8px;margin:4px 0;"><span>' +
+                          escapeHtml(id) +
+                          '</span><button type="button" class="btn war-dashboard-cw-organizer-remove" data-id="' +
+                          escapeHtml(id) +
+                          '" style="padding:2px 8px;font-size:11px;">Remove</button></li>'
+                      );
+                  })
+                  .join('')
+            : '<li style="color:#9e9e9e;">None yet</li>';
     }
 
     /** Count chain-watch signups in a given watcher column (0-based) across all hour slots. */
@@ -535,7 +565,94 @@
         });
     }
 
-    /** Collapsible VIP editor (localStorage remembers collapsed state when a schedule exists). */
+    function wireChainWatchOrganizers() {
+        const addBtn = document.getElementById('war-dashboard-cw-organizer-add-btn');
+        const input = document.getElementById('war-dashboard-cw-organizer-input');
+        const saveBtn = document.getElementById('war-dashboard-cw-organizer-save');
+        const msg = document.getElementById('war-dashboard-cw-organizer-msg');
+        const listEl = document.getElementById('war-dashboard-cw-organizer-ids');
+        if (!listEl || !chainWatchPayload) return;
+
+        function readIdsFromHidden() {
+            const raw = listEl.value || '';
+            if (!raw.trim()) return [];
+            return raw
+                .split(',')
+                .map(function (s) {
+                    return String(s).trim();
+                })
+                .filter(function (s) {
+                    return /^\d+$/.test(s);
+                });
+        }
+
+        function writeIdsToHidden(ids) {
+            chainWatchRenderOrganizerUl(ids);
+        }
+
+        writeIdsToHidden(readIdsFromHidden());
+
+        if (addBtn && input) {
+            addBtn.addEventListener('click', function () {
+                const id = String(input.value || '').trim();
+                if (!/^\d+$/.test(id)) {
+                    if (msg) msg.textContent = 'Enter a numeric Torn player ID.';
+                    return;
+                }
+                const ids = readIdsFromHidden();
+                if (ids.indexOf(id) >= 0) {
+                    if (msg) msg.textContent = 'Already listed.';
+                    return;
+                }
+                ids.push(id);
+                writeIdsToHidden(ids);
+                input.value = '';
+                if (msg) msg.textContent = '';
+            });
+        }
+
+        const ulWrap = document.getElementById('war-dashboard-cw-organizer-ul');
+        if (ulWrap) {
+            ulWrap.addEventListener('click', function (ev) {
+                const btn = ev.target.closest('.war-dashboard-cw-organizer-remove');
+                if (!btn) return;
+                const id = btn.getAttribute('data-id');
+                writeIdsToHidden(readIdsFromHidden().filter(function (x) {
+                    return x !== id;
+                }));
+                if (msg) msg.textContent = '';
+            });
+        }
+
+        if (saveBtn) {
+            saveBtn.addEventListener('click', async function () {
+                const apiKey = getApiKey();
+                const fn = getWarDashboardFunctions();
+                if (!apiKey || !fn || !lastOurFactionId) return;
+                saveBtn.disabled = true;
+                if (msg) msg.textContent = 'Saving…';
+                try {
+                    const res = await fn.httpsCallable('chainWatchSetOrganizers')({
+                        apiKey: apiKey,
+                        factionId: String(lastOurFactionId),
+                        organizerPlayerIds: readIdsFromHidden()
+                    });
+                    await fetchChainWatchData(true);
+                    await renderChainWatchScheduleModal();
+                    if (msg) msg.textContent = 'Organisers saved.';
+                    if (res && res.data && Array.isArray(res.data.organizerPlayerIds) && listEl) {
+                        listEl.value = res.data.organizerPlayerIds.join(',');
+                    }
+                } catch (e) {
+                    if (msg) msg.textContent = (e && e.message) ? String(e.message) : 'Save failed';
+                } finally {
+                    saveBtn.disabled = false;
+                }
+            });
+        }
+    }
+
+    /** Collapsible schedule editor (localStorage remembers collapsed state when a schedule exists). */
     function wireChainWatchVipCollapse(docExists) {
         const btn = document.getElementById('war-dashboard-cw-vip-toggle');
         const body = document.getElementById('war-dashboard-cw-vip-body');
@@ -1640,7 +1757,12 @@
             const d = new Date(start * 1000);
             startHtml = escapeHtml(formatTctDayHeading(start) + ', ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ' UTC (TCT)');
         }
+        const cn =
+            settings.chainName != null && String(settings.chainName).trim()
+                ? escapeHtml(String(settings.chainName).trim())
+                : '';
         return '<dl class="war-dashboard-cw-summary-dl">' +
+            (cn ? '<dt>Name</dt><dd>' + cn + '</dd>' : '') +
             '<dt>Chain start</dt><dd>' + startHtml + '</dd>' +
             '<dt>Target hits</dt><dd>' + escapeHtml(target) + '</dd>' +
             '<dt>Reward type</dt><dd>' + escapeHtml(rt) + '</dd>' +
@@ -1794,7 +1916,7 @@
         const unit = comp.rewardType === 'xanax' ? ' Xanax' : ' (cash units)';
         let html = '';
         if (p.exists !== true) {
-            html += '<p style="color:#e0c080;font-size:13px;margin:0 0 12px 0;line-height:1.5;">No chain watch schedule has been saved for your faction yet, so there are no rewards to tally. Ask a <strong>VIP 2+</strong> member to set up Chain watch first.</p>';
+            html += '<p style="color:#e0c080;font-size:13px;margin:0 0 12px 0;line-height:1.5;">No chain watch schedule has been saved for your faction yet, so there are no rewards to tally. Any faction member can set one up from <strong>War Dashboard → Chain watch</strong>.</p>';
         }
         html +=
             '<p style="color:#b0b0b0;font-size:13px;margin:0 0 10px 0;line-height:1.45;">Totals use first vs subsequent rewards from settings. Order follows signup time. ' +
@@ -1838,8 +1960,11 @@
         const slots = p.slots || {};
         const viewer = p.viewer || {};
         const canEdit = viewer.canEdit === true;
-        const vipLevel = typeof viewer.vipLevel === 'number' ? viewer.vipLevel : 0;
+        const isOwner = viewer.isOwner === true;
+        const canManageOrganizers = viewer.canManageOrganizers === true;
         const docExists = p.exists === true;
+        const organizerIds = Array.isArray(p.organizerPlayerIds) ? p.organizerPlayerIds.map(String) : [];
+        const ownerLabel = chainWatchOwnerLabel(p);
         const chainState = p.chainState || {};
         const start = settings.chainStartUnix != null ? Number(settings.chainStartUnix) : null;
         const maxSlots = p.maxHourSlots != null ? Number(p.maxHourSlots) : CHAIN_WATCH_MAX_HOUR_SLOTS;
@@ -1852,10 +1977,6 @@
         }
 
         const nowSec = Math.floor(Date.now() / 1000);
-        let currentSlotIndex = null;
-        if (start != null) {
-            currentSlotIndex = Math.floor((nowSec - start) / 3600);
-        }
 
         let html = '';
         if (brokeAtHit != null && brokeAtHit > 0) {
@@ -1865,16 +1986,17 @@
 
         if (!docExists) {
             html += '<div style="margin:0 0 14px 0;padding:12px 14px;border-radius:8px;border:1px solid var(--border-color,#444);background:rgba(255,215,0,0.06);font-size:13px;line-height:1.5;color:#e0e0e0;">';
-            if (canEdit) {
-                html += '<p style="margin:0;"><strong>No chain watch schedule saved yet</strong> for your faction. Fill in <strong>Chain start</strong>, target, and rewards below, then click <strong>Save schedule</strong>.</p>';
-            } else {
-                html += '<p style="margin:0 0 10px 0;"><strong>No chain watch has been set up</strong> for your faction yet. Only data configured here is shown to your faction — there is nothing to join until a <strong>VIP 2+</strong> member saves a schedule.</p>';
-                html += '<p style="margin:0 0 10px 0;">Ask a <strong>VIP 2+</strong> player in your faction to open <strong>War Dashboard → Chain watch</strong> and create the schedule.</p>';
-                html += '<p style="margin:0;color:#b0b0b0;font-size:12px;">Your VIP level: <strong>' + escapeHtml(String(vipLevel)) + '</strong> (VIP 2+ required to edit.) ' + chainWatchVipHowToHtml() + '</p>';
-            }
+            html += '<p style="margin:0;"><strong>No chain watch schedule saved yet</strong> for your faction. Any member can set <strong>Chain start</strong>, target, and rewards below, then <strong>Save schedule</strong> — you become the <strong>owner</strong> and can add organisers who may edit settings.</p>';
             html += '</div>';
-        } else if (!canEdit && vipLevel < 2) {
-            html += '<p style="color:#b0b0b0;font-size:12px;margin:0 0 12px 0;line-height:1.45;">Schedule changes require <strong>VIP 2+</strong>. Your level: <strong>' + escapeHtml(String(vipLevel)) + '</strong>. ' + chainWatchVipHowToHtml() + '</p>';
+        } else if (!canEdit) {
+            html += '<p style="color:#b0b0b0;font-size:12px;margin:0 0 12px 0;line-height:1.45;">You can sign up for watch slots below. Only the owner' +
+                (ownerLabel ? ' (<strong>' + ownerLabel + '</strong>)' : '') +
+                (organizerIds.length ? ' and designated organisers' : '') +
+                ' can change the schedule.</p>';
+        } else if (docExists && canEdit && !p.ownerPlayerId) {
+            html += '<p style="color:#e0c080;font-size:12px;margin:0 0 12px 0;line-height:1.45;">This schedule has no owner yet. <strong>Save schedule</strong> below to claim ownership.</p>';
+        } else if (canEdit && !isOwner && organizerIds.indexOf(String(viewer.playerId || '')) >= 0) {
+            html += '<p style="color:#b0b0b0;font-size:12px;margin:0 0 12px 0;line-height:1.45;">You are a <strong>chain organiser</strong> and can edit settings. Owner: <strong>' + (ownerLabel || '—') + '</strong>.</p>';
         }
 
         if (canEdit) {
@@ -1882,7 +2004,7 @@
             const bc = Math.min(3, Math.max(1, Number(settings.backupColumns) || 1));
             html += '<div class="war-dashboard-cw-vip-wrap">';
             html += '<button type="button" class="war-dashboard-cw-vip-toggle" id="war-dashboard-cw-vip-toggle" aria-expanded="true" aria-controls="war-dashboard-cw-vip-body">';
-            html += '<span class="war-dashboard-cw-vip-toggle-text">Edit schedule (VIP 2+)</span>';
+            html += '<span class="war-dashboard-cw-vip-toggle-text">Edit schedule</span>';
             html += '<span class="war-dashboard-cw-vip-chevron" aria-hidden="true">▼</span>';
             html += '</button>';
             html += '<div class="war-dashboard-cw-vip-body" id="war-dashboard-cw-vip-body">';
@@ -1920,6 +2042,42 @@
             html += '<label class="war-dashboard-cw-clear-label" style="display:flex;align-items:flex-start;gap:8px;margin:0;color:#b0b0b0;font-size:12px;line-height:1.4;width:100%;"><input type="checkbox" id="war-dashboard-cw-clear" style="margin-top:2px;flex-shrink:0;"><span>Clear all signups when saving (also when changing start, target, or parallel slots)</span></label>';
             html += '<button type="button" class="btn" id="war-dashboard-cw-save">Save schedule</button>';
             html += '<p id="war-dashboard-cw-save-msg" style="font-size:12px;color:#888;margin:0;width:100%;"></p>';
+            if (canManageOrganizers) {
+                html +=
+                    '<div class="war-dashboard-cw-organizers" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-color,#444);width:100%;">';
+                html += '<div style="font-weight:bold;font-size:13px;margin-bottom:8px;color:var(--accent-color,#ffd700);">Chain organisers</div>';
+                html +=
+                    '<p style="margin:0 0 10px 0;color:#b0b0b0;font-size:12px;line-height:1.45;">Organisers can edit schedule settings (goal, days, rewards, columns). Only you (owner) can change this list. Leave empty if only you should edit.</p>';
+                html += '<input type="hidden" id="war-dashboard-cw-organizer-ids" value="' + escapeHtml(organizerIds.join(',')) + '">';
+                html += '<ul id="war-dashboard-cw-organizer-ul" style="margin:0 0 10px 0;padding:0;list-style:none;">';
+                if (organizerIds.length) {
+                    organizerIds.forEach(function (oid) {
+                        html +=
+                            '<li style="display:flex;align-items:center;gap:8px;margin:4px 0;"><span>' +
+                            escapeHtml(oid) +
+                            '</span><button type="button" class="btn war-dashboard-cw-organizer-remove" data-id="' +
+                            escapeHtml(oid) +
+                            '" style="padding:2px 8px;font-size:11px;">Remove</button></li>';
+                    });
+                } else {
+                    html += '<li style="color:#9e9e9e;">None yet</li>';
+                }
+                html += '</ul>';
+                html += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">';
+                html +=
+                    '<label for="war-dashboard-cw-organizer-input" style="font-size:12px;color:#b0b0b0;">Torn player ID</label>';
+                html += '<input type="text" id="war-dashboard-cw-organizer-input" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 123456" style="width:120px;">';
+                html += '<button type="button" class="btn" id="war-dashboard-cw-organizer-add-btn">Add</button>';
+                html += '<button type="button" class="btn" id="war-dashboard-cw-organizer-save">Save organisers</button>';
+                html += '</div>';
+                html += '<p id="war-dashboard-cw-organizer-msg" style="font-size:12px;color:#888;margin:0;"></p>';
+                html += '</div>';
+            } else if (docExists && ownerLabel) {
+                html +=
+                    '<p style="margin-top:12px;font-size:12px;color:#9e9e9e;">Owner: <strong>' +
+                    ownerLabel +
+                    '</strong></p>';
+            }
             html += '</div></div></div></div>';
         }
 
@@ -1931,7 +2089,7 @@
         if (!canEdit) {
             html +=
                 '<div class="war-dashboard-cw-viewer-rewards-row"><button type="button" class="btn war-dashboard-chain-watch-rewards-trigger" id="war-dashboard-chain-watch-rewards">Rewards owed</button></div>';
-            html += '<p class="war-dashboard-cw-viewer-hint" style="color:#b0b0b0;font-size:13px;margin:0 0 12px 0;line-height:1.45;">Use <strong>Sign up</strong> in an empty watcher cell for that hour, or leave your slot (×) while the hour is still active. Only VIP 2+ can create or change the schedule.</p>';
+            html += '<p class="war-dashboard-cw-viewer-hint" style="color:#b0b0b0;font-size:13px;margin:0 0 12px 0;line-height:1.45;">Use <strong>Sign up</strong> in an empty watcher cell for that hour, or leave your slot (×) while the hour is still active. Only the owner and designated organisers can change the schedule.</p>';
         }
 
         const backupCols = Math.min(3, Math.max(1, Number(settings.backupColumns) || 1));
@@ -2016,12 +2174,13 @@
             const i = slotIndicesToRender[k];
             const slotStart = start + i * 3600;
             const slotEnd = slotStart + 3600;
+            const hourStarted = nowSec >= slotStart;
             const hourCompleted = nowSec >= slotEnd;
             const dayKey = utcDayKeyFromUnix(slotStart);
             const isNewCalendarDay = prevUtcDayKey === null || dayKey !== prevUtcDayKey;
             prevUtcDayKey = dayKey;
             const rowClass = (brokeSlotIndex === i ? ' war-dashboard-chain-watch-slot--broke' : '') +
-                (currentSlotIndex === i ? ' war-dashboard-chain-watch-slot--current' : '');
+                (hourStarted ? ' war-dashboard-chain-watch-slot--started' : '');
             const list = slots[String(i)] || [];
             const mine = list.find(function (w) { return String(w.playerId) === myId; });
             const hasFreeWatcherSlot = list.length < backupCols;
@@ -2033,11 +2192,16 @@
                 }
             }
 
-            let hourCellHtml = '';
             if (isNewCalendarDay) {
-                hourCellHtml += '<div class="war-dashboard-cw-day-heading">' + escapeHtml(formatTctDayHeading(slotStart)) + '</div>';
+                html +=
+                    '<tr class="war-dashboard-cw-day-row"><td class="war-dashboard-cw-day-cell" colspan="' +
+                    slotTableColCount +
+                    '"><div class="war-dashboard-cw-day-heading">' +
+                    escapeHtml(formatTctDayHeading(slotStart)) +
+                    '</div></td></tr>';
             }
-            hourCellHtml += '<div class="war-dashboard-cw-day-time">' + escapeHtml(formatTctTimeRangeShort(slotStart, slotEnd)) + '</div>';
+            const hourCellHtml =
+                '<div class="war-dashboard-cw-day-time">' + escapeHtml(formatTctTimeRangeShort(slotStart, slotEnd)) + '</div>';
             const trClass = rowClass.trim();
             html += '<tr' + (trClass ? ' class="' + trClass + '"' : '') + '><td class="war-dashboard-cw-hour-cell">' + hourCellHtml + '</td>';
 
@@ -2045,7 +2209,7 @@
                 const w = list.find(function (x) { return Number(x.col) === c; });
                 if (w) {
                     const isMe = myId && String(w.playerId) === myId;
-                    html += '<td class="war-dashboard-cw-slot-cell">';
+                    html += '<td class="war-dashboard-cw-slot-cell war-dashboard-cw-slot-cell--filled">';
                     html += '<div class="war-dashboard-cw-watcher-line">';
                     html += '<span class="war-dashboard-cw-watcher-name">' + escapeHtml(w.name || w.playerId) + '</span>';
                     if (isMe && !hourCompleted) {
@@ -2066,7 +2230,7 @@
                         start != null &&
                         !mine &&
                         hasFreeWatcherSlot &&
-                        !hourCompleted
+                        !hourStarted
                     ) {
                         html +=
                             '<button type="button" class="btn war-dashboard-cw-join" data-slot="' +
@@ -2100,7 +2264,7 @@
             html += '</td></tr>';
         }
         if (start == null) {
-            html += '<tr><td colspan="' + slotTableColCount + '" style="color:#888;">No chain start time yet.' + (canEdit ? ' Set it above, then save.' : ' Ask a VIP 2+ member in your faction to set the schedule (or get VIP 2 yourself — see note above).') + '</td></tr>';
+            html += '<tr><td colspan="' + slotTableColCount + '" style="color:#888;">No chain start time yet.' + (canEdit ? ' Set it above, then save.' : ' Ask the chain watch owner or an organiser to set the schedule.') + '</td></tr>';
         }
         html += '</tbody></table></div></div>';
 
@@ -2112,7 +2276,7 @@
             if (issues.noShows.length || issues.unverified.length) {
                 html +=
                     '<div class="war-dashboard-cw-vip-issues" style="margin-top:14px;padding:12px 14px;border-radius:8px;border:1px solid rgba(255,183,77,0.4);background:rgba(0,0,0,0.25);">';
-                html += '<div style="color:#ffb74d;font-weight:bold;font-size:13px;margin-bottom:8px;">VIP — Watch attendance review</div>';
+                html += '<div style="color:#ffb74d;font-weight:bold;font-size:13px;margin-bottom:8px;">Watch attendance review</div>';
                 if (issues.noShows.length) {
                     html +=
                         '<p style="color:#ffcdd2;font-size:12px;margin:0 0 6px 0;">No online presence during scheduled hour (rewards excluded for these):</p>';
@@ -2164,6 +2328,7 @@
             wireChainWatchRemoveColumnButtons();
             wireChainWatchAddDayButton();
             wireChainWatchVipCollapse(docExists);
+            if (canManageOrganizers) wireChainWatchOrganizers();
         }
 
         const saveBtn = document.getElementById('war-dashboard-cw-save');
@@ -2301,31 +2466,52 @@
         });
     }
 
-    function openChainWatchModal() {
-        const overlay = document.getElementById('war-dashboard-chain-watch-modal');
-        const body = document.getElementById('war-dashboard-chain-watch-modal-body');
-        if (!overlay || !body) return;
+    function chainWatchShareUrl(fid) {
+        const base = location.origin + location.pathname;
+        return base + '#chain-watch/' + encodeURIComponent(String(fid));
+    }
+
+    function navigateToChainWatchPage() {
+        const fid = lastOurFactionId;
+        if (!fid) {
+            alert('Load your faction first (Apply or Use current ranked war).');
+            return;
+        }
+        if (!getApiKey()) {
+            alert('Set your Torn API key in the sidebar first.');
+            return;
+        }
+        window.location.hash = 'chain-watch/' + String(fid);
+    }
+
+    function openChainWatchCreateModal() {
+        const overlay = document.getElementById('war-dashboard-chain-watch-create-modal');
+        if (!overlay) return;
+        if (!lastOurFactionId) {
+            alert('Load your faction first (Apply or Use current ranked war).');
+            return;
+        }
+        if (!getApiKey()) {
+            alert('Set your Torn API key in the sidebar first.');
+            return;
+        }
+        const msg = document.getElementById('war-dashboard-cw-create-msg');
+        const linkWrap = document.getElementById('war-dashboard-cw-create-link-wrap');
+        if (msg) msg.textContent = '';
+        if (linkWrap) linkWrap.style.display = 'none';
         overlay.style.display = 'flex';
         overlay.setAttribute('aria-hidden', 'false');
-        body.innerHTML = '<p style="color:#888;">Loading…</p>';
-        fetchChainWatchData(true)
-            .then(function () {
-                if (!chainWatchPayload) {
-                    body.innerHTML =
-                        '<p style="color:#f44336;font-size:14px;line-height:1.45;">' +
-                        escapeHtml(friendlyChainWatchLoadError(chainWatchLastError)) +
-                        '</p>';
-                    return null;
-                }
-                return renderChainWatchScheduleModal();
-            })
-            .catch(function (err) {
-                console.error('renderChainWatchScheduleModal', err);
-                body.innerHTML =
-                    '<p style="color:#f44336;font-size:14px;">' +
-                    escapeHtml(err && err.message ? err.message : 'Could not render the schedule.') +
-                    '</p>';
-            });
+    }
+
+    function closeChainWatchCreateModal() {
+        const overlay = document.getElementById('war-dashboard-chain-watch-create-modal');
+        if (!overlay) return;
+        overlay.style.display = 'none';
+        overlay.setAttribute('aria-hidden', 'true');
+    }
+
+    function openChainWatchModal() {
+        navigateToChainWatchPage();
     }
 
     function closeChainWatchModal() {
@@ -4023,10 +4209,73 @@
         document.getElementById('war-dashboard-settings-overlay')?.addEventListener('click', (e) => {
             if (e.target.id === 'war-dashboard-settings-overlay') closeWarDashboardSettingsModal();
         });
+        document.getElementById('war-dashboard-cw-create-close')?.addEventListener('click', closeChainWatchCreateModal);
+        document.getElementById('war-dashboard-chain-watch-create-modal')?.addEventListener('click', function (e) {
+            if (e.target.id === 'war-dashboard-chain-watch-create-modal') closeChainWatchCreateModal();
+        });
+        document.getElementById('war-dashboard-cw-create-submit')?.addEventListener('click', async function () {
+            const apiKey = getApiKey();
+            const fn = getWarDashboardFunctions();
+            const fid = lastOurFactionId;
+            const msg = document.getElementById('war-dashboard-cw-create-msg');
+            const linkWrap = document.getElementById('war-dashboard-cw-create-link-wrap');
+            const linkIn = document.getElementById('war-dashboard-cw-create-link');
+            if (!apiKey || !fn || !fid) return;
+            const nameEl = document.getElementById('war-dashboard-cw-create-name');
+            const targetEl = document.getElementById('war-dashboard-cw-create-target');
+            const chainName = nameEl ? String(nameEl.value || '').trim().slice(0, 80) : '';
+            const chainTarget = targetEl ? Number(targetEl.value) : 1000;
+            const btn = document.getElementById('war-dashboard-cw-create-submit');
+            if (btn) btn.disabled = true;
+            if (msg) msg.textContent = 'Creating…';
+            try {
+                const existing = await fn.httpsCallable('chainWatchGet')({
+                    apiKey: apiKey,
+                    factionId: String(fid),
+                });
+                if (existing && existing.data && existing.data.exists) {
+                    if (msg) {
+                        msg.textContent =
+                            'A chain watch is already active. Open Chain Watch and use Archive / finish when the chain is over, then create a new one.';
+                    }
+                    return;
+                }
+                const nowSec = Math.floor(Date.now() / 1000);
+                await fn.httpsCallable('chainWatchSaveConfig')({
+                    apiKey: apiKey,
+                    factionId: String(fid),
+                    settings: {
+                        chainName: chainName,
+                        chainStartUnix: nowSec,
+                        chainTarget: chainTarget,
+                        backupColumns: 1,
+                        rewardType: 'cash',
+                        rewardFirst: 0,
+                        rewardSubsequent: 0,
+                        maxSignupsPer24h: 10,
+                        visibleTctDays: 1
+                    }
+                });
+                const share = chainWatchShareUrl(fid);
+                if (linkIn) linkIn.value = share;
+                if (linkWrap) linkWrap.style.display = 'block';
+                if (msg) msg.textContent = 'Created. Opening chain watch page…';
+                closeChainWatchCreateModal();
+                window.location.hash = 'chain-watch/' + String(fid);
+            } catch (e) {
+                if (msg) msg.textContent = (e && e.message) ? String(e.message) : 'Create failed';
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        });
+
         document.getElementById('war-dashboard-tool-container')?.addEventListener('click', function (e) {
             const t = e.target;
             if (!t || !t.closest) return;
-            if (t.closest('#war-dashboard-chain-watch-open')) {
+            if (t.closest('#war-dashboard-chain-watch-new')) {
+                e.preventDefault();
+                openChainWatchCreateModal();
+            } else if (t.closest('#war-dashboard-chain-watch-open')) {
                 e.preventDefault();
                 openChainWatchModal();
             } else if (t.closest('.war-dashboard-chain-watch-rewards-trigger')) {

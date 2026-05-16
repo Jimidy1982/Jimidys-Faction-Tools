@@ -86,7 +86,8 @@
             <div id="war-dashboard-chain-column-our" class="war-dashboard-chain-column war-dashboard-chain-column--our">
                 <div id="war-dashboard-our-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
                 <div id="war-dashboard-chain-watch-bar" class="war-dashboard-chain-watch-bar" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
-                    <button type="button" id="war-dashboard-chain-watch-open" class="btn">Chain watch</button>
+                    <button type="button" id="war-dashboard-chain-watch-new" class="btn">Add new chain watch</button>
+                    <button type="button" id="war-dashboard-chain-watch-open" class="btn">Open chain watch</button>
                     <span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint" style="color: #888; font-size: 12px;"></span>
                 </div>
             </div>
@@ -217,7 +218,43 @@
     </div>
 
     <!-- Activity tracker: players active during hour (click a bar) -->
-    <!-- Chain watch: hourly signup grid (VIP configures) -->
+    <!-- Chain watch: create + full-page schedule -->
+    <div id="war-dashboard-chain-watch-create-modal" class="war-dashboard-settings-overlay" aria-hidden="true" style="display: none;">
+        <div class="war-dashboard-settings-modal" role="dialog" aria-labelledby="war-dashboard-cw-create-title" style="max-width: 440px;">
+            <div class="war-dashboard-settings-modal-header">
+                <h2 id="war-dashboard-cw-create-title">New chain watch</h2>
+                <button type="button" id="war-dashboard-cw-create-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+            </div>
+            <div class="war-dashboard-settings-modal-body" style="padding: 16px;">
+                <p style="color: #b0b0b0; font-size: 13px; line-height: 1.45; margin: 0 0 14px 0;">Create a schedule for your faction. You become the <strong>owner</strong> and can share the link with members to sign up for watch slots.</p>
+                <div class="war-dashboard-cw-field" style="margin-bottom: 12px;">
+                    <label for="war-dashboard-cw-create-name">Chain name</label>
+                    <input type="text" id="war-dashboard-cw-create-name" maxlength="80" placeholder="e.g. Weekend war chain" style="width: 100%; max-width: 320px;">
+                </div>
+                <div class="war-dashboard-cw-field" style="margin-bottom: 12px;">
+                    <label for="war-dashboard-cw-create-target">Target hits</label>
+                    <select id="war-dashboard-cw-create-target" style="min-width: 120px;">
+                        <option value="100">100</option>
+                        <option value="250">250</option>
+                        <option value="500">500</option>
+                        <option value="1000" selected>1000</option>
+                        <option value="2500">2500</option>
+                        <option value="5000">5000</option>
+                        <option value="10000">10000</option>
+                        <option value="25000">25000</option>
+                        <option value="50000">50000</option>
+                        <option value="100000">100000</option>
+                    </select>
+                </div>
+                <p id="war-dashboard-cw-create-msg" style="font-size: 12px; color: #888; margin: 0 0 12px 0; min-height: 1.2em;"></p>
+                <button type="button" id="war-dashboard-cw-create-submit" class="btn">Create &amp; open chain watch</button>
+                <p id="war-dashboard-cw-create-link-wrap" style="display: none; margin: 14px 0 0 0; font-size: 12px; color: #b0b0b0;">
+                    Share link: <input type="text" id="war-dashboard-cw-create-link" readonly style="width: 100%; margin-top: 6px; padding: 6px 8px; font-size: 12px; background: #1a1a1a; border: 1px solid var(--border-color, #444); color: #e0e0e0;">
+                </p>
+            </div>
+        </div>
+    </div>
+
     <div id="war-dashboard-chain-watch-modal" class="war-dashboard-settings-overlay war-dashboard-chain-watch-overlay" aria-hidden="true" style="display: none;">
         <div class="war-dashboard-settings-modal war-dashboard-chain-watch-modal" role="dialog" aria-labelledby="war-dashboard-chain-watch-title" style="max-width: 760px;">
             <div class="war-dashboard-settings-modal-header">

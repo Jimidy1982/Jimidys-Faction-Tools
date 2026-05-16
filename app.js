@@ -2020,6 +2020,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button type="button" class="admin-tab-btn" data-tab="usage">Usage</button>
                     <button type="button" class="admin-tab-btn" data-tab="activity">Activity</button>
                     <button type="button" class="admin-tab-btn" data-tab="vip">VIP Balances</button>
+                    <button type="button" class="admin-tab-btn" data-tab="support">Support</button>
                 </div>
                 
                 <div id="admin-tab-overview" class="admin-tab-panel">
@@ -2304,10 +2305,69 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div id="admin-vip-content" style="display: none;"></div>
                 </div>
                 </div>
+
+                <div id="admin-tab-support" class="admin-tab-panel" style="display: none;">
+                <div class="dashboard-section">
+                    <h2>Chain watch support</h2>
+                    <p style="color: var(--text-color); font-size: 0.95em; line-height: 1.5; max-width: 640px;">
+                        Archive a faction&apos;s <strong>active</strong> chain watch when the owner or organisers are inactive
+                        (e.g. so members can start a new schedule). Past data is kept under Past chain watches on the Chain Watch page.
+                        Stale schedules are also auto-archived after 3 days with no signups or edits past chain start.
+                    </p>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 16px;">
+                        <label style="display: flex; flex-direction: column; gap: 6px; font-size: 0.9em;">
+                            Faction ID
+                            <input type="text" id="admin-cw-archive-faction-id" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 12345" style="width: 140px; padding: 8px;">
+                        </label>
+                        <button type="button" class="fetch-button" id="admin-cw-archive-btn">Archive active chain watch</button>
+                    </div>
+                    <p id="admin-cw-archive-msg" style="margin-top: 12px; font-size: 0.9em; color: #9e9e9e;"></p>
+                </div>
+                </div>
             </div>
         `;
         
         appContent.innerHTML = html;
+
+        document.getElementById('admin-cw-archive-btn')?.addEventListener('click', async function () {
+            const msgEl = document.getElementById('admin-cw-archive-msg');
+            const fidEl = document.getElementById('admin-cw-archive-faction-id');
+            const fid = fidEl ? String(fidEl.value || '').trim() : '';
+            const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+            if (!fid || !/^\d+$/.test(fid)) {
+                if (msgEl) msgEl.textContent = 'Enter a numeric faction ID.';
+                return;
+            }
+            if (!apiKey || apiKey.length !== 16) {
+                if (msgEl) msgEl.textContent = 'Enter your API key in the sidebar (admin account).';
+                return;
+            }
+            if (!confirm('Archive the active chain watch for faction ' + fid + '? Members can still view it under Past chain watches.')) {
+                return;
+            }
+            const btn = document.getElementById('admin-cw-archive-btn');
+            if (btn) btn.disabled = true;
+            if (msgEl) msgEl.textContent = 'Archiving…';
+            try {
+                if (typeof firebase === 'undefined' || !firebase.functions) {
+                    throw new Error('Firebase not loaded.');
+                }
+                const res = await firebase.functions().httpsCallable('chainWatchAdminArchive')({
+                    apiKey: apiKey,
+                    factionId: fid,
+                });
+                const data = res && res.data;
+                if (msgEl) {
+                    msgEl.textContent = data && data.archiveId
+                        ? 'Archived (id ' + data.archiveId + '). Faction can start a new chain watch.'
+                        : 'Archived.';
+                }
+            } catch (e) {
+                if (msgEl) msgEl.textContent = (e && e.message) ? String(e.message) : 'Archive failed.';
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        });
         
         // Tab switching
         document.querySelectorAll('.admin-tab-btn').forEach(btn => {
@@ -4160,6 +4220,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 script.onload = () => {
                     if (typeof initWarDashboard === 'function') initWarDashboard();
                     else if (window.initWarDashboard) window.initWarDashboard();
+                };
+                document.head.appendChild(script);
+            } else if (page.includes('chain-watch')) {
+                const oldScript = document.getElementById('chain-watch-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src = 'tools/chain-watch/chain-watch.js';
+                script.id = 'chain-watch-script';
+                script.onload = () => {
+                    if (typeof initChainWatchPage === 'function') initChainWatchPage();
+                    else if (window.initChainWatchPage) window.initChainWatchPage();
                 };
                 document.head.appendChild(script);
             } else if (page.includes('alliance-dashboard')) {

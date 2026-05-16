@@ -801,49 +801,7 @@ exports.applyVipTornXanaxCredits = onCall(callableOpts({ maxInstances: 10 }), as
   return applyVipTornXanaxCreditsInternal(playerId, playerName, credits, { factionName, factionId });
 });
 
-/** Admin-only: return all VIP balance documents. Caller must pass apiKey; we validate against Torn and allow only admin user IDs. */
-const ADMIN_USER_IDS = [2935825, 2093859];
-
-/** Cache Torn admin validation — keys and admin IDs do not change often; avoids a Torn hit on every VIP callable. */
-const adminKeyValidationCache = new Map(); // key -> { ok, exp }
-const ADMIN_KEY_CACHE_OK_MS = 24 * 60 * 60 * 1000; // 24h
-const ADMIN_KEY_CACHE_FAIL_MS = 60 * 60 * 1000; // 1h (invalid key / not admin)
-
-async function validateAdminApiKey(apiKey) {
-  const key = String(apiKey || '')
-    .trim()
-    .replace(/[^A-Za-z0-9]/g, '');
-  if (!key || key.length !== 16) return false;
-  const now = Date.now();
-  const hit = adminKeyValidationCache.get(key);
-  if (hit && now < hit.exp) return hit.ok;
-
-  try {
-    const res = await fetch(
-      `https://api.torn.com/user/?selections=profile,basic&key=${encodeURIComponent(key)}`
-    );
-    const data = await res.json();
-    if (data.error) {
-      adminKeyValidationCache.set(key, { ok: false, exp: now + ADMIN_KEY_CACHE_FAIL_MS });
-      return false;
-    }
-    const pid =
-      data.player_id != null
-        ? Number(data.player_id)
-        : data.id != null
-          ? Number(data.id)
-          : null;
-    const ok = pid != null && ADMIN_USER_IDS.includes(pid);
-    adminKeyValidationCache.set(key, {
-      ok,
-      exp: now + (ok ? ADMIN_KEY_CACHE_OK_MS : ADMIN_KEY_CACHE_FAIL_MS),
-    });
-    return ok;
-  } catch (e) {
-    // Do not negative-cache network errors — next request should retry validation
-    return false;
-  }
-}
+const { validateAdminApiKey } = require('./adminAuth');
 
 /**
  * Load display name and faction from Torn `user/{id}?selections=profile` (name + faction.faction_name / faction_id).
@@ -1790,10 +1748,16 @@ exports.resetVipDeductionClock = onCall(
   }
 );
 
-/** Faction chain watch list (VIP editors + member signups) — see functions/chainWatch.js */
+/** Faction chain watch list (owner/organisers + member signups) — see functions/chainWatch.js */
 const chainWatch = require('./chainWatch');
 exports.chainWatchGet = chainWatch.chainWatchGet;
 exports.chainWatchSaveConfig = chainWatch.chainWatchSaveConfig;
+exports.chainWatchSetOrganizers = chainWatch.chainWatchSetOrganizers;
+exports.chainWatchArchive = chainWatch.chainWatchArchive;
+exports.chainWatchAdminArchive = chainWatch.chainWatchAdminArchive;
+exports.chainWatchAutoArchiveStale = chainWatch.chainWatchAutoArchiveStale;
+exports.chainWatchListArchives = chainWatch.chainWatchListArchives;
+exports.chainWatchGetArchive = chainWatch.chainWatchGetArchive;
 exports.chainWatchSignup = chainWatch.chainWatchSignup;
 exports.chainWatchRemoveSelf = chainWatch.chainWatchRemoveSelf;
 exports.chainWatchSyncChain = chainWatch.chainWatchSyncChain;
