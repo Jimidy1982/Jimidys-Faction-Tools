@@ -1585,13 +1585,100 @@
             bar.id = 'war-dashboard-chain-watch-bar';
             bar.className = 'war-dashboard-chain-watch-bar';
             bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:10px;';
-            bar.innerHTML =
-                '<button type="button" id="war-dashboard-chain-watch-open" class="btn">Chain watch</button>' +
-                '<span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint" style="color:#888;font-size:12px;"></span>';
             ourCol.insertBefore(bar, ourBox.nextSibling);
         } else if (bar.parentNode !== ourCol || bar.previousElementSibling !== ourBox) {
             ourCol.insertBefore(bar, ourBox.nextSibling);
         }
+        if (!document.getElementById('war-dashboard-chain-watch-new')) {
+            const hint = document.getElementById('war-dashboard-chain-watch-hint');
+            const hintHtml = hint
+                ? hint.outerHTML
+                : '<span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint" style="color:#888;font-size:12px;"></span>';
+            bar.innerHTML =
+                '<button type="button" id="war-dashboard-chain-watch-new" class="btn">Add new chain watch</button>' +
+                '<button type="button" id="war-dashboard-chain-watch-open" class="btn">Open chain watch</button>' +
+                hintHtml;
+        }
+        wireChainWatchBarButtons();
+    }
+
+    function wireChainWatchBarButtons() {
+        const newBtn = document.getElementById('war-dashboard-chain-watch-new');
+        const openBtn = document.getElementById('war-dashboard-chain-watch-open');
+        if (newBtn && !newBtn.dataset.cwBarWired) {
+            newBtn.dataset.cwBarWired = '1';
+            newBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                void handleChainWatchNewClick();
+            });
+        }
+        if (openBtn && !openBtn.dataset.cwBarWired) {
+            openBtn.dataset.cwBarWired = '1';
+            openBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                navigateToChainWatchPage();
+            });
+        }
+    }
+
+    function chainWatchActiveLabel(p) {
+        const n = p && p.settings && p.settings.chainName != null ? String(p.settings.chainName).trim() : '';
+        return n ? '"' + n + '"' : 'A chain watch';
+    }
+
+    async function handleChainWatchNewClick() {
+        if (!lastOurFactionId) {
+            alert('Load your faction first (Apply or Use current ranked war).');
+            return;
+        }
+        if (!getApiKey()) {
+            alert('Set your Torn API key in the sidebar first.');
+            return;
+        }
+        const fn = getWarDashboardFunctions();
+        if (!fn) {
+            alert('Firebase did not load (Functions). Refresh the page or check that scripts are not blocked.');
+            return;
+        }
+        let p = chainWatchPayload;
+        if (!p) {
+            p = await fetchChainWatchData(true);
+        }
+        if (p && p.exists === true) {
+            const label = chainWatchActiveLabel(p);
+            const owner =
+                p.ownerName ||
+                (p.ownerPlayerId != null ? 'player ' + String(p.ownerPlayerId) : 'the chain watch owner');
+            const canEdit = p.viewer && p.viewer.canEdit === true;
+            if (canEdit) {
+                const ok = confirm(
+                    label +
+                        ' is already live for your faction.\n\nArchive it and start a new chain watch? The current schedule will move to Past chain watches (signups and rewards stay readable).'
+                );
+                if (!ok) return;
+                try {
+                    await fn.httpsCallable('chainWatchArchive')({
+                        apiKey: getApiKey(),
+                        factionId: String(lastOurFactionId),
+                    });
+                    chainWatchPayload = null;
+                    chainWatchLastFetchMs = 0;
+                    await fetchChainWatchData(true);
+                } catch (e) {
+                    alert(chainWatchErrorText(e));
+                    return;
+                }
+            } else {
+                alert(
+                    label +
+                        ' is already live. Ask ' +
+                        owner +
+                        ' or a chain watch organiser to archive it before starting a new one.'
+                );
+                return;
+            }
+        }
+        showChainWatchCreateModal();
     }
 
     function updateChainWatchBarVisibility() {
@@ -2484,17 +2571,9 @@
         window.location.hash = 'chain-watch/' + String(fid);
     }
 
-    function openChainWatchCreateModal() {
+    function showChainWatchCreateModal() {
         const overlay = document.getElementById('war-dashboard-chain-watch-create-modal');
         if (!overlay) return;
-        if (!lastOurFactionId) {
-            alert('Load your faction first (Apply or Use current ranked war).');
-            return;
-        }
-        if (!getApiKey()) {
-            alert('Set your Torn API key in the sidebar first.');
-            return;
-        }
         const msg = document.getElementById('war-dashboard-cw-create-msg');
         const linkWrap = document.getElementById('war-dashboard-cw-create-link-wrap');
         if (msg) msg.textContent = '';
@@ -4209,6 +4288,7 @@
         document.getElementById('war-dashboard-settings-overlay')?.addEventListener('click', (e) => {
             if (e.target.id === 'war-dashboard-settings-overlay') closeWarDashboardSettingsModal();
         });
+        wireChainWatchBarButtons();
         document.getElementById('war-dashboard-cw-create-close')?.addEventListener('click', closeChainWatchCreateModal);
         document.getElementById('war-dashboard-chain-watch-create-modal')?.addEventListener('click', function (e) {
             if (e.target.id === 'war-dashboard-chain-watch-create-modal') closeChainWatchCreateModal();
@@ -4234,9 +4314,19 @@
                     factionId: String(fid),
                 });
                 if (existing && existing.data && existing.data.exists) {
+                    const ex = existing.data;
+                    const label = chainWatchActiveLabel(ex);
+                    const owner =
+                        ex.ownerName ||
+                        (ex.ownerPlayerId != null
+                            ? 'player ' + String(ex.ownerPlayerId)
+                            : 'the chain watch owner');
                     if (msg) {
                         msg.textContent =
-                            'A chain watch is already active. Open Chain Watch and use Archive / finish when the chain is over, then create a new one.';
+                            label +
+                            ' is already live. Use Add new chain watch to archive it (owner/organiser) or ask ' +
+                            owner +
+                            ' to archive before creating another.';
                     }
                     return;
                 }
@@ -4272,13 +4362,7 @@
         document.getElementById('war-dashboard-tool-container')?.addEventListener('click', function (e) {
             const t = e.target;
             if (!t || !t.closest) return;
-            if (t.closest('#war-dashboard-chain-watch-new')) {
-                e.preventDefault();
-                openChainWatchCreateModal();
-            } else if (t.closest('#war-dashboard-chain-watch-open')) {
-                e.preventDefault();
-                openChainWatchModal();
-            } else if (t.closest('.war-dashboard-chain-watch-rewards-trigger')) {
+            if (t.closest('.war-dashboard-chain-watch-rewards-trigger')) {
                 e.preventDefault();
                 openChainWatchRewardsModal();
             }
