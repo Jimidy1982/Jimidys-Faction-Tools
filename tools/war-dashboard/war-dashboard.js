@@ -1267,7 +1267,7 @@
         const id = String(m.id);
         const status = statusFromMember(m);
         const expired = status.until != null && nowSec >= status.until;
-        const locationDisplay = expired ? 'Okay' : (status.description || status.state || '');
+        const locationDisplay = formatLocationStatusDisplay(status, nowSec);
         switch (column) {
             case 'member': return (m.name || id).toLowerCase();
             case 'level': return Number(m.level) || -1;
@@ -1323,21 +1323,30 @@
             const bs = bsMap[String(id)];
             if (ff != null) { sum += ff; count++; }
             const status = statusFromMember(m);
-            const expired = status.until != null && nowSec >= status.until;
-            const statusDisplay = expired ? 'Okay' : (status.description || status.state || '—');
+            const statusDisplay = formatLocationStatusDisplay(status, nowSec);
             const color = getFFColor(ff, blue, green, orange);
             const statusColor = getStatusColor(status, nowSec);
             const locationColor = getLocationStateColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             const memLabelOur = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
+            const locData =
+                status.until != null
+                    ? ' data-status-until="' +
+                      escapeAttr(String(status.until)) +
+                      '" data-status-desc="' +
+                      escapeAttr(status.description || '') +
+                      '" data-status-state="' +
+                      escapeAttr(status.state || '') +
+                      '"'
+                    : '';
             return `<tr>
                 <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelOur)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
                 <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
-                <td style="color: ${locationColor};">${escapeHtml(statusDisplay)}</td>
+                <td class="war-dashboard-location-cell" style="color: ${locationColor};"${locData}>${escapeHtml(statusDisplay)}</td>
             </tr>`;
         }).join('');
         tbody.innerHTML = rowHtml;
@@ -1362,6 +1371,54 @@
         const m = Math.floor(s / 60);
         const remainder = s % 60;
         return `${m}m ${remainder}s`;
+    }
+
+    function escapeAttr(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;');
+    }
+
+    /** Location column: use second precision when status ends in under 1 minute (hospital, jail, travel, etc.). */
+    function formatLocationStatusDisplay(status, nowSec) {
+        if (status.until != null && nowSec >= status.until) return 'Okay';
+        const base = (status.description || status.state || '—').trim();
+        if (status.until == null || !Number.isFinite(Number(status.until))) return base;
+        const remaining = Math.max(0, Math.floor(Number(status.until) - nowSec));
+        if (remaining >= 60) return base;
+        if (remaining === 0) return 'Okay';
+
+        const secLabel = remaining === 1 ? '1 second' : remaining + ' seconds';
+        const replaced = base.replace(/\d+\s*(?:minutes?|mins?)\b/i, secLabel);
+        if (replaced !== base) return replaced;
+
+        const lower = base.toLowerCase();
+        if (lower.includes('hospital')) return 'In hospital for ' + secLabel;
+        if (lower.includes('jail')) return 'In jail for ' + secLabel;
+        if (lower.includes('traveling') || lower.includes('returning') || lower.includes('abroad')) {
+            return base + ' (' + remaining + 's)';
+        }
+        return base + ' (' + remaining + 's)';
+    }
+
+    function updateLocationStatusTimers() {
+        const nowSec = Math.floor(Date.now() / 1000);
+        document.querySelectorAll('.war-dashboard-location-cell[data-status-until]').forEach(function (td) {
+            const untilRaw = td.getAttribute('data-status-until');
+            const until = untilRaw != null && untilRaw !== '' ? Number(untilRaw) : NaN;
+            if (!Number.isFinite(until)) return;
+            const status = {
+                until: until,
+                description: td.getAttribute('data-status-desc') || '',
+                state: td.getAttribute('data-status-state') || '',
+            };
+            const display = formatLocationStatusDisplay(status, nowSec);
+            td.textContent = display;
+            if (nowSec >= until) {
+                td.style.color = '#81c784';
+            }
+        });
     }
 
     /** HTML for who is on chain watch this hour (from schedule), for Our Chain box. Empty if no schedule / outside slot range. */
@@ -2734,8 +2791,7 @@
             const ff = ffMap[String(id)];
             const bs = bsMap[String(id)];
             const status = statusFromMember(m);
-            const expired = status.until != null && nowSec >= status.until;
-            const statusDisplay = expired ? 'Okay' : (status.description || status.state || '—');
+            const statusDisplay = formatLocationStatusDisplay(status, nowSec);
             const color = getFFColor(ff, blue, green, orange);
             const statusColor = getStatusColor(status, nowSec);
             const locationColor = getLocationStateColor(status, nowSec);
@@ -2744,13 +2800,23 @@
             const attackUrl = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
             const noteValue = escapeHtml(getNote(id));
             const memLabelEnemy = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
+            const locData =
+                status.until != null
+                    ? ' data-status-until="' +
+                      escapeAttr(String(status.until)) +
+                      '" data-status-desc="' +
+                      escapeAttr(status.description || '') +
+                      '" data-status-state="' +
+                      escapeAttr(status.state || '') +
+                      '"'
+                    : '';
             return `<tr>
                 <td><a href="${attackUrl}" target="_blank" rel="noopener" title="Attack">🎯</a> <a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelEnemy)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
                 <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
-                <td style="color: ${locationColor};">${escapeHtml(statusDisplay)}</td>
+                <td class="war-dashboard-location-cell" style="color: ${locationColor};"${locData}>${escapeHtml(statusDisplay)}</td>
                 <td><input type="text" class="war-dashboard-note-input" data-player-id="${escapeHtml(id)}" value="${noteValue}" placeholder="Note…" maxlength="500" /></td>
             </tr>`;
         }).join('');
@@ -3319,6 +3385,7 @@
             if ((window.location.hash || '').replace('#', '').split('/')[0] !== 'war-dashboard') return;
             updateChainDisplays();
             renderChainBoxes();
+            updateLocationStatusTimers();
         }, 1000);
         renderChainBoxes();
     }

@@ -116,6 +116,11 @@
 
     const CHAIN_AT_ZERO_THROTTLE_MS = 60 * 1000;
     const OUR_CHAIN_PLACEHOLDER = { current: 0, max: 0, timeout: 0, cooldown: 0, modifier: 0 };
+    /** Same keys as War Dashboard so chain tracking / refresh interval stay in sync. */
+    const WD_STORAGE = {
+        chainRefreshInterval: 'war_dashboard_chain_refresh_interval',
+        trackOurChain: 'war_dashboard_track_our_chain',
+    };
 
     let lastOurChain = null;
     let ourChainDisplay = { timeout: 0, cooldown: 0 };
@@ -127,14 +132,23 @@
         return (location.hash || '').replace('#', '').split('/')[0] === 'chain-watch';
     }
 
-    function tornApiFetchUrl(url) {
-        if (typeof url !== 'string' || url.indexOf('https://api.torn.com') !== 0) return url;
+    function getTrackOurChain() {
+        const v = localStorage.getItem(WD_STORAGE.trackOurChain);
+        return v === null || v === 'true';
+    }
+
+    function setTrackOurChain(on) {
         try {
-            const u = new URL(url);
-            return '/.torn-api-proxy' + u.pathname + u.search;
-        } catch (e) {
-            return url;
+            localStorage.setItem(WD_STORAGE.trackOurChain, on ? 'true' : 'false');
+        } catch (e) { /* ignore */ }
+    }
+
+    /** Match War Dashboard: direct Torn API on production; /.torn-api-proxy on localhost only (app.js). */
+    function tornApiFetchUrl(url) {
+        if (typeof window.getTornApiFetchUrl === 'function') {
+            return window.getTornApiFetchUrl(url);
         }
+        return url;
     }
 
     async function fetchJson(url) {
@@ -174,9 +188,24 @@
     }
 
     function getChainRefreshIntervalSec() {
-        const stored = localStorage.getItem('war_dashboard_chain_refresh_interval');
-        const n = parseInt(stored || '30', 10);
+        const fromDom = document.getElementById('war-dashboard-chain-refresh-interval');
+        const stored = localStorage.getItem(WD_STORAGE.chainRefreshInterval);
+        const raw = fromDom && fromDom.value !== '' ? fromDom.value : stored;
+        const n = parseInt(raw || '30', 10);
         return Math.max(10, Math.min(300, isNaN(n) ? 30 : n));
+    }
+
+    function syncChainWatchFromPage() {
+        const apiKey = getApiKey();
+        if (!apiKey || !factionId || !lastOurChain) return;
+        const fn = getChainWatchFunctions();
+        if (!fn) return;
+        fn.httpsCallable('chainWatchSyncChain')({
+            apiKey: apiKey,
+            factionId: String(factionId),
+            current: lastOurChain.current != null ? Number(lastOurChain.current) : 0,
+            cooldown: lastOurChain.cooldown != null ? Number(lastOurChain.cooldown) : 0,
+        }).catch(function () {});
     }
 
     function getOurChainWatchRosterHtml() {
@@ -226,9 +255,25 @@
             }
             return;
         }
+        const watchRosterHtml = getOurChainWatchRosterHtml();
+        if (!getTrackOurChain()) {
+            boxEl.className = 'war-dashboard-chain-box chain-watch-our-chain-box war-dashboard-chain-box-off';
+            boxEl.setAttribute('aria-hidden', 'false');
+            boxEl.style.display = 'block';
+            boxEl.innerHTML =
+                '<label class="war-dashboard-chain-track-wrap" title="Tracking off: click to turn on (same toggle as War Dashboard).">' +
+                '<input type="checkbox" class="war-dashboard-chain-track-input" data-chain-key="our" aria-label="Track this chain" />' +
+                '<span class="war-dashboard-chain-track-slider"></span></label>' +
+                '<div class="war-dashboard-chain-title">Our Chain</div>' +
+                watchRosterHtml +
+                '<div class="war-dashboard-chain-off-message">Tracking off</div>';
+            wireChainWatchOurChainTrackToggle(boxEl);
+            return;
+        }
         const chain = lastOurChain || OUR_CHAIN_PLACEHOLDER;
-        const timeout = ourChainDisplay.timeout != null ? Math.max(0, ourChainDisplay.timeout) : 0;
-        const cooldown = ourChainDisplay.cooldown != null ? Math.max(0, ourChainDisplay.cooldown) : 0;
+        const display = lastOurChain ? ourChainDisplay : { timeout: 0, cooldown: 0 };
+        const timeout = display.timeout != null ? Math.max(0, display.timeout) : 0;
+        const cooldown = display.cooldown != null ? Math.max(0, display.cooldown) : 0;
         const current = chain.current != null ? chain.current : 0;
         const max = chain.max != null ? chain.max : 0;
         const modifier = chain.modifier != null ? chain.modifier : 0;
@@ -236,7 +281,6 @@
         const timerLabel = timeout > 0 ? 'Timeout' : cooldown > 0 ? 'Cooldown' : null;
         const timerText = timerLabel ? timerLabel + ': ' + formatMinutesSeconds(timeout > 0 ? timeout : cooldown) : '—';
         const isUrgent = (timeout > 0 && timeout < 60) || (timeout === 0 && cooldown > 0 && cooldown < 60);
-        const watchRosterHtml = getOurChainWatchRosterHtml();
         boxEl.className =
             'war-dashboard-chain-box chain-watch-our-chain-box' +
             (isActive ? ' war-dashboard-chain-box-active' : '') +
@@ -244,6 +288,9 @@
         boxEl.setAttribute('aria-hidden', 'false');
         boxEl.style.display = 'block';
         boxEl.innerHTML =
+            '<label class="war-dashboard-chain-track-wrap" title="Tracking on: click to turn off (same toggle as War Dashboard).">' +
+            '<input type="checkbox" class="war-dashboard-chain-track-input" data-chain-key="our" checked aria-label="Track this chain" />' +
+            '<span class="war-dashboard-chain-track-slider"></span></label>' +
             '<div class="war-dashboard-chain-title">Our Chain</div>' +
             '<div class="war-dashboard-chain-current">' +
             escapeHtml(String(current)) +
@@ -260,13 +307,26 @@
             '</span>' +
             '</div>' +
             watchRosterHtml;
+        wireChainWatchOurChainTrackToggle(boxEl);
+    }
+
+    function wireChainWatchOurChainTrackToggle(boxEl) {
+        const input = boxEl && boxEl.querySelector('.war-dashboard-chain-track-input');
+        if (!input || input.dataset.cwChainTrackWired) return;
+        input.dataset.cwChainTrackWired = '1';
+        input.addEventListener('change', function () {
+            setTrackOurChain(input.checked);
+            renderChainWatchOurChainBox();
+            if (input.checked) {
+                void refreshOurFactionChain();
+            }
+        });
     }
 
     function updateChainWatchChainDisplays() {
-        if (lastOurChain) {
-            if (ourChainDisplay.timeout > 0) ourChainDisplay.timeout--;
-            else if (ourChainDisplay.cooldown > 0) ourChainDisplay.cooldown--;
-        }
+        if (!getTrackOurChain() || !lastOurChain) return;
+        if (ourChainDisplay.timeout > 0) ourChainDisplay.timeout--;
+        else if (ourChainDisplay.cooldown > 0) ourChainDisplay.cooldown--;
     }
 
     function scheduleNextChainWatchChainRefresh() {
@@ -287,6 +347,11 @@
             renderChainWatchOurChainBox();
             return;
         }
+        if (!getTrackOurChain()) {
+            renderChainWatchOurChainBox();
+            scheduleNextChainWatchChainRefresh();
+            return;
+        }
         const now = Date.now();
         if (
             isChainAtZero(lastOurChain) &&
@@ -303,6 +368,7 @@
                 lastOurChain = data;
                 lastOurChainFetchTime = Date.now();
                 ourChainDisplay = { timeout: data.timeout, cooldown: data.cooldown };
+                syncChainWatchFromPage();
             }
         } catch (e) {
             console.warn('Chain watch: faction chain refresh failed', e);
@@ -1089,11 +1155,10 @@
             if (cached && (now - cached.t) < CHAIN_WATCH_POLL_MS) {
                 chainWatchPayload = cached.data;
                 chainWatchLastFetchMs = cached.t;
-                updateChainWatchBarVisibility();
                 try {
                     await ensureActivityDataLoaded(fid);
                 } catch (e) { /* ignore */ }
-                renderChainBoxes();
+                renderChainWatchOurChainBox();
                 return chainWatchPayload;
             }
         }
@@ -1120,11 +1185,10 @@
                 chainWatchPayload = data;
                 chainWatchLastFetchMs = Date.now();
                 writeChainWatchSessionCache(fid, data);
-                updateChainWatchBarVisibility();
                 try {
                     await ensureActivityDataLoaded(fid);
                 } catch (e) { /* ignore */ }
-                renderChainBoxes();
+                renderChainWatchOurChainBox();
                 return chainWatchPayload;
             }
             console.warn('chainWatchGet: empty or invalid data', res);
@@ -1846,10 +1910,9 @@
         if (parts[1]) return String(parts[1]).trim();
         const apiKey = getApiKey();
         if (!apiKey || apiKey.length !== 16) return null;
-        const url = '/.torn-api-proxy/user/?selections=profile&key=' + encodeURIComponent(apiKey);
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.error) throw new Error(String(data.error));
+        const data = await fetchJson(
+            'https://api.torn.com/user/?selections=profile&key=' + encodeURIComponent(apiKey)
+        );
         const fac = data.faction && typeof data.faction === 'object' ? data.faction : null;
         const raw =
             data.faction_id != null
