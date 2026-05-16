@@ -2741,7 +2741,7 @@
             const locationColor = getLocationStateColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
-            const attackUrl = `https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
+            const attackUrl = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
             const noteValue = escapeHtml(getNote(id));
             const memLabelEnemy = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
             return `<tr>
