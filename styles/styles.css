@@ -271,6 +271,14 @@ header.app-site-header .app-site-header-title {
     text-overflow: ellipsis;
 }
 
+.war-dashboard-hospital-countdown {
+    color: #ef8a9a;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
 .war-dashboard-th-sort {
     cursor: pointer;
     user-select: none;

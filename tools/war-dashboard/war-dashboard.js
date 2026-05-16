@@ -1326,27 +1326,16 @@
             const statusDisplay = formatLocationStatusDisplay(status, nowSec);
             const color = getFFColor(ff, blue, green, orange);
             const statusColor = getStatusColor(status, nowSec);
-            const locationColor = getLocationStateColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             const memLabelOur = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
-            const locData =
-                status.until != null
-                    ? ' data-status-until="' +
-                      escapeAttr(String(status.until)) +
-                      '" data-status-desc="' +
-                      escapeAttr(status.description || '') +
-                      '" data-status-state="' +
-                      escapeAttr(status.state || '') +
-                      '"'
-                    : '';
             return `<tr>
                 <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelOur)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
                 <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
-                <td class="war-dashboard-location-cell" style="color: ${locationColor};"${locData}>${escapeHtml(statusDisplay)}</td>
+                ${warDashboardLocationCellOpenTag(status, nowSec)}${escapeHtml(statusDisplay)}</td>
             </tr>`;
         }).join('');
         tbody.innerHTML = rowHtml;
@@ -1380,11 +1369,69 @@
             .replace(/</g, '&lt;');
     }
 
-    /** Location column: use second precision when status ends in under 1 minute (hospital, jail, travel, etc.). */
+    function formatHmsCountdown(totalSec) {
+        const s = Math.max(0, Math.floor(totalSec));
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
+    }
+
+    function titleCaseWords(s) {
+        return String(s || '')
+            .trim()
+            .replace(/\b([a-z])/g, function (_, c) {
+                return c.toUpperCase();
+            });
+    }
+
+    function isInHospitalStatus(status, nowSec) {
+        if (status.until != null && nowSec >= status.until) return false;
+        const blob = ((status.state || '') + ' ' + (status.description || '')).toLowerCase();
+        return blob.includes('hospital');
+    }
+
+    function normalizeHospitalPlaceName(place) {
+        const p = String(place || '').trim();
+        if (!p) return 'Torn';
+        if (/^torn(\s+city)?$/i.test(p)) return 'Torn';
+        return titleCaseWords(p);
+    }
+
+    /** Place name for hospital countdown: "Torn" in city, otherwise country (e.g. "Switzerland"). */
+    function parseHospitalPlaceName(description, state) {
+        const desc = (description || '').trim();
+        const lower = desc.toLowerCase();
+        if (!desc || (!lower.includes('hospital') && !(state || '').toLowerCase().includes('hospital'))) {
+            return 'Torn';
+        }
+        let m = desc.match(/hospital\s+in\s+(.+?)(?:\s+for\s+|$)/i);
+        if (m) return normalizeHospitalPlaceName(m[1]);
+        m = desc.match(/\bin\s+(.+?)\s+hospital\b/i);
+        if (m) return normalizeHospitalPlaceName(m[1]);
+        m = desc.match(/\bin\s+(.+?)(?:\s+for\s+)/i);
+        if (m && lower.includes('hospital')) return normalizeHospitalPlaceName(m[1]);
+        return 'Torn';
+    }
+
+    function formatHospitalCountdownDisplay(status, nowSec) {
+        const remaining = Math.max(0, Math.floor(Number(status.until) - nowSec));
+        if (remaining === 0) return 'Okay';
+        const place = parseHospitalPlaceName(status.description, status.state);
+        const hms = formatHmsCountdown(remaining);
+        return hms + ' (In ' + place + ')';
+    }
+
+    /** Location column: hospital uses HH:MM:SS (+ country); other timed states use second precision under 1 minute. */
     function formatLocationStatusDisplay(status, nowSec) {
         if (status.until != null && nowSec >= status.until) return 'Okay';
         const base = (status.description || status.state || '—').trim();
         if (status.until == null || !Number.isFinite(Number(status.until))) return base;
+
+        if (isInHospitalStatus(status, nowSec)) {
+            return formatHospitalCountdownDisplay(status, nowSec);
+        }
+
         const remaining = Math.max(0, Math.floor(Number(status.until) - nowSec));
         if (remaining >= 60) return base;
         if (remaining === 0) return 'Okay';
@@ -1394,12 +1441,29 @@
         if (replaced !== base) return replaced;
 
         const lower = base.toLowerCase();
-        if (lower.includes('hospital')) return 'In hospital for ' + secLabel;
         if (lower.includes('jail')) return 'In jail for ' + secLabel;
         if (lower.includes('traveling') || lower.includes('returning') || lower.includes('abroad')) {
             return base + ' (' + remaining + 's)';
         }
         return base + ' (' + remaining + 's)';
+    }
+
+    function warDashboardLocationCellOpenTag(status, nowSec) {
+        const locData =
+            status.until != null
+                ? ' data-status-until="' +
+                  escapeAttr(String(status.until)) +
+                  '" data-status-desc="' +
+                  escapeAttr(status.description || '') +
+                  '" data-status-state="' +
+                  escapeAttr(status.state || '') +
+                  '"'
+                : '';
+        const hospitalTimer = isInHospitalStatus(status, nowSec) && status.until != null;
+        const cls =
+            'war-dashboard-location-cell' + (hospitalTimer ? ' war-dashboard-hospital-countdown' : '');
+        const style = hospitalTimer ? '' : ' style="color: ' + getLocationStateColor(status, nowSec) + ';"';
+        return '<td class="' + cls + '"' + style + locData + '>';
     }
 
     function updateLocationStatusTimers() {
@@ -1414,9 +1478,17 @@
                 state: td.getAttribute('data-status-state') || '',
             };
             const display = formatLocationStatusDisplay(status, nowSec);
+            const hospitalTimer = isInHospitalStatus(status, nowSec);
             td.textContent = display;
             if (nowSec >= until) {
                 td.style.color = '#81c784';
+                td.classList.remove('war-dashboard-hospital-countdown');
+            } else if (hospitalTimer) {
+                td.classList.add('war-dashboard-hospital-countdown');
+                td.style.color = '';
+            } else {
+                td.classList.remove('war-dashboard-hospital-countdown');
+                td.style.color = getLocationStateColor(status, nowSec);
             }
         });
     }
@@ -2794,29 +2866,18 @@
             const statusDisplay = formatLocationStatusDisplay(status, nowSec);
             const color = getFFColor(ff, blue, green, orange);
             const statusColor = getStatusColor(status, nowSec);
-            const locationColor = getLocationStateColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             const attackUrl = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
             const noteValue = escapeHtml(getNote(id));
             const memLabelEnemy = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
-            const locData =
-                status.until != null
-                    ? ' data-status-until="' +
-                      escapeAttr(String(status.until)) +
-                      '" data-status-desc="' +
-                      escapeAttr(status.description || '') +
-                      '" data-status-state="' +
-                      escapeAttr(status.state || '') +
-                      '"'
-                    : '';
             return `<tr>
                 <td><a href="${attackUrl}" target="_blank" rel="noopener" title="Attack">🎯</a> <a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelEnemy)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
                 <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
-                <td class="war-dashboard-location-cell" style="color: ${locationColor};"${locData}>${escapeHtml(statusDisplay)}</td>
+                ${warDashboardLocationCellOpenTag(status, nowSec)}${escapeHtml(statusDisplay)}</td>
                 <td><input type="text" class="war-dashboard-note-input" data-player-id="${escapeHtml(id)}" value="${noteValue}" placeholder="Note…" maxlength="500" /></td>
             </tr>`;
         }).join('');
