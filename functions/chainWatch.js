@@ -690,14 +690,28 @@ exports.chainWatchSaveConfig = onCall(callableOpts({ maxInstances: 10 }), async 
   }
 
   const prev = snap.data();
-  const prevStart = prev.settings?.chainStartUnix;
+  const normPrev = normalizeDoc(prev);
+  const prevStartStored =
+    prev.settings?.chainStartUnix != null && Number.isFinite(Number(prev.settings.chainStartUnix))
+      ? Math.floor(Number(prev.settings.chainStartUnix))
+      : null;
+  if (chainStartUnix == null && prevStartStored != null) {
+    chainStartUnix = prevStartStored;
+  }
   const bcPrev = Math.min(3, Math.max(1, Math.floor(Number(prev.settings?.backupColumns) || 1)));
+
+  if (backupColumns < bcPrev) {
+    throw new HttpsError(
+      'failed-precondition',
+      'To remove a backup watcher column, use the − button on that column header in the schedule.'
+    );
+  }
 
   if (visibleTctDays === undefined || !Number.isFinite(visibleTctDays)) {
     const prevV = prev.settings?.visibleTctDays;
     visibleTctDays = prevV != null && prevV !== '' ? Math.floor(Number(prevV)) : 1;
   }
-  if (prevStart !== chainStartUnix) {
+  if (prevStartStored !== chainStartUnix) {
     visibleTctDays = 1;
   }
   const maxVd = maxVisibleTctDaysForStart(chainStartUnix);
@@ -719,16 +733,12 @@ exports.chainWatchSaveConfig = onCall(callableOpts({ maxInstances: 10 }), async 
     visibleTctDays,
   };
 
-  const mergeSlots =
-    !clearSlots &&
-    prevStart === settings.chainStartUnix &&
-    Number(prev.settings?.chainTarget) === settings.chainTarget &&
-    backupColumns >= bcPrev;
+  const slotsPayload = clearSlots ? defaultSlotsObject() : normPrev.slots;
 
   await ref.set(
     {
       settings,
-      ...(mergeSlots ? {} : { slots: defaultSlotsObject() }),
+      slots: slotsPayload,
       ...metaFieldsFromDoc(prev),
       ...ownerPatch,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),

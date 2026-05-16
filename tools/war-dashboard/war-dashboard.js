@@ -2278,7 +2278,7 @@
                 '">';
             html += '<p class="war-dashboard-cw-backup-hint" style="margin:0 0 12px 0;">Use <strong>+</strong> above the schedule table to add backup watcher columns (max 3). Use <strong>−</strong> on <strong>Backup 1</strong> or <strong>Backup 2</strong> headers to remove a column. The schedule lists from chain start until <strong>midnight TCT</strong> first; use <strong>Add next day</strong> below the table for more.</p>';
             html += '<div class="war-dashboard-cw-save-row">';
-            html += '<label class="war-dashboard-cw-clear-label" style="display:flex;align-items:flex-start;gap:8px;margin:0;color:#b0b0b0;font-size:12px;line-height:1.4;width:100%;"><input type="checkbox" id="war-dashboard-cw-clear" style="margin-top:2px;flex-shrink:0;"><span>Clear all signups when saving (also when changing start, target, or parallel slots)</span></label>';
+            html += '<label class="war-dashboard-cw-clear-label" style="display:flex;align-items:flex-start;gap:8px;margin:0;color:#b0b0b0;font-size:12px;line-height:1.4;width:100%;"><input type="checkbox" id="war-dashboard-cw-clear" style="margin-top:2px;flex-shrink:0;"><span>Clear all signups when saving (only if this box is checked)</span></label>';
             html += '<button type="button" class="btn" id="war-dashboard-cw-save">Save schedule</button>';
             html += '<p id="war-dashboard-cw-save-msg" style="font-size:12px;color:#888;margin:0;width:100%;"></p>';
             if (canManageOrganizers) {
@@ -2574,7 +2574,11 @@
                 if (!apiKey || !fn || !lastOurFactionId) return;
                 const dateEl = document.getElementById('war-dashboard-cw-start-date');
                 const hourEl = document.getElementById('war-dashboard-cw-start-hour');
-                const unix = unixFromUtcDateHour(dateEl && dateEl.value, hourEl && hourEl.value);
+                let unix = unixFromUtcDateHour(dateEl && dateEl.value, hourEl && hourEl.value);
+                const curSettings = chainWatchPayload && chainWatchPayload.settings;
+                if (unix == null && curSettings && curSettings.chainStartUnix != null) {
+                    unix = Number(curSettings.chainStartUnix);
+                }
                 const payload = {
                     apiKey: apiKey,
                     factionId: String(lastOurFactionId),
