@@ -2040,6 +2040,29 @@
         return max;
     }
 
+    /** Past hours with signups stay visible even when completed rows are collapsed. */
+    function chainWatchSelectSlotIndices(startSec, slots, rowCount, nowSec, showCompletedRows) {
+        let hasCompletedHours = false;
+        let hasHiddenEmptyCompleted = false;
+        const slotIndicesToRender = [];
+        for (let i = 0; startSec != null && i < rowCount; i++) {
+            const slotEndSec = startSec + (i + 1) * 3600;
+            const hourCompleted = nowSec >= slotEndSec;
+            const hasSignups = ((slots[String(i)] || []).length) > 0;
+            if (hourCompleted) hasCompletedHours = true;
+            if (!showCompletedRows && hourCompleted && !hasSignups) {
+                hasHiddenEmptyCompleted = true;
+                continue;
+            }
+            slotIndicesToRender.push(i);
+        }
+        return {
+            slotIndicesToRender: slotIndicesToRender,
+            hasCompletedHours: hasCompletedHours,
+            hasHiddenEmptyCompleted: hasHiddenEmptyCompleted,
+        };
+    }
+
     function chainWatchMaxVisibleTctDays(startSec) {
         const first = chainWatchFirstDaySlotCount(startSec);
         return 1 + Math.ceil((CHAIN_WATCH_MAX_HOUR_SLOTS - first) / 24);
@@ -2331,20 +2354,15 @@
             showCompletedRows = localStorage.getItem('war_dashboard_cw_show_completed') === '1';
         } catch (e) { /* ignore */ }
 
-        let hasCompletedInView = false;
-        const slotIndicesToRender = [];
-        for (let i = 0; start != null && i < rowCount; i++) {
-            const slotEndSec = start + (i + 1) * 3600;
-            const hourCompleted = nowSec >= slotEndSec;
-            if (hourCompleted) hasCompletedInView = true;
-            if (!showCompletedRows && hourCompleted) continue;
-            slotIndicesToRender.push(i);
-        }
+        const slotPick = chainWatchSelectSlotIndices(start, slots, rowCount, nowSec, showCompletedRows);
+        const slotIndicesToRender = slotPick.slotIndicesToRender;
+        const hasCompletedHours = slotPick.hasCompletedHours;
+        const hasHiddenEmptyCompleted = slotPick.hasHiddenEmptyCompleted;
 
         html += '<div class="war-dashboard-cw-table-block">';
-        if ((start != null && hasCompletedInView) || showAddCol) {
+        if ((start != null && hasCompletedHours) || showAddCol) {
             html += '<div class="war-dashboard-cw-table-top-bar">';
-            if (start != null && hasCompletedInView) {
+            if (start != null && hasCompletedHours) {
                 html += '<div class="war-dashboard-cw-completed-toolbar">';
                 if (!showCompletedRows) {
                     html +=
@@ -2462,13 +2480,13 @@
             start != null &&
             slotIndicesToRender.length === 0 &&
             rowCount > 0 &&
-            hasCompletedInView &&
+            hasHiddenEmptyCompleted &&
             !showCompletedRows
         ) {
             html +=
                 '<tr><td colspan="' +
                 slotTableColCount +
-                '" style="color:#888;">All hours in this view are in the past. Use <strong>Show completed rows</strong> above to see them.</td></tr>';
+                '" style="color:#888;">Past hours with no signups are hidden. Use <strong>Show completed rows</strong> above to see them, or check upcoming hours below.</td></tr>';
         }
         if (start != null && showAddDay) {
             html += '<tr class="war-dashboard-cw-add-day-row">';

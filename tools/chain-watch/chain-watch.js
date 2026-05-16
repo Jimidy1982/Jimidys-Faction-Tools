@@ -6,7 +6,7 @@
 
     const CHAIN_WATCH_MAX_HOUR_SLOTS = 50 * 24;
     const CHAIN_WATCH_POLL_MS = 5 * 60 * 1000;
-    const CHAIN_WATCH_CACHE_PREFIX = 'chain_watch_page_v1_';
+    const CHAIN_WATCH_CACHE_PREFIX = 'chain_watch_page_v2_';
 
     let factionId = null;
     let chainWatchPayload = null;
@@ -74,6 +74,55 @@
             chainWatchHelpIconHtml(tooltipHtml) +
             '</label>'
         );
+    }
+
+    const CHAIN_WATCH_RULES_HIDE_UNTIL_KEY = 'chain_watch_rules_hidden_until';
+
+    function isChainWatchRulesWarningHidden() {
+        try {
+            const until = Number(localStorage.getItem(CHAIN_WATCH_RULES_HIDE_UNTIL_KEY));
+            return Number.isFinite(until) && Date.now() < until;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function hideChainWatchRulesWarningForWeek() {
+        try {
+            localStorage.setItem(
+                CHAIN_WATCH_RULES_HIDE_UNTIL_KEY,
+                String(Date.now() + 7 * 24 * 60 * 60 * 1000)
+            );
+        } catch (e) { /* ignore */ }
+    }
+
+    function chainWatchRulesWarningHtml() {
+        if (isChainWatchRulesWarningHidden()) return '';
+        return (
+            '<div class="chain-watch-rules-warning" role="note" aria-label="Rules for chain watching">' +
+            '<div class="chain-watch-rules-warning-head">' +
+            '<p class="chain-watch-rules-warning-title">Rules for Chain Watching:</p>' +
+            '<button type="button" class="chain-watch-rules-warning-hide" id="chain-watch-rules-hide" title="Hide these rules for 1 week">Hide for 1 week</button>' +
+            '</div>' +
+            '<ul class="chain-watch-rules-warning-list">' +
+            '<li>Show up and be online for the whole time you sign up for</li>' +
+            '<li>Make a hit if the timer drops below 1 minute to save the chain.</li>' +
+            '<li>Check if the next Chain Watchers are around, before you leave your post — if they aren\'t, ask for a replacement.</li>' +
+            '<li>If the Chain dies while you are on watch without organiser permission, you will receive no Chain watching rewards.</li>' +
+            '</ul></div>'
+        );
+    }
+
+    function wireChainWatchRulesDismiss(root) {
+        const scope = root && root.querySelector ? root : document;
+        const btn = scope.querySelector('#chain-watch-rules-hide');
+        if (!btn || btn.dataset.cwRulesHideWired) return;
+        btn.dataset.cwRulesHideWired = '1';
+        btn.addEventListener('click', function () {
+            hideChainWatchRulesWarningForWeek();
+            const box = btn.closest('.chain-watch-rules-warning');
+            if (box) box.remove();
+        });
     }
 
     function wireChainWatchHelpIcons(root) {
@@ -1364,6 +1413,29 @@
         return max;
     }
 
+    /** Past hours with signups stay visible even when completed rows are collapsed. */
+    function chainWatchSelectSlotIndices(startSec, slots, rowCount, nowSec, showCompletedRows) {
+        let hasCompletedHours = false;
+        let hasHiddenEmptyCompleted = false;
+        const slotIndicesToRender = [];
+        for (let i = 0; startSec != null && i < rowCount; i++) {
+            const slotEndSec = startSec + (i + 1) * 3600;
+            const hourCompleted = nowSec >= slotEndSec;
+            const hasSignups = ((slots[String(i)] || []).length) > 0;
+            if (hourCompleted) hasCompletedHours = true;
+            if (!showCompletedRows && hourCompleted && !hasSignups) {
+                hasHiddenEmptyCompleted = true;
+                continue;
+            }
+            slotIndicesToRender.push(i);
+        }
+        return {
+            slotIndicesToRender: slotIndicesToRender,
+            hasCompletedHours: hasCompletedHours,
+            hasHiddenEmptyCompleted: hasHiddenEmptyCompleted,
+        };
+    }
+
     function chainWatchMaxVisibleTctDays(startSec) {
         const first = chainWatchFirstDaySlotCount(startSec);
         return 1 + Math.ceil((CHAIN_WATCH_MAX_HOUR_SLOTS - first) / 24);
@@ -1582,20 +1654,17 @@
             showCompletedRows = localStorage.getItem('war_dashboard_cw_show_completed') === '1';
         } catch (e) { /* ignore */ }
 
-        let hasCompletedInView = false;
-        const slotIndicesToRender = [];
-        for (let i = 0; start != null && i < rowCount; i++) {
-            const slotEndSec = start + (i + 1) * 3600;
-            const hourCompleted = nowSec >= slotEndSec;
-            if (hourCompleted) hasCompletedInView = true;
-            if (!showCompletedRows && hourCompleted) continue;
-            slotIndicesToRender.push(i);
-        }
+        const slotPick = chainWatchSelectSlotIndices(start, slots, rowCount, nowSec, showCompletedRows);
+        const slotIndicesToRender = slotPick.slotIndicesToRender;
+        const hasCompletedHours = slotPick.hasCompletedHours;
+        const hasHiddenEmptyCompleted = slotPick.hasHiddenEmptyCompleted;
 
+        html += chainWatchRulesWarningHtml();
+        html += '<p class="chain-watch-schedule-scroll-hint">Swipe sideways to see who is signed up in each watcher column.</p>';
         html += '<div class="war-dashboard-cw-table-block">';
-        if ((start != null && hasCompletedInView) || showAddCol) {
+        if ((start != null && hasCompletedHours) || showAddCol) {
             html += '<div class="war-dashboard-cw-table-top-bar">';
-            if (start != null && hasCompletedInView) {
+            if (start != null && hasCompletedHours) {
                 html += '<div class="war-dashboard-cw-completed-toolbar">';
                 if (!showCompletedRows) {
                     html +=
@@ -1714,13 +1783,13 @@
             start != null &&
             slotIndicesToRender.length === 0 &&
             rowCount > 0 &&
-            hasCompletedInView &&
+            hasHiddenEmptyCompleted &&
             !showCompletedRows
         ) {
             html +=
                 '<tr><td colspan="' +
                 slotTableColCount +
-                '" style="color:#888;">All hours in this view are in the past. Use <strong>Show completed rows</strong> above to see them.</td></tr>';
+                '" style="color:#888;">Past hours with no signups are hidden. Use <strong>Show completed rows</strong> above to see them, or check upcoming hours below.</td></tr>';
         }
         if (start != null && showAddDay) {
             html += '<tr class="war-dashboard-cw-add-day-row">';
@@ -1778,6 +1847,7 @@
 
         updateChainWatchPageChrome();
         wireChainWatchHelpIcons(body);
+        wireChainWatchRulesDismiss(body);
         refreshChainWatchModals(p, canEdit, organizerIds, ownerLabel, canManageOrganizers);
         wireChainWatchSettingsForm(docExists, canEdit, canManageOrganizers);
         wireChainWatchArchiveUi();

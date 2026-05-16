@@ -901,6 +901,103 @@ header.app-site-header .app-site-header-title {
     line-height: 1.45;
     color: #b0b0b0;
 }
+
+.chain-watch-rules-warning {
+    margin: 0 0 14px 0;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(239, 83, 80, 0.55);
+    background: rgba(183, 28, 28, 0.18);
+    color: #ffcdd2;
+    font-size: 13px;
+    line-height: 1.5;
+    animation: chainWatchRulesWarningPulse 3.5s ease-in-out infinite;
+}
+
+.chain-watch-rules-warning-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.chain-watch-rules-warning-title {
+    margin: 0;
+    font-weight: 700;
+    font-size: 14px;
+    color: #ff8a80;
+    letter-spacing: 0.02em;
+    flex: 1;
+    min-width: 0;
+}
+
+.chain-watch-rules-warning-hide {
+    flex-shrink: 0;
+    margin: 0;
+    padding: 2px 0;
+    border: none;
+    background: transparent;
+    color: rgba(255, 205, 210, 0.9);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.3;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    white-space: nowrap;
+}
+
+.chain-watch-rules-warning-hide:hover {
+    color: #fff;
+}
+
+.chain-watch-rules-warning-hide:focus-visible {
+    outline: 2px solid rgba(255, 138, 128, 0.85);
+    outline-offset: 2px;
+}
+
+.chain-watch-rules-warning-list {
+    margin: 0;
+    padding-left: 1.25em;
+}
+
+.chain-watch-rules-warning-list li {
+    margin: 0 0 6px 0;
+}
+
+.chain-watch-rules-warning-list li:last-child {
+    margin-bottom: 0;
+}
+
+@keyframes chainWatchRulesWarningPulse {
+    0%,
+    100% {
+        border-color: rgba(239, 83, 80, 0.45);
+        background-color: rgba(183, 28, 28, 0.14);
+        box-shadow: none;
+    }
+    50% {
+        border-color: rgba(255, 138, 128, 0.85);
+        background-color: rgba(211, 47, 47, 0.28);
+        box-shadow: 0 0 14px 2px rgba(244, 67, 54, 0.22);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chain-watch-rules-warning {
+        animation: none;
+    }
+}
+
+.chain-watch-schedule-scroll-hint {
+    display: none;
+    margin: 0 0 10px 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #b0b0b0;
+}
+
 .chain-watch-settings-dl {
     margin: 0;
     display: grid;
@@ -1002,6 +1099,31 @@ header.app-site-header .app-site-header-title {
     }
     .chain-watch-main-columns {
         grid-template-columns: 1fr;
+    }
+    .chain-watch-schedule-scroll-hint {
+        display: block;
+    }
+    .chain-watch-page .war-dashboard-cw-table-block .table-scroll-wrapper {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        max-width: 100%;
+    }
+    .chain-watch-page .war-dashboard-chain-watch-table--cols {
+        min-width: 420px;
+    }
+    .chain-watch-page .war-dashboard-cw-th-time,
+    .chain-watch-page .war-dashboard-cw-hour-cell {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background: var(--secondary-color, #1e1e1e);
+    }
+    .chain-watch-page .war-dashboard-cw-hour-cell {
+        z-index: 1;
+        box-shadow: 3px 0 6px rgba(0, 0, 0, 0.35);
+    }
+    .chain-watch-page .war-dashboard-chain-watch-slot--started .war-dashboard-cw-watcher-name {
+        color: #d8d8d8;
     }
 }
 .chain-watch-page .chain-watch-root {
