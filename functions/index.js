@@ -1758,6 +1758,7 @@ exports.chainWatchAdminArchive = chainWatch.chainWatchAdminArchive;
 exports.chainWatchAutoArchiveStale = chainWatch.chainWatchAutoArchiveStale;
 exports.chainWatchListArchives = chainWatch.chainWatchListArchives;
 exports.chainWatchGetArchive = chainWatch.chainWatchGetArchive;
+exports.chainWatchRestoreFromArchive = chainWatch.chainWatchRestoreFromArchive;
 exports.chainWatchSignup = chainWatch.chainWatchSignup;
 exports.chainWatchRemoveSelf = chainWatch.chainWatchRemoveSelf;
 exports.chainWatchSyncChain = chainWatch.chainWatchSyncChain;

@@ -553,6 +553,64 @@ exports.chainWatchGetArchive = onCall(callableOpts({ maxInstances: 20 }), async 
   return buildArchivedGetResponse(snap, user);
 });
 
+function countSignupsInSlots(slots) {
+  let n = 0;
+  if (!slots || typeof slots !== 'object') return 0;
+  Object.values(slots).forEach((arr) => {
+    n += Array.isArray(arr) ? arr.length : 0;
+  });
+  return n;
+}
+
+/** Owner/organiser: copy an archived schedule (including signups) back onto the active doc. */
+exports.chainWatchRestoreFromArchive = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
+  const { apiKey, factionId, archiveId } = request.data || {};
+  const fid = String(factionId || '').trim();
+  const aid = String(archiveId || '').trim();
+  if (!fid) throw new HttpsError('invalid-argument', 'factionId required');
+  if (!aid) throw new HttpsError('invalid-argument', 'archiveId required');
+
+  const user = await fetchUserFromApiKey(apiKey);
+  assertSameFaction(user.factionId, fid);
+
+  const ref = getDb().collection(COLLECTION).doc(fid);
+  const archiveSnap = await ref.collection(ARCHIVED_SUB).doc(aid).get();
+  if (!archiveSnap.exists) {
+    throw new HttpsError('not-found', 'Archived chain watch not found');
+  }
+
+  const activeSnap = await ref.get();
+  if (activeSnap.exists) {
+    assertCanEditSchedule(activeSnap.data(), user);
+  }
+
+  const raw = archiveSnap.data();
+  const norm = normalizeDoc(raw);
+  const restoredSignupCount = countSignupsInSlots(norm.slots);
+  if (restoredSignupCount === 0) {
+    throw new HttpsError('failed-precondition', 'This archive has no signups to restore');
+  }
+
+  const meta =
+    activeSnap.exists && activeSnap.data()
+      ? metaFieldsFromDoc(activeSnap.data())
+      : {
+          ownerPlayerId: raw.ownerPlayerId != null ? String(raw.ownerPlayerId) : user.playerId,
+          ownerName: raw.ownerName != null ? String(raw.ownerName) : user.name,
+          organizerPlayerIds: normalizeOrganizerIds(raw.organizerPlayerIds),
+        };
+
+  await ref.set({
+    settings: norm.settings,
+    slots: norm.slots,
+    chainState: norm.chainState,
+    ...meta,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { success: true, archiveId: aid, restoredSignupCount };
+});
+
 exports.chainWatchSaveConfig = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
   const { apiKey, factionId, settings: incoming } = request.data || {};
   const fid = String(factionId || '').trim();

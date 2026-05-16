@@ -4226,7 +4226,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const oldScript = document.getElementById('chain-watch-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
-                script.src = 'tools/chain-watch/chain-watch.js?v=20260516b';
+                script.src = 'tools/chain-watch/chain-watch.js?v=20260516c';
                 script.id = 'chain-watch-script';
                 script.onload = () => {
                     if (typeof initChainWatchPage === 'function') initChainWatchPage();

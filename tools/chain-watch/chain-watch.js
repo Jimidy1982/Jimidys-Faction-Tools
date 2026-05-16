@@ -467,6 +467,22 @@
         return raw || 'Could not load chain watch.';
     }
 
+    function countSignupsInSlots(slots) {
+        let n = 0;
+        Object.keys(slots || {}).forEach(function (key) {
+            n += (slots[key] || []).length;
+        });
+        return n;
+    }
+
+    function chainWatchCanRestoreSchedule(p) {
+        const v = (p && p.viewer) || {};
+        const pid = v.playerId != null ? String(v.playerId) : '';
+        if (v.isOwner === true || v.canManageOrganizers === true) return true;
+        const org = Array.isArray(p && p.organizerPlayerIds) ? p.organizerPlayerIds.map(String) : [];
+        return pid && org.indexOf(pid) >= 0;
+    }
+
     function formatArchiveSummaryLabel(a) {
         const name = a && a.chainName ? String(a.chainName).trim() : '';
         const label = name || 'Chain watch';
@@ -484,10 +500,14 @@
         return label + (when ? ' · ' + when : '') + ' · ' + hit + ' / ' + target + ' hits';
     }
 
-    function renderArchivesModalHtml(archives, viewingId) {
+    function renderArchivesModalHtml(archives, viewingId, canRestore) {
         const list = Array.isArray(archives) ? archives : [];
         let h =
             '<p class="chain-watch-archives-intro">Finished schedules stay here so organisers can review signups and rewards. Archive the current chain when it is over to start a new one.</p>';
+        if (canRestore) {
+            h +=
+                '<p style="margin:0 0 10px 0;color:#b0b0b0;font-size:12px;line-height:1.45;">If signups were lost on the active schedule, open an archive that still lists names and use <strong>Restore</strong> (owner/organiser only).</p>';
+        }
         if (!list.length) {
             h += '<p style="margin:0;color:#888;font-size:12px;">No archived chain watches yet.</p>';
         } else {
@@ -495,19 +515,63 @@
             list.forEach(function (a) {
                 const id = a.archiveId != null ? String(a.archiveId) : '';
                 const active = viewingId && id === String(viewingId);
+                h += '<li class="chain-watch-archives-list-item">';
                 h +=
-                    '<li><button type="button" class="btn chain-watch-view-archive" data-archive-id="' +
+                    '<button type="button" class="btn chain-watch-view-archive" data-archive-id="' +
                     escapeHtml(id) +
                     '"' +
                     (active ? ' disabled' : '') +
                     '>' +
                     escapeHtml(formatArchiveSummaryLabel(a)) +
                     (active ? ' (viewing)' : '') +
-                    '</button></li>';
+                    '</button>';
+                if (canRestore && id) {
+                    h +=
+                        ' <button type="button" class="btn chain-watch-restore-archive" data-archive-id="' +
+                        escapeHtml(id) +
+                        '">Restore</button>';
+                }
+                h += '</li>';
             });
             h += '</ul>';
         }
         return h;
+    }
+
+    async function restoreArchivedChainWatch(archiveId) {
+        const apiKey = getApiKey();
+        const fn = getChainWatchFunctions();
+        if (!apiKey || !fn || !factionId || !archiveId) return;
+        if (
+            !confirm(
+                'Restore this archived chain watch to the active schedule? This replaces the current active signups and settings with the archived copy.'
+            )
+        ) {
+            return;
+        }
+        const root = document.getElementById('chain-watch-root');
+        if (root) root.innerHTML = '<p style="color:#888;">Restoring signups…</p>';
+        try {
+            const res = await fn.httpsCallable('chainWatchRestoreFromArchive')({
+                apiKey: apiKey,
+                factionId: String(factionId),
+                archiveId: String(archiveId),
+            });
+            viewingArchiveId = null;
+            await fetchChainWatchData(true);
+            await renderChainWatchPage();
+            const n = res && res.data && res.data.restoredSignupCount != null ? res.data.restoredSignupCount : 0;
+            alert('Restored ' + n + ' signup' + (n === 1 ? '' : 's') + ' to the active chain watch.');
+        } catch (e) {
+            if (root) {
+                root.innerHTML =
+                    '<p style="color:#f44336;font-size:14px;line-height:1.45;">' +
+                    escapeHtml(chainWatchErrorText(e)) +
+                    '</p>';
+            } else {
+                alert(chainWatchErrorText(e));
+            }
+        }
     }
 
     async function openArchivedChainWatch(archiveId) {
@@ -593,6 +657,14 @@
         if (archivesBody && !archivesBody.dataset.cwWired) {
             archivesBody.dataset.cwWired = '1';
             archivesBody.addEventListener('click', function (e) {
+                const restoreBtn = e.target.closest('.chain-watch-restore-archive');
+                if (restoreBtn) {
+                    const aid = restoreBtn.getAttribute('data-archive-id');
+                    if (!aid) return;
+                    closeChainWatchModal('chain-watch-archives-modal');
+                    void restoreArchivedChainWatch(aid);
+                    return;
+                }
                 const btn = e.target.closest('.chain-watch-view-archive');
                 if (!btn || btn.disabled) return;
                 const aid = btn.getAttribute('data-archive-id');
@@ -777,7 +849,11 @@
         if (archivesBody) {
             const archives =
                 p && Array.isArray(p.archives) && p.archives.length ? p.archives : lastArchivesList;
-            archivesBody.innerHTML = renderArchivesModalHtml(archives, viewingArchiveId || p.archiveId);
+            archivesBody.innerHTML = renderArchivesModalHtml(
+                archives,
+                viewingArchiveId || p.archiveId,
+                chainWatchCanRestoreSchedule(p)
+            );
         }
         const settingsBody = document.getElementById('chain-watch-settings-body');
         if (settingsBody && canEdit) {
@@ -1602,10 +1678,18 @@
                 p.archivedAt != null
                     ? new Date(p.archivedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                     : '';
+            const archiveSignupCount = countSignupsInSlots(slots);
             html +=
-                '<p style="margin:0 0 12px 0;padding:10px 12px;border-radius:6px;border:1px solid rgba(100,181,246,0.35);background:rgba(33,150,243,0.12);font-size:13px;line-height:1.5;color:#e3f2fd;">Viewing an <strong>archived</strong> chain watch (read-only)' +
+                '<div style="margin:0 0 12px 0;padding:10px 12px;border-radius:6px;border:1px solid rgba(100,181,246,0.35);background:rgba(33,150,243,0.12);font-size:13px;line-height:1.5;color:#e3f2fd;">Viewing an <strong>archived</strong> chain watch (read-only)' +
                 (archivedWhen ? ' from ' + escapeHtml(archivedWhen) : '') +
-                '. Use <strong>Current chain watch</strong> in the header to return.</p>';
+                '. Use <strong>Current chain watch</strong> in the header to return.';
+            if (chainWatchCanRestoreSchedule(p) && viewingArchiveId && archiveSignupCount > 0) {
+                html +=
+                    '<div style="margin-top:10px;"><button type="button" class="btn chain-watch-restore-archive-banner" data-archive-id="' +
+                    escapeAttr(String(viewingArchiveId)) +
+                    '">Restore signups to active schedule</button></div>';
+            }
+            html += '</div>';
         }
 
         if (brokeAtHit != null && brokeAtHit > 0) {
@@ -1852,6 +1936,13 @@
         updateChainWatchPageChrome();
         wireChainWatchHelpIcons(body);
         wireChainWatchRulesDismiss(body);
+        body.querySelectorAll('.chain-watch-restore-archive-banner').forEach(function (btn) {
+            if (btn.dataset.cwRestoreWired) return;
+            btn.dataset.cwRestoreWired = '1';
+            btn.addEventListener('click', function () {
+                void restoreArchivedChainWatch(btn.getAttribute('data-archive-id'));
+            });
+        });
         refreshChainWatchModals(p, canEdit, organizerIds, ownerLabel, canManageOrganizers);
         wireChainWatchSettingsForm(docExists, canEdit, canManageOrganizers);
         wireChainWatchArchiveUi();

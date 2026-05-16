@@ -1285,6 +1285,14 @@ header.app-site-header .app-site-header-title {
     flex-direction: column;
     gap: 8px;
 }
+.chain-watch-archives-list-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
 .chain-watch-archives-list .chain-watch-view-archive {
     width: 100%;
     text-align: left;
