@@ -26,6 +26,8 @@ function callableOpts(more) {
 
 const COLLECTION = 'factionChainWatch';
 const ARCHIVED_SUB = 'archived';
+/** Automatic backups before signup wipes (from save with clear-all). */
+const SNAPSHOTS_SUB = 'snapshots';
 const MAX_HOUR_SLOTS = 50 * 24; // 50 days hourly
 const MAX_ORGANIZERS = 30;
 const MAX_ARCHIVES_LIST = 40;
@@ -562,6 +564,52 @@ function countSignupsInSlots(slots) {
   return n;
 }
 
+function listSignupsFromSlots(slots) {
+  const out = [];
+  if (!slots || typeof slots !== 'object') return out;
+  Object.entries(slots).forEach(([key, arr]) => {
+    (arr || []).forEach((w) => {
+      out.push({
+        slotIndex: Number(key),
+        playerId: w.playerId != null ? String(w.playerId) : '',
+        name: w.name != null ? String(w.name) : '',
+        col: w.col != null ? Number(w.col) : 0,
+        at: w.at != null ? watcherAtToMs(w.at) : null,
+      });
+    });
+  });
+  return out;
+}
+
+async function writePreWipeSnapshot(ref, raw, reason, actor) {
+  const norm = normalizeDoc(raw);
+  const signupCount = countSignupsInSlots(norm.slots);
+  if (signupCount === 0) return null;
+  const snapRef = ref.collection(SNAPSHOTS_SUB).doc();
+  await snapRef.set({
+    savedAt: admin.firestore.FieldValue.serverTimestamp(),
+    reason: String(reason || 'pre_wipe'),
+    actorPlayerId: actor && actor.playerId != null ? String(actor.playerId) : null,
+    actorName: actor && actor.name != null ? String(actor.name) : null,
+    signupCount,
+    settings: norm.settings,
+    slots: norm.slots,
+    chainState: norm.chainState,
+  });
+  return snapRef.id;
+}
+
+async function restoreActiveFromNorm(ref, norm, metaFields) {
+  await ref.set({
+    settings: norm.settings,
+    slots: norm.slots,
+    chainState: norm.chainState,
+    ...metaFields,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  return countSignupsInSlots(norm.slots);
+}
+
 /** Owner/organiser: copy an archived schedule (including signups) back onto the active doc. */
 exports.chainWatchRestoreFromArchive = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
   const { apiKey, factionId, archiveId } = request.data || {};
@@ -586,8 +634,7 @@ exports.chainWatchRestoreFromArchive = onCall(callableOpts({ maxInstances: 10 })
 
   const raw = archiveSnap.data();
   const norm = normalizeDoc(raw);
-  const restoredSignupCount = countSignupsInSlots(norm.slots);
-  if (restoredSignupCount === 0) {
+  if (countSignupsInSlots(norm.slots) === 0) {
     throw new HttpsError('failed-precondition', 'This archive has no signups to restore');
   }
 
@@ -600,15 +647,135 @@ exports.chainWatchRestoreFromArchive = onCall(callableOpts({ maxInstances: 10 })
           organizerPlayerIds: normalizeOrganizerIds(raw.organizerPlayerIds),
         };
 
-  await ref.set({
-    settings: norm.settings,
-    slots: norm.slots,
-    chainState: norm.chainState,
-    ...meta,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+  const restoredSignupCount = await restoreActiveFromNorm(ref, norm, meta);
 
   return { success: true, archiveId: aid, restoredSignupCount };
+});
+
+/** Admin: inspect active doc, archives, and pre-wipe snapshots for recovery. */
+exports.chainWatchAdminRecoveryReport = onCall(callableOpts({ maxInstances: 5 }), async (request) => {
+  const { apiKey, factionId } = request.data || {};
+  if (!(await validateAdminApiKey(apiKey))) {
+    throw new HttpsError('permission-denied', 'Admin API key required');
+  }
+  const fid = String(factionId || '').trim();
+  if (!fid) throw new HttpsError('invalid-argument', 'factionId required');
+
+  const ref = getDb().collection(COLLECTION).doc(fid);
+  const activeSnap = await ref.get();
+
+  let active = { exists: false, signupCount: 0, signups: [], slots: {} };
+  if (activeSnap.exists) {
+    const raw = activeSnap.data();
+    const norm = normalizeDoc(raw);
+    active = {
+      exists: true,
+      updatedAt: raw.updatedAt?.toMillis?.() || null,
+      settings: norm.settings,
+      signupCount: countSignupsInSlots(norm.slots),
+      signups: listSignupsFromSlots(norm.slots),
+      slots: norm.slots,
+    };
+  }
+
+  const archives = [];
+  const archSnap = await ref.collection(ARCHIVED_SUB).orderBy('archivedAt', 'desc').limit(25).get();
+  archSnap.docs.forEach((doc) => {
+    const raw = doc.data();
+    const norm = normalizeDoc(raw);
+    archives.push({
+      archiveId: doc.id,
+      archivedAt: raw.archivedAt?.toMillis?.() || null,
+      archiveReason: raw.archiveReason != null ? String(raw.archiveReason) : null,
+      chainName: norm.settings.chainName || '',
+      chainStartUnix: norm.settings.chainStartUnix,
+      signupCount: countSignupsInSlots(norm.slots),
+      signups: listSignupsFromSlots(norm.slots),
+    });
+  });
+
+  const snapshots = [];
+  try {
+    const snapSnap = await ref.collection(SNAPSHOTS_SUB).orderBy('savedAt', 'desc').limit(15).get();
+    snapSnap.docs.forEach((doc) => {
+      const raw = doc.data();
+      const norm = normalizeDoc(raw);
+      snapshots.push({
+        snapshotId: doc.id,
+        savedAt: raw.savedAt?.toMillis?.() || null,
+        reason: raw.reason != null ? String(raw.reason) : null,
+        actorPlayerId: raw.actorPlayerId != null ? String(raw.actorPlayerId) : null,
+        signupCount: countSignupsInSlots(norm.slots),
+        signups: listSignupsFromSlots(norm.slots),
+      });
+    });
+  } catch (e) {
+    /* index may be missing on first deploy */
+  }
+
+  return {
+    factionId: fid,
+    active,
+    archives,
+    snapshots,
+    recoveryNotes:
+      'If active signupCount is 0, try restore from a snapshot or archive with matching signups. ' +
+      'Otherwise use Firebase Console → Firestore → point-in-time recovery (if enabled on your project).',
+  };
+});
+
+/** Admin: restore active schedule from an archive or pre-wipe snapshot. */
+exports.chainWatchAdminRestoreActive = onCall(callableOpts({ maxInstances: 5 }), async (request) => {
+  const { apiKey, factionId, archiveId, snapshotId } = request.data || {};
+  if (!(await validateAdminApiKey(apiKey))) {
+    throw new HttpsError('permission-denied', 'Admin API key required');
+  }
+  const fid = String(factionId || '').trim();
+  const aid = archiveId != null ? String(archiveId).trim() : '';
+  const sid = snapshotId != null ? String(snapshotId).trim() : '';
+  if (!fid) throw new HttpsError('invalid-argument', 'factionId required');
+  if (!aid && !sid) throw new HttpsError('invalid-argument', 'archiveId or snapshotId required');
+  if (aid && sid) throw new HttpsError('invalid-argument', 'Provide archiveId or snapshotId, not both');
+
+  const ref = getDb().collection(COLLECTION).doc(fid);
+  let sourceSnap;
+  let sourceType;
+  if (sid) {
+    sourceSnap = await ref.collection(SNAPSHOTS_SUB).doc(sid).get();
+    sourceType = 'snapshot';
+  } else {
+    sourceSnap = await ref.collection(ARCHIVED_SUB).doc(aid).get();
+    sourceType = 'archive';
+  }
+  if (!sourceSnap.exists) {
+    throw new HttpsError('not-found', sourceType === 'snapshot' ? 'Snapshot not found' : 'Archive not found');
+  }
+
+  const raw = sourceSnap.data();
+  const norm = normalizeDoc(raw);
+  const restoredSignupCount = countSignupsInSlots(norm.slots);
+  if (restoredSignupCount === 0) {
+    throw new HttpsError('failed-precondition', 'Chosen copy has no signups to restore');
+  }
+
+  const activeSnap = await ref.get();
+  const meta =
+    activeSnap.exists && activeSnap.data()
+      ? metaFieldsFromDoc(activeSnap.data())
+      : {
+          ownerPlayerId: raw.ownerPlayerId != null ? String(raw.ownerPlayerId) : null,
+          ownerName: raw.ownerName != null ? String(raw.ownerName) : null,
+          organizerPlayerIds: normalizeOrganizerIds(raw.organizerPlayerIds),
+        };
+
+  await restoreActiveFromNorm(ref, norm, meta);
+
+  return {
+    success: true,
+    sourceType,
+    sourceId: sid || aid,
+    restoredSignupCount,
+  };
 });
 
 exports.chainWatchSaveConfig = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
@@ -790,6 +957,10 @@ exports.chainWatchSaveConfig = onCall(callableOpts({ maxInstances: 10 }), async 
     maxSignupsPer24h,
     visibleTctDays,
   };
+
+  if (clearSlots && countSignupsInSlots(normPrev.slots) > 0) {
+    await writePreWipeSnapshot(ref, prev, 'clearAllSignups', user);
+  }
 
   const slotsPayload = clearSlots ? defaultSlotsObject() : normPrev.slots;
 
