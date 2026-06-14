@@ -1,0 +1,116 @@
+<div class="container newsletter-page">
+    <header class="newsletter-page-header">
+        <h1>Faction Newsletter</h1>
+        <p class="newsletter-page-lead">Build a ranked-war rally mail for Torn faction mail. Pick sections, edit text, preview what Torn will keep, then copy HTML into the mail editor.</p>
+    </header>
+
+    <div id="newsletter-api-hint" class="newsletter-api-hint" style="display: none;">
+        <p>Set your <strong>API key</strong> in the sidebar (faction permissions required), then click <strong>Load war data</strong>.</p>
+    </div>
+
+    <div class="newsletter-layout">
+        <aside class="newsletter-panel newsletter-panel--editor" aria-label="Newsletter editor">
+            <div class="newsletter-block">
+                <h2 class="newsletter-block-title">Template</h2>
+                <select id="newsletter-template" class="newsletter-select" disabled>
+                    <option value="upcoming-war" selected>Upcoming War</option>
+                </select>
+            </div>
+
+            <div class="newsletter-block">
+                <div class="newsletter-block-head">
+                    <h2 class="newsletter-block-title">War data</h2>
+                    <button type="button" id="newsletter-load-war" class="btn">Load war data</button>
+                </div>
+                <p id="newsletter-war-status" class="newsletter-status" aria-live="polite">No war loaded yet.</p>
+                <label class="newsletter-field-label" for="newsletter-enemy-id">Enemy faction ID (override)</label>
+                <div class="newsletter-inline-field">
+                    <input type="text" id="newsletter-enemy-id" inputmode="numeric" placeholder="Auto from ranked wars">
+                    <button type="button" id="newsletter-apply-enemy" class="btn btn-secondary">Apply</button>
+                </div>
+            </div>
+
+            <div class="newsletter-block">
+                <h2 class="newsletter-block-title">Branding</h2>
+                <label class="newsletter-field-label" for="newsletter-title">Mail title</label>
+                <input type="text" id="newsletter-title" class="newsletter-input" placeholder="e.g. War vs Enemy — Saturday 20:00 TCT">
+                <label class="newsletter-check newsletter-check--block">
+                    <input type="checkbox" id="newsletter-use-faction-tag" checked>
+                    <span>Show faction tag in header</span>
+                </label>
+                <label class="newsletter-check newsletter-check--block">
+                    <input type="checkbox" id="newsletter-show-faction-name" checked>
+                    <span>Show your faction name under subtitle</span>
+                </label>
+                <p class="newsletter-hint newsletter-faction-name-hint">Uses your faction from <strong>Load war data</strong> (not the placeholder “Our faction”).</p>
+                <label class="newsletter-check newsletter-check--block">
+                    <input type="checkbox" id="newsletter-link-faction" checked>
+                    <span>Link faction name to Torn profile</span>
+                </label>
+                <label class="newsletter-field-label" for="newsletter-subtitle">Rally subtitle (optional)</label>
+                <input type="text" id="newsletter-subtitle" class="newsletter-input" placeholder="e.g. Ranked war prep — all hands on deck">
+                <label class="newsletter-field-label" id="newsletter-panel-bg-label">Panel background</label>
+                <p class="newsletter-hint">Solid colour only — Torn mail strips images, gradients, and transparency. Pick a preset or choose your own.</p>
+                <div id="newsletter-panel-bg-picker" class="newsletter-bg-picker" role="group" aria-labelledby="newsletter-panel-bg-label"></div>
+                <div class="newsletter-panel-color-row">
+                    <label class="newsletter-field-label" for="newsletter-panel-color">Custom colour</label>
+                    <input type="color" id="newsletter-panel-color" class="newsletter-panel-color-input" value="#0a0a0a" title="Panel background colour">
+                </div>
+                <label class="newsletter-field-label" for="newsletter-accent">Accent colour</label>
+                <select id="newsletter-accent" class="newsletter-select">
+                    <option value="gold" selected>Gold</option>
+                    <option value="violet">Violet</option>
+                    <option value="blue">Blue</option>
+                    <option value="crimson">Crimson</option>
+                </select>
+                <p class="newsletter-hint">Accent is used for section header edges and title divider lines (these survive in Torn mail).</p>
+                <label class="newsletter-field-label" for="newsletter-text-tone">Body text colour</label>
+                <select id="newsletter-text-tone" class="newsletter-select">
+                    <option value="light" selected>Light — for dark panels</option>
+                    <option value="dark">Dark — for light panels</option>
+                </select>
+            </div>
+
+            <div class="newsletter-block">
+                <h2 class="newsletter-block-title">Sections</h2>
+                <p class="newsletter-hint">Toggle what appears in the mail. Order is fixed for readability.</p>
+                <ul id="newsletter-sections-list" class="newsletter-sections-list"></ul>
+            </div>
+
+            <div id="newsletter-fields-wrap" class="newsletter-block newsletter-fields-wrap"></div>
+        </aside>
+
+        <section class="newsletter-panel newsletter-panel--preview" aria-label="Preview and copy">
+            <div class="newsletter-preview-toolbar">
+                <h2 class="newsletter-block-title">Preview</h2>
+                <label class="newsletter-preview-theme">
+                    Preview theme
+                    <select id="newsletter-preview-theme" class="newsletter-select newsletter-select--compact">
+                        <option value="light">Torn light</option>
+                        <option value="dark">Torn dark</option>
+                    </select>
+                </label>
+            </div>
+            <div id="newsletter-preview-shell" class="newsletter-preview-shell newsletter-preview-shell--light">
+                <div class="newsletter-preview-mailbox">
+                    <div id="newsletter-preview" class="newsletter-preview-inner"></div>
+                </div>
+            </div>
+
+            <div class="newsletter-copy-row">
+                <button type="button" id="newsletter-copy-mail" class="btn newsletter-copy-primary">Copy for faction mail</button>
+                <button type="button" id="newsletter-copy-source" class="btn btn-secondary">Copy HTML source</button>
+                <button type="button" id="newsletter-show-source" class="btn btn-secondary" aria-expanded="false" aria-controls="newsletter-source-wrap">Show HTML source</button>
+            </div>
+            <p id="newsletter-copy-msg" class="newsletter-copy-msg" aria-live="polite"></p>
+            <p class="newsletter-hint newsletter-mail-compat-hint">Copy output uses only what Torn mail keeps: solid panel colour, black section bars with accent edge, simple tables, and default link colours.</p>
+
+            <div id="newsletter-source-wrap" class="newsletter-source-wrap" hidden>
+                <label class="newsletter-field-label" for="newsletter-source">HTML to paste into Torn mail editor (source view)</label>
+                <textarea id="newsletter-source" class="newsletter-source" readonly spellcheck="false"></textarea>
+            </div>
+        </section>
+    </div>
+
+    <!-- Custom image backgrounds removed: Torn mail sanitizer breaks url() in inline styles. -->
+</div>

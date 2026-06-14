@@ -215,13 +215,16 @@
                                                 <input type="number" id="hitMaxThreshold" value="50" min="0" step="1" style="width: 80px; padding: 4px; background-color: #2a2a2a; border: 1px solid #404040; color: #fff; border-radius: 3px;">
                                             </div>
                                             <div style="margin-top: 8px; padding: 10px 12px; background: #222; border-radius: 4px; border-left: 2px solid #555;">
-                                                <div style="font-size: 0.8em; color: #aaa; margin-bottom: 8px;">Include in minimum hit count (war hits always count):</div>
+                                                <div style="font-size: 0.8em; color: #aaa; margin-bottom: 8px;">Pre-surrender war hits always count. Also include:</div>
                                                 <div style="display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;">
                                                     <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Add war assists to the total compared to Min Hits">
                                                         <input type="checkbox" id="hitThresholdIncludeAssists" checked style="accent-color: #ffd700; margin-right: 6px;"> Assists
                                                     </label>
                                                     <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Add outside hits (war modifier 1 with respect) to the total compared to Min Hits">
                                                         <input type="checkbox" id="hitThresholdIncludeOutsideHits" style="accent-color: #ffd700; margin-right: 6px;"> Outside hits
+                                                    </label>
+                                                    <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Add termed war hits (after surrender time) to the total compared to Min Hits">
+                                                        <input type="checkbox" id="hitThresholdIncludeTermedHits" checked style="accent-color: #ffd700; margin-right: 6px;"> Termed war hits
                                                     </label>
                                                 </div>
                                             </div>
@@ -347,8 +350,9 @@
                                     <span style="justify-self: end; text-align: right;">Min: <input type="number" id="respectCombinedMin" value="20" min="0" step="1" title="Minimum sum: war hits (always) plus any categories checked below" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
                                     <div id="respectCombinedHitsSubwrap" style="grid-column: 1 / span 2; margin: 0 0 4px 0; padding: 10px 12px; background: #222; border-radius: 4px; border-left: 2px solid #555;">
-                                        <div style="font-size: 0.8em; color: #aaa; margin-bottom: 8px;">War hits always count. Also include:</div>
+                                        <div style="font-size: 0.8em; color: #aaa; margin-bottom: 8px;">Pre-surrender war hits always count. Also include:</div>
                                         <div style="display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;">
+                                            <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Count termed war hits (after surrender) toward the minimum"><input type="checkbox" id="respectCombinedIncludeTermedHits" checked style="accent-color: #ffd700; margin-right: 6px;"> Termed war hits</label>
                                             <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Count outside hits (war modifier 1 + respect) toward the minimum"><input type="checkbox" id="respectCombinedIncludeOutsideHits" style="accent-color: #ffd700; margin-right: 6px;"> Outside hits</label>
                                             <label style="display: flex; align-items: center; color: #ccc; font-size: 0.9em; cursor: pointer;" title="Count war assists toward the minimum"><input type="checkbox" id="respectCombinedIncludeAssists" checked style="accent-color: #ffd700; margin-right: 6px;"> Assists</label>
                                         </div>
@@ -402,12 +406,21 @@
                                                 </label>
                                             </div>
                                         </div>
+                                        <div id="respectThresholdInflatedWrap" style="display: none; margin-bottom: 12px; padding: 10px 12px; background: #222; border-radius: 4px; border-left: 2px solid #555;">
+                                            <label style="display: flex; align-items: flex-start; gap: 8px; color: #ccc; cursor: pointer; font-size: 0.9em;" title="Uses your Real War Factor setting. Only affects how money is split between players who qualify — not who qualifies or the max respect number on the table.">
+                                                <input type="checkbox" id="respectThresholdInflatedWarHits" style="accent-color: #ffd700; margin-top: 2px;">
+                                                <span><strong style="color: #ddd;">Pay real war hits more at the max cap</strong></span>
+                                            </label>
+                                            <p style="margin: 8px 0 0 0; font-size: 0.8em; color: #999; line-height: 1.45;">Two members can both show <strong>300 respect</strong> and hit your max — but if one earned it <em>before</em> surrender and the other <em>after</em>, this option pays the pre-surrender player a larger share (using Real War Factor, e.g. 3×). Termed and outside respect are not boosted. Min respect, max respect, and who qualifies still use the normal numbers you see in the table.</p>
+                                        </div>
                                         <!-- Explanation text at bottom of card -->
                                         <div style="padding-top: 10px; border-top: 1px solid #404040;">
                                             <div style="font-size: 0.8em; color: #999; line-height: 1.4;">
                                                 <div>• <strong>Ratio:</strong> Pay proportional to respect within range</div>
                                                 <div>• <strong>Equal:</strong> All players in range get same payout</div>
-                                                <div>• <strong>Other modifiers:</strong> Capped at minimum threshold when thresholds enabled</div>
+                                                <div>• <strong>Min / max:</strong> Uses the respect shown in the table — Real War Factor does not change these limits</div>
+                                                <div>• <strong>Pay real war hits more:</strong> Optional (ratio mode) — pre-surrender respect can count extra when splitting payout at the max</div>
+                                                <div>• <strong>Other modifiers:</strong> Capped at minimum threshold when thresholds are enabled</div>
                                             </div>
                                         </div>
                                     </div>

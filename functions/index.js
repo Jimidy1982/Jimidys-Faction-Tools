@@ -642,6 +642,59 @@ async function buildVipBalanceResponseFromDocData(d, poolQueryFactionId = '') {
   return out;
 }
 
+/**
+ * Merge last login + current Torn faction/name when the player’s own API key is verified.
+ * Creates a zero-balance row if missing so faction pooling and admin “last login” stay accurate.
+ */
+async function mergeVipLoginTouchFromTorn(docRef, tornProf, existingData) {
+  if (!tornProf) return existingData || null;
+  const nowIso = new Date().toISOString();
+  const pid = docRef.id;
+  const patch = {
+    playerId: pid,
+    playerName: tornProf.playerName || existingData?.playerName || `Player ${pid}`,
+    lastLoginDate: nowIso,
+  };
+  if (tornProf.factionId) patch.factionId = String(tornProf.factionId).trim();
+  if (tornProf.factionName) patch.factionName = tornProf.factionName;
+
+  if (!existingData) {
+    patch.totalXanaxSent = 0;
+    patch.currentBalance = 0;
+    patch.lastDeductionDate = null;
+    patch.vipLevel = 0;
+  }
+
+  await docRef.set(patch, { merge: true });
+  return { ...(existingData || {}), ...patch };
+}
+
+/** Record login + refresh faction from the player’s own verified API key (no admin key required). */
+exports.touchVipLogin = onCall(callableOpts({ maxInstances: 20 }), async (request) => {
+  const { playerId, apiKey } = request.data || {};
+  const pid = playerId != null ? String(playerId).trim() : '';
+  if (!pid) throw new HttpsError('invalid-argument', 'playerId required');
+  const apiKeyClean = String(apiKey || '')
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, '');
+  if (apiKeyClean.length !== 16) {
+    throw new HttpsError('invalid-argument', 'Valid 16-character Torn API key required');
+  }
+  const keyOk = await verifyTornApiKeyMatchesPlayerId(apiKeyClean, pid);
+  if (!keyOk) throw new HttpsError('permission-denied', 'API key does not match player');
+  const tornProf = await fetchTornPlayerProfileForVipPoolSafe(apiKeyClean, pid);
+  if (!tornProf) throw new HttpsError('failed-precondition', 'Could not load Torn profile');
+  const docRef = db.collection(VIP_BALANCES_COLLECTION).doc(pid);
+  const docSnap = await docRef.get();
+  const merged = await mergeVipLoginTouchFromTorn(docRef, tornProf, docSnap.exists ? docSnap.data() : null);
+  return {
+    success: true,
+    lastLoginDate: merged?.lastLoginDate ?? null,
+    factionId: merged?.factionId ?? null,
+    factionName: merged?.factionName ?? null,
+  };
+});
+
 /** Get VIP balance by playerId or playerName. Optional apiKey (16-char): must match playerId so we can read Torn faction and grant pooled VIP when there is no vipBalances row yet. */
 exports.getVipBalance = onCall(
   callableOpts({ maxInstances: 10 }),
@@ -657,8 +710,9 @@ exports.getVipBalance = onCall(
       const docSnap = await docRef.get();
 
       let tornProf = null;
+      let keyOk = false;
       if (apiKeyClean.length === 16) {
-        const keyOk = await verifyTornApiKeyMatchesPlayerId(apiKeyClean, pid);
+        keyOk = await verifyTornApiKeyMatchesPlayerId(apiKeyClean, pid);
         if (keyOk) {
           tornProf = await fetchTornPlayerProfileForVipPoolSafe(apiKeyClean, pid);
         }
@@ -666,6 +720,10 @@ exports.getVipBalance = onCall(
       const tornFid = tornProf && tornProf.factionId ? String(tornProf.factionId).trim() : '';
 
       if (!docSnap.exists) {
+        if (keyOk && tornProf) {
+          const merged = await mergeVipLoginTouchFromTorn(docRef, tornProf, null);
+          return buildVipBalanceResponseFromDocData(merged, tornFid);
+        }
         if (!tornFid) return null;
         const poolSnap = await db.collection(VIP_BALANCES_COLLECTION).where('factionId', '==', tornFid).get();
         if (poolSnap.empty) return null;
@@ -692,14 +750,16 @@ exports.getVipBalance = onCall(
       }
 
       const d = docSnap.data();
-      const docFid = d.factionId != null ? String(d.factionId).trim() : '';
-      const poolQueryFactionId = tornFid || docFid;
-      const merged = { ...d, playerId: pid };
-      if (tornProf) {
+      let merged = { ...d, playerId: pid };
+      if (keyOk && tornProf) {
+        merged = (await mergeVipLoginTouchFromTorn(docRef, tornProf, d)) || merged;
+      } else if (tornProf) {
         if (tornProf.playerName) merged.playerName = tornProf.playerName;
         if (tornProf.factionName) merged.factionName = tornProf.factionName;
         if (tornFid) merged.factionId = tornFid;
       }
+      const docFid = merged.factionId != null ? String(merged.factionId).trim() : '';
+      const poolQueryFactionId = tornFid || docFid;
       return buildVipBalanceResponseFromDocData(merged, poolQueryFactionId);
     }
     if (playerName) {

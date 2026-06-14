@@ -742,9 +742,64 @@ document.addEventListener('DOMContentLoaded', () => {
     const RECRUITMENT_VIP_REQUIRED = 3;
     /** Member Performance (date-range roster) requires VIP 1+ */
     const MEMBER_PERFORMANCE_VIP_REQUIRED = 1;
+    /** Faction Newsletter — coming soon for everyone except early-access player IDs (Jimidy). */
+    const NEWSLETTER_EARLY_ACCESS_PLAYER_IDS = [2935825];
     window.currentVipLevel = window.currentVipLevel ?? 0;
     /** True only after we've fetched VIP (welcome flow); avoids redirecting on refresh before key is validated. */
     window.vipLevelKnown = window.vipLevelKnown ?? false;
+    window.hasNewsletterAccess = window.hasNewsletterAccess ?? false;
+
+    function playerHasNewsletterAccess(playerId) {
+        const pid = Number(playerId);
+        return Number.isFinite(pid) && NEWSLETTER_EARLY_ACCESS_PLAYER_IDS.includes(pid);
+    }
+
+    /** Nav + home card: coming soon unless player is on the early-access list. */
+    function applyNewsletterGating(hasAccess) {
+        window.hasNewsletterAccess = hasAccess === true;
+        const tooltip = 'Coming soon — Faction Newsletter is not public yet.';
+        document.querySelectorAll(
+            '#mainNav a[href="#newsletter"], a.tool-card[href="#newsletter"], .tool-cards-grid a[href="#newsletter"]'
+        ).forEach((a) => {
+            if (window.hasNewsletterAccess) {
+                a.classList.remove('coming-soon-locked');
+                a.removeAttribute('title');
+                const wrap = a.closest('.tool-card-coming-soon-wrap');
+                if (wrap && wrap.parentNode) {
+                    wrap.parentNode.insertBefore(a, wrap);
+                    wrap.remove();
+                }
+                const badge = a.querySelector('.newsletter-access-badge');
+                if (badge) badge.textContent = 'preview';
+            } else {
+                a.classList.add('coming-soon-locked');
+                a.setAttribute('title', tooltip);
+                const badge = a.querySelector('.newsletter-access-badge');
+                if (badge) badge.textContent = 'coming soon';
+                if (a.classList.contains('tool-card') && !a.closest('.tool-card-coming-soon-wrap')) {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'tool-card-coming-soon-wrap';
+                    a.parentNode.insertBefore(wrap, a);
+                    wrap.appendChild(a);
+                    const lockBadge = document.createElement('span');
+                    lockBadge.className = 'tool-card-coming-soon-badge';
+                    lockBadge.setAttribute('aria-hidden', 'true');
+                    lockBadge.textContent = 'Coming soon';
+                    wrap.appendChild(lockBadge);
+                }
+            }
+        });
+    }
+
+    function applyNewsletterRedirectsForCurrentHash() {
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'newsletter') return;
+        if (window.hasNewsletterAccess) {
+            loadPage('pages/newsletter.html');
+        } else {
+            loadPage('pages/newsletter-coming-soon.html');
+        }
+    }
 
     /** Apply VIP gating to Recruitment (VIP 3) and Member Performance (VIP 1): nav + home tool cards. */
     function applyVipGating(vipLevel) {
@@ -1048,25 +1103,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
+    async function touchVipLogin(playerId, apiKey) {
+        try {
+            if (typeof firebase === 'undefined' || !firebase.functions) return null;
+            const keyClean = String(apiKey || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+            if (keyClean.length !== 16) return null;
+            const fn = firebase.functions().httpsCallable('touchVipLogin');
+            const res = await fn({ playerId: String(playerId), apiKey: keyClean });
+            return res && res.data ? res.data : null;
+        } catch (error) {
+            console.warn('[VIP] touchVipLogin:', error && (error.message || error.code));
+            return null;
+        }
+    }
+
     // Check for new Xanax events and update balances
     async function checkAndUpdateVipStatus(userApiKey, userData) {
-        // Try to get admin API key
+        const vipMeta = { apiKey: userApiKey };
+        await touchVipLogin(userData.playerId, userApiKey);
+
+        // Try to get admin API key for Xanax event feed (optional — login/faction still update without it)
         let adminApiKey = getAdminApiKey();
         
-        // If no admin key set, check if current user is admin and use their key
         if (!adminApiKey) {
             const isCurrentUserAdmin = await isAdmin();
             if (isCurrentUserAdmin) {
-                adminApiKey = userApiKey; // Use admin's own API key
-            } else {
-                console.log('Admin API key not configured and user is not admin, skipping VIP check');
-                return null;
+                adminApiKey = userApiKey;
             }
         }
         
         try {
-            // Get current VIP balance from Google Sheets by player ID (skip cache for updates)
-            const vipMeta = { apiKey: userApiKey };
+            // Get current VIP balance from Firebase (skip cache for updates)
             let vipData = await getVipBalance(userData.playerId, false, vipMeta);
             
             // If not found by ID, try to find by name (for backfilled data where playerId was 0)
@@ -1100,7 +1167,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
             }
             
-            // Check last 30 days for Xanax events (API limit is 100 events, so we check 30 days)
+            // Check last 30 days for Xanax events (requires admin event-feed key)
+            if (adminApiKey) {
             const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
             const fromTimestamp = Math.floor(thirtyDaysAgo.getTime() / 1000);
             
@@ -1110,9 +1178,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (eventsData.error) {
                 console.error('Error fetching events:', eventsData.error);
-                return null;
-            }
-            
+            } else {
             // Xanax sent to admin: one row per Torn event, deduped by event id (refresh-safe)
             const events = eventsData.events || {};
             const credits = [];
@@ -1161,6 +1227,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             }
+            }
+            }
             
             // Calculate deductions
             const now = new Date().toISOString();
@@ -1175,7 +1243,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         Number(vipData.factionCombinedBalance) - deductions
                     );
                 }
-                // Log deduction transaction
                 await logVipTransaction(
                     userData.playerId,
                     userData.name,
@@ -1184,13 +1251,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     vipData.currentBalance
                 );
             } else if (!vipData.lastDeductionDate) {
-                // Start deduction clock from now; first deduction in 2 days
                 vipData.lastDeductionDate = now;
             }
             vipData.vipLevel = getVipLevel(getEffectiveBalanceForVipTier(vipData));
             vipData.lastLoginDate = now;
             
-            // Update backend (include faction when available so admin table can show it). Persist personal tier on the doc.
             await updateVipBalance(
                 vipData.playerId,
                 vipData.playerName,
@@ -1203,7 +1268,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 userData.factionId
             );
             
-            // Clear cache and update it with new data (since balance changed)
             clearVipCache(vipData.playerId);
             const cacheKey = `vipBalance_${vipData.playerId}`;
             const cacheExpiryKey = `vipBalanceExpiry_${vipData.playerId}`;
@@ -1211,7 +1275,6 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem(cacheKey, JSON.stringify(vipData));
             localStorage.setItem(cacheExpiryKey, expirationTime.toString());
             
-            // Store last login
             localStorage.setItem(`lastLogin_${userData.playerId}`, now);
             
             return vipData;
@@ -2929,6 +2992,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const sorted = balances.slice().sort((a, b) => (b.currentBalance || 0) - (a.currentBalance || 0));
+                function formatAdminVipLastLogin(iso) {
+                    if (!iso) return '—';
+                    const d = new Date(iso);
+                    if (isNaN(d.getTime())) return '—';
+                    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+                }
                 function formatNextDeductionCountdown(ms) {
                     if (ms <= 0) return '0s';
                     const sec = Math.floor(ms / 1000);
@@ -2960,7 +3029,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 let tableHtml = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
                 sorted.forEach(function(row) {
                     var nextDedCell = adminVipNextDeductionCellForRow(row);
-                    const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
+                    const lastLog = formatAdminVipLastLogin(row.lastLoginDate);
                     tableHtml += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
                         '<td>' + String(row.playerId) + '</td>' +
                         '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
@@ -3038,7 +3107,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         let tableHtml2 = '<table class="admin-table"><thead><tr><th>Player ID</th><th>Player Name</th><th>Faction</th><th>Total Sent</th><th>Current Balance</th><th>VIP</th><th>Next deduction</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
                         sorted2.forEach(function(row) {
                             var nextDedCell = adminVipNextDeductionCellForRow(row);
-                            const lastLog = row.lastLoginDate ? new Date(row.lastLoginDate).toLocaleDateString() : '—';
+                            const lastLog = formatAdminVipLastLogin(row.lastLoginDate);
                             tableHtml2 += '<tr data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '">' +
                                 '<td>' + String(row.playerId) + '</td>' +
                                 '<td><a href="https://www.torn.com/profiles.php?XID=' + row.playerId + '" target="_blank" class="user-link">' + (row.playerName || '—') + '</a> <button type="button" class="admin-vip-history-btn" data-player-id="' + String(row.playerId).replace(/"/g, '&quot;') + '" data-player-name="' + String(row.playerName || '—').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '" aria-label="Xanax history" title="Xanax history">ⓘ</button></td>' +
@@ -3868,6 +3937,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 delete userCache[apiKey];
                 const userData = await getUserData(apiKey);
                 if (userData && userData.name) {
+                    applyNewsletterGating(playerHasNewsletterAccess(userData.playerId));
+                    applyNewsletterRedirectsForCurrentHash();
                     // Set welcome message first
                     let welcomeHtml = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
                     
@@ -3891,6 +3962,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         const rateLimitHtml = getRateLimitSettingsHtml();
                         welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
                     }
+                    
+                    // Always record login + refresh faction in Firestore (even when balance cache is still valid)
+                    touchVipLogin(userData.playerId, apiKey).catch(function() {});
                     
                     // Then check for updates in background (this will update cache if needed)
                     // Only do full check if cache is expired or missing
@@ -3922,23 +3996,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     window.currentVipLevel = 0;
                     window.vipLevelKnown = true;
                     applyVipGating(0);
+                    applyNewsletterGating(false);
                     setWelcomeVisible(false);
                 }
                 applyVipRedirectsForCurrentHash();
+                applyNewsletterRedirectsForCurrentHash();
             } catch (error) {
                 console.error('Error updating welcome message:', error);
                 window.currentVipLevel = 0;
                 window.vipLevelKnown = true;
                 applyVipGating(0);
+                applyNewsletterGating(false);
                 setWelcomeVisible(false);
                 applyVipRedirectsForCurrentHash();
+                applyNewsletterRedirectsForCurrentHash();
             }
             applyVipRedirectsForCurrentHash();
+            applyNewsletterRedirectsForCurrentHash();
         }, 500);
     }
 
     // Apply VIP gating on initial load (no key = locked)
     applyVipGating(0);
+    applyNewsletterGating(false);
     
     const globalApiKeyInput = document.getElementById('globalApiKey');
     if (globalApiKeyInput) {
@@ -3973,6 +4053,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 if (welcomeRefreshBtn) welcomeRefreshBtn.style.display = 'none';
                 if (vipInfoBtnEl) vipInfoBtnEl.style.display = 'none';
+                applyNewsletterGating(false);
+                applyNewsletterRedirectsForCurrentHash();
             }
         });
     }
@@ -4052,6 +4134,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 const welcomeHtml = `<span style="color: var(--accent-color);">Welcome, <strong>${userData.name}</strong>!</span>`;
                 welcomeMessage.innerHTML = welcomeHtml;
+                applyNewsletterGating(playerHasNewsletterAccess(userData.playerId));
                 if (updatedVipData) {
                     window.currentVipLevel = updatedVipData.vipLevel ?? 0;
                     window.vipLevelKnown = true;
@@ -4069,6 +4152,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     welcomeMessage.innerHTML += getRateLimitSettingsHtml();
                 }
                 applyVipRedirectsForCurrentHash();
+                applyNewsletterRedirectsForCurrentHash();
             } catch (e) {
                 console.error('Welcome refresh failed:', e);
                 welcomeMessage.innerHTML = '<span style="color: #c0392b;">Refresh failed. Try again.</span>';
@@ -4265,6 +4349,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     else if (window.initRecruitment) window.initRecruitment();
                 };
                 document.head.appendChild(script);
+            } else if (page.includes('newsletter') && !page.includes('newsletter-coming-soon')) {
+                if (!window.hasNewsletterAccess) {
+                    return;
+                }
+                const oldScript = document.getElementById('newsletter-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src = 'tools/newsletter/newsletter.js?v=' + Date.now();
+                script.id = 'newsletter-script';
+                script.onload = () => {
+                    if (typeof initNewsletter === 'function') initNewsletter();
+                    else if (window.initNewsletter) window.initNewsletter();
+                };
+                script.onerror = () => {
+                    console.error('[APP] Failed to load newsletter.js');
+                };
+                document.head.appendChild(script);
             } else if (page.includes('home.html')) {
                 // Log home page visit
                 if (window.logToolUsage) {
@@ -4273,6 +4374,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Re-apply VIP gating so nav and (if home) tool cards reflect current level
             applyVipGating(window.currentVipLevel ?? 0);
+            applyNewsletterGating(window.hasNewsletterAccess === true);
         } catch (error) {
             console.error('Failed to load page:', error);
             appContent.innerHTML = `<div class="container"><h2>Error</h2><p>Failed to load page content. Please check the console for details.</p></div>`;
@@ -4322,6 +4424,11 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        if (pageName === 'newsletter' && !window.hasNewsletterAccess) {
+            loadPage('pages/newsletter-coming-soon.html');
+            return;
+        }
+
         const pagePath = `pages/${pageName}.html`;
         loadPage(pagePath);
     };
@@ -4348,9 +4455,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- EVENT DELEGATION ---
-    // Prevent navigation when clicking VIP-locked links (tooltip still shows via title)
+    // Prevent navigation when clicking VIP-locked or coming-soon links (tooltip still shows via title)
     document.addEventListener('click', (event) => {
-        const locked = event.target.closest('a.vip-locked');
+        const locked = event.target.closest('a.vip-locked, a.coming-soon-locked');
         if (locked) {
             event.preventDefault();
             return;

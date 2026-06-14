@@ -472,24 +472,25 @@ function warReportPlayerOutsideHitsCount(player) {
 }
 
 /**
- * Hit-threshold minimum count: war hits always, plus assists and/or outside hits when those options are on.
+ * Hit-threshold minimum count: war hits (pre-surrender / qualified) always, plus optional termed, assists, outside.
  */
-function warReportPlayerHitThresholdCount(player, includeAssists, includeOutside) {
+function warReportPlayerHitThresholdCount(player, includeAssists, includeOutside, includeTermed) {
     let n = player.warHitsForPayout != null ? player.warHitsForPayout : (player.warHits || 0);
+    if (includeTermed) n += player.termedWarHits || 0;
     if (includeAssists) n += player.warAssists || 0;
     if (includeOutside) n += warReportPlayerOutsideHitsCount(player);
     return n;
 }
 
 /**
- * Respect "combined hits" minimum: war hits (when includeWar) plus optional outside hits and assists.
- * UI always includes war hits; includeWar is kept for callers/tests.
+ * Respect "combined hits" minimum: war hits (when includeWar) plus optional termed, outside hits, assists.
  * @param {object} player - playerStats row
- * @param {number} warHitsForRespect - war hit count used for respect (e.g. after low-FF filter)
+ * @param {number} warHitsForRespect - pre-surrender war hits (excludes termed unless includeTermed)
  */
-function warReportPlayerRespectCombinedHitsCount(player, warHitsForRespect, includeWar, includeOutside, includeAssists) {
+function warReportPlayerRespectCombinedHitsCount(player, warHitsForRespect, includeWar, includeOutside, includeAssists, includeTermed) {
     let n = 0;
     if (includeWar) n += warHitsForRespect != null ? warHitsForRespect : (player.warHits || 0);
+    if (includeTermed) n += player.termedWarHits || 0;
     if (includeOutside) n += warReportPlayerOutsideHitsCount(player);
     if (includeAssists) n += player.warAssists || 0;
     return n;
@@ -812,6 +813,75 @@ function warReportGetRealWarFactor(enabledInputId, factorInputId) {
 function warReportRealWarFactorForPayout(surrenderUnix, enabledInputId, factorInputId) {
     if (!Number.isFinite(surrenderUnix)) return 1;
     return warReportGetRealWarFactor(enabledInputId, factorInputId);
+}
+
+function warReportIsTermedWarAttack(attack, surrenderUnix) {
+    return Number.isFinite(surrenderUnix) && attack && attack.started > surrenderUnix;
+}
+
+/** Payout pool weight for war respect: real (pre-surrender) × factor, termed at 1×. */
+function warReportWeightedWarRespectForPayout(realWarRespect, termedWarRespect, factor) {
+    const f = Number.isFinite(factor) && factor > 0 ? factor : 1;
+    const real = realWarRespect || 0;
+    const termed = termedWarRespect || 0;
+    if (f === 1) return real + termed;
+    return real * f + termed;
+}
+
+/**
+ * Respect points for threshold ratio mode. Min/max gates use raw display respect elsewhere;
+ * this is only the payout share weight after the max cap is applied to raw totals.
+ * When inflatedWarHits is on, real war respect within the cap is × factor; termed/outside stay 1×.
+ */
+function warReportRespectThresholdRatioPoints(player, opts) {
+    const maxThreshold = opts.maxThreshold;
+    const includeOutsideRespect = opts.includeOutsideRespect === true;
+    const respectRealWarFactor = opts.respectRealWarFactor;
+    const inflatedWarHits = opts.inflatedWarHits === true;
+
+    const rawReal = player.playerRealWarRespect || 0;
+    const rawTermed = player.playerTermedWarRespect || 0;
+    const rawOutside = includeOutsideRespect ? (player.playerOutsideRespect || 0) : 0;
+    const rawTotal = rawReal + rawTermed + rawOutside;
+
+    if (rawTotal <= 0) return 0;
+
+    const cappedTotal = Math.min(rawTotal, maxThreshold);
+    const scale = cappedTotal / rawTotal;
+    const scaledReal = rawReal * scale;
+    const scaledTermed = rawTermed * scale;
+    const scaledOutside = rawOutside * scale;
+
+    const factorActive =
+        inflatedWarHits && Number.isFinite(respectRealWarFactor) && respectRealWarFactor > 1;
+
+    if (factorActive) {
+        return (
+            warReportWeightedWarRespectForPayout(scaledReal, scaledTermed, respectRealWarFactor) +
+            scaledOutside
+        );
+    }
+
+    return cappedTotal;
+}
+
+function warReportFormatWarRespectPayoutTooltip(realWarRespect, termedWarRespect, factor) {
+    const f = Number.isFinite(factor) && factor > 0 ? factor : 1;
+    const real = Math.round(realWarRespect || 0);
+    const termed = Math.round(termedWarRespect || 0);
+    const weighted = Math.round(warReportWeightedWarRespectForPayout(real, termed, f));
+    if (f <= 1 || (real === 0 && termed === 0)) return '';
+    if (termed > 0) {
+        return `Payout weight: ${weighted.toLocaleString()} (${real.toLocaleString()} real × ${f} + ${termed.toLocaleString()} termed)`;
+    }
+    return `Payout weight: ${weighted.toLocaleString()} (${real.toLocaleString()} real × ${f})`;
+}
+
+function warReportRespectCellHtml(displayValue, tooltip) {
+    const v = displayValue != null ? displayValue : 0;
+    if (!tooltip) return String(v);
+    const esc = String(tooltip).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    return `<span title="${esc}" style="cursor: help; border-bottom: 1px dotted #888;">${v}</span>`;
 }
 
 /**
@@ -1158,6 +1228,7 @@ function saveRespectPayoutSettings() {
         combinedMin: document.getElementById('respectCombinedMin')?.value || '20',
         combinedIncludeOutsideHits: document.getElementById('respectCombinedIncludeOutsideHits')?.checked ?? false,
         combinedIncludeAssists: document.getElementById('respectCombinedIncludeAssists')?.checked ?? true,
+        combinedIncludeTermedHits: document.getElementById('respectCombinedIncludeTermedHits')?.checked !== false,
         removeModifiers: document.getElementById('respectRemoveModifiers')?.checked || false,
         includeOutsideRespect: document.getElementById('respectIncludeOutside')?.checked || false,
         filterLowFF: document.getElementById('respectFilterLowFF')?.checked || false,
@@ -1175,6 +1246,7 @@ function saveRespectPayoutSettings() {
         ignoreChainDeductions: document.getElementById('respectIgnoreChainDeductions')?.checked || false,
         applyRealWarFactor: document.getElementById('respectApplyRealWarFactor')?.checked === true,
         realWarFactor: document.getElementById('respectRealWarFactor')?.value || '2',
+        thresholdInflatedWarHits: document.getElementById('respectThresholdInflatedWarHits')?.checked === true,
         ...warReportWarScoreCapSettingsPayload()
     };
     localStorage.setItem('respectPayoutSettings', JSON.stringify(settings));
@@ -1219,6 +1291,7 @@ function saveHitPayoutSettings() {
         payoutMode: document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio',
         thresholdIncludeAssists: document.getElementById('hitThresholdIncludeAssists')?.checked !== false,
         thresholdIncludeOutsideHits: document.getElementById('hitThresholdIncludeOutsideHits')?.checked === true,
+        thresholdIncludeTermedHits: document.getElementById('hitThresholdIncludeTermedHits')?.checked !== false,
         applyRealWarFactor: document.getElementById('hitApplyRealWarFactor')?.checked === true,
         realWarFactor: document.getElementById('hitRealWarFactor')?.value || '2',
         ...warReportWarScoreCapSettingsPayload()
@@ -1266,6 +1339,10 @@ function loadHitPayoutSettings() {
             if (settings.thresholdIncludeOutsideHits !== undefined) {
                 const el = document.getElementById('hitThresholdIncludeOutsideHits');
                 if (el) el.checked = settings.thresholdIncludeOutsideHits;
+            }
+            if (settings.thresholdIncludeTermedHits !== undefined) {
+                const el = document.getElementById('hitThresholdIncludeTermedHits');
+                if (el) el.checked = settings.thresholdIncludeTermedHits;
             }
             if (settings.applyRealWarFactor !== undefined) {
                 const el = document.getElementById('hitApplyRealWarFactor');
@@ -1352,6 +1429,13 @@ function warReportUpdateCombinedHitsSubwrapVisibility() {
     if (wrap && en) wrap.style.display = en.checked ? 'block' : 'none';
 }
 
+/** Show threshold-only options (inflated real war hits) when Enable Respect Thresholds is on */
+function warReportUpdateRespectThresholdExtrasVisibility() {
+    const wrap = document.getElementById('respectThresholdInflatedWrap');
+    const en = document.getElementById('respectEnableThresholds');
+    if (wrap && en) wrap.style.display = en.checked ? 'block' : 'none';
+}
+
 function loadRespectPayoutSettings() {
     const savedSettings = localStorage.getItem('respectPayoutSettings');
     if (savedSettings) {
@@ -1368,6 +1452,7 @@ function loadRespectPayoutSettings() {
             if (settings.combinedMin !== undefined) document.getElementById('respectCombinedMin').value = settings.combinedMin;
             const hasCombinedCats = settings.combinedIncludeOutsideHits !== undefined ||
                 settings.combinedIncludeAssists !== undefined ||
+                settings.combinedIncludeTermedHits !== undefined ||
                 settings.combinedIncludeWarHits !== undefined;
             if (hasCombinedCats) {
                 if (settings.combinedIncludeOutsideHits !== undefined) {
@@ -1376,9 +1461,15 @@ function loadRespectPayoutSettings() {
                 if (settings.combinedIncludeAssists !== undefined) {
                     document.getElementById('respectCombinedIncludeAssists').checked = settings.combinedIncludeAssists;
                 }
+                if (settings.combinedIncludeTermedHits !== undefined) {
+                    const el = document.getElementById('respectCombinedIncludeTermedHits');
+                    if (el) el.checked = settings.combinedIncludeTermedHits;
+                }
             } else {
                 document.getElementById('respectCombinedIncludeOutsideHits').checked = false;
                 document.getElementById('respectCombinedIncludeAssists').checked = true;
+                const termedEl = document.getElementById('respectCombinedIncludeTermedHits');
+                if (termedEl) termedEl.checked = true;
             }
             if (settings.removeModifiers !== undefined) document.getElementById('respectRemoveModifiers').checked = settings.removeModifiers;
             if (settings.includeOutsideRespect !== undefined) document.getElementById('respectIncludeOutside').checked = settings.includeOutsideRespect;
@@ -1404,6 +1495,10 @@ function loadRespectPayoutSettings() {
                 const el = document.getElementById('respectRealWarFactor');
                 if (el) el.value = settings.realWarFactor;
             }
+            if (settings.thresholdInflatedWarHits !== undefined) {
+                const el = document.getElementById('respectThresholdInflatedWarHits');
+                if (el) el.checked = settings.thresholdInflatedWarHits;
+            }
             
             // Load chain group linked state
             if (settings.chainGroupLinked !== undefined) {
@@ -1428,6 +1523,7 @@ function loadRespectPayoutSettings() {
         }
     }
     warReportUpdateCombinedHitsSubwrapVisibility();
+    warReportUpdateRespectThresholdExtrasVisibility();
 
     // If war data is already present (e.g. SPA revisit with window.warReportData), refresh the
     // respect table after persisted settings are on the DOM so thresholds apply on first paint.
@@ -2733,10 +2829,20 @@ function collapseEuropeanThousandDots(rawDigitsAndDots) {
 function normalizePayoutMoneyRawString(valueLower) {
     let v = String(valueLower || '').trim().toLowerCase();
     if (!v) return '';
+    const negative = /^[-−]/.test(v);
+    if (negative) v = v.replace(/^[-−]+/, '');
     v = v.replace(/^(\d+),(\d{1,2})$/, '$1.$2');
     v = v.replace(/,/g, '');
     let raw = v.replace(/[^\d.]/g, '');
-    return collapseEuropeanThousandDots(raw);
+    raw = collapseEuropeanThousandDots(raw);
+    if (!raw) return negative ? '-' : '';
+    return negative ? '-' + raw : raw;
+}
+
+function warReportFormatManualBonusInputValue(amount) {
+    const n = Math.round(Number(amount || 0));
+    if (!Number.isFinite(n) || n === 0) return '';
+    return n.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
 }
 
 function formatPayoutInputIntegerPart(intStr) {
@@ -2763,14 +2869,14 @@ function warReportGetManualBonusValue(mapObj, playerId) {
     const map = mapObj && typeof mapObj === 'object' ? mapObj : {};
     const key = String(playerId);
     const n = Math.round(Number(map[key] || 0));
-    return Number.isFinite(n) && n > 0 ? n : 0;
+    return Number.isFinite(n) && n !== 0 ? n : 0;
 }
 
 function warReportSetManualBonusValue(mapObj, playerId, rawValue) {
     if (!mapObj || typeof mapObj !== 'object') return;
     const key = String(playerId);
     const parsed = Math.round(Number(rawValue || 0));
-    if (!Number.isFinite(parsed) || parsed <= 0) {
+    if (!Number.isFinite(parsed) || parsed === 0) {
         delete mapObj[key];
         return;
     }
@@ -2781,7 +2887,7 @@ function warReportGetManualBonusTotal(mapObj) {
     if (!mapObj || typeof mapObj !== 'object') return 0;
     return Object.values(mapObj).reduce((sum, v) => {
         const n = Math.round(Number(v || 0));
-        return sum + (Number.isFinite(n) && n > 0 ? n : 0);
+        return sum + (Number.isFinite(n) ? n : 0);
     }, 0);
 }
 
@@ -2796,7 +2902,7 @@ function warReportManualBonusHeaderHtml(mode) {
         <span style="font-weight:600;color:#ffd700;">Manual Bonus</span>
         <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:center;">
             <span style="font-size:11px;color:#aaa;">$</span>
-            <input type="text" class="war-report-bulk-manual-bonus-input" data-mode="${mode}"${valueAttr} placeholder="e.g. 500k" title="Applied to ticked rows when you tick one, press Enter, or leave this field after editing" style="width:92px;padding:4px 6px;text-align:right;font-size:12px;background:#1a1a1a;border:1px solid #404040;color:#fff;border-radius:4px;">
+            <input type="text" class="war-report-bulk-manual-bonus-input" data-mode="${mode}"${valueAttr} placeholder="e.g. 500k or -200k" title="Applied to ticked rows when you tick one, press Enter, or leave this field after editing. Use a minus sign for deductions." style="width:92px;padding:4px 6px;text-align:right;font-size:12px;background:#1a1a1a;border:1px solid #404040;color:#fff;border-radius:4px;">
         </div>
     </div>`;
 }
@@ -2954,8 +3060,8 @@ function addThousandSeparatorInput(input) {
         if (e.type === 'input' && !hasLetter) {
             // Still update dataset.raw so calculations use the current value
             let raw = normalizePayoutMoneyRawString(value);
-            if (raw === '') {
-                input.value = '';
+            if (raw === '' || raw === '-') {
+                input.value = raw === '-' ? '-' : '';
                 input.dataset.raw = '0';
                 return;
             }
@@ -2967,11 +3073,13 @@ function addThousandSeparatorInput(input) {
                 input.dataset.raw = '0';
                 return;
             }
-            input.dataset.raw = Math.round(numericValue * 100) / 100; // Preserve 2 decimal places
+            input.dataset.raw = String(Math.round(numericValue));
             
             // Format with thousand separators but preserve decimals while typing
-            const parts = raw.split('.');
-            const integerPart = formatPayoutInputIntegerPart(parts[0] || '0');
+            const negative = numericValue < 0;
+            const absRaw = raw.replace(/^-/, '');
+            const parts = absRaw.split('.');
+            const integerPart = (negative ? '-' : '') + formatPayoutInputIntegerPart(parts[0] || '0');
             const decimalPart = parts[1] !== undefined ? '.' + String(parts[1]).replace(/[^\d]/g, '') : '';
             input.value = integerPart + decimalPart;
             return;
@@ -2998,9 +3106,9 @@ function addThousandSeparatorInput(input) {
         let numericValue = parseFloat(raw) * multiplier;
         
         // Format with thousand separators (round for display but preserve precision)
-        let roundedValue = Math.round(numericValue * 100) / 100; // Preserve 2 decimal places
-        input.value = Math.round(roundedValue).toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
-        input.dataset.raw = Math.round(roundedValue).toString();
+        let roundedValue = Math.round(numericValue);
+        input.value = roundedValue.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
+        input.dataset.raw = String(roundedValue);
     };
     
     input.addEventListener('input', processInput);
@@ -3008,9 +3116,12 @@ function addThousandSeparatorInput(input) {
     
     // Initialize
     let raw = normalizePayoutMoneyRawString(input.value.toLowerCase());
-    if (raw === '') raw = '0';
-    input.value = Number(raw).toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 });
-    input.dataset.raw = raw;
+    if (raw === '' || raw === '-') raw = '0';
+    const initN = Math.round(Number(raw));
+    input.value = Number.isFinite(initN) && initN !== 0
+        ? initN.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 })
+        : '';
+    input.dataset.raw = String(Number.isFinite(initN) ? initN : 0);
 }
 
 // --- Patch initializeTabs to add input formatting ---
@@ -3239,7 +3350,7 @@ function initializeTabs() {
                 hitMaxThresholdInput.setAttribute('data-listener-added', 'true');
             }
 
-            ['hitThresholdIncludeAssists', 'hitThresholdIncludeOutsideHits'].forEach(hitThIncId => {
+            ['hitThresholdIncludeAssists', 'hitThresholdIncludeOutsideHits', 'hitThresholdIncludeTermedHits'].forEach(hitThIncId => {
                 const hitThIncEl = document.getElementById(hitThIncId);
                 if (hitThIncEl && !hitThIncEl.hasAttribute('data-listener-added')) {
                     hitThIncEl.addEventListener('change', () => {
@@ -3388,7 +3499,7 @@ function initializeTabs() {
                 respectCombinedMinInput.addEventListener('change', onCombinedMinChange);
             }
 
-            ['respectCombinedIncludeOutsideHits', 'respectCombinedIncludeAssists'].forEach(id => {
+            ['respectCombinedIncludeOutsideHits', 'respectCombinedIncludeAssists', 'respectCombinedIncludeTermedHits'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) {
                     el.addEventListener('change', () => {
@@ -3474,6 +3585,7 @@ function initializeTabs() {
                 if (respectEnableThresholdsCheckbox && !respectEnableThresholdsCheckbox.hasAttribute('data-listener-added')) {
 
                     respectEnableThresholdsCheckbox.addEventListener('change', (e) => {
+                        warReportUpdateRespectThresholdExtrasVisibility();
                         // Save before re-render so render never reads stale enableThresholds from localStorage
                         saveRespectPayoutSettings();
                         updateRespectPayoutTable();
@@ -3509,6 +3621,17 @@ function initializeTabs() {
                         radio.setAttribute('data-listener-added', 'true');
                     }
                 });
+
+                const respectThresholdInflatedCheckbox = document.getElementById('respectThresholdInflatedWarHits');
+                if (respectThresholdInflatedCheckbox && !respectThresholdInflatedCheckbox.hasAttribute('data-listener-added')) {
+                    respectThresholdInflatedCheckbox.addEventListener('change', () => {
+                        saveRespectPayoutSettings();
+                        updateRespectPayoutTable();
+                    });
+                    respectThresholdInflatedCheckbox.setAttribute('data-listener-added', 'true');
+                }
+
+                warReportUpdateRespectThresholdExtrasVisibility();
             }, 100);
             
             // Add event listener for remaining percentage input (only once)
@@ -3655,6 +3778,7 @@ function renderPayoutTable() {
         const payoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio';
         const hitThIncludeAssists = document.getElementById('hitThresholdIncludeAssists')?.checked !== false;
         const hitThIncludeOutside = document.getElementById('hitThresholdIncludeOutsideHits')?.checked === true;
+        const hitThIncludeTermed = document.getElementById('hitThresholdIncludeTermedHits')?.checked !== false;
         
         // Use iterative approach to calculate payPerHit that accounts for thresholds
         // Start with an initial estimate
@@ -3683,7 +3807,12 @@ function renderPayoutTable() {
                 
                 const warHitsForThreshold = qualifiedWarHits + termedWarHits;
                 const weightedWarHits = (qualifiedWarHits * realWarFactor) + termedWarHits;
-                const combinedHits = warReportPlayerHitThresholdCount({ ...player, warHitsForPayout: warHitsForThreshold }, hitThIncludeAssists, hitThIncludeOutside);
+                const combinedHits = warReportPlayerHitThresholdCount(
+                    { ...player, warHitsForPayout: qualifiedWarHits },
+                    hitThIncludeAssists,
+                    hitThIncludeOutside,
+                    hitThIncludeTermed
+                );
                 
                 if (enableThresholds) {
                     if (combinedHits < minThreshold) {
@@ -3786,13 +3915,20 @@ function renderPayoutTable() {
     const payoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio';
     const hitThIncludeAssists = document.getElementById('hitThresholdIncludeAssists')?.checked !== false;
     const hitThIncludeOutside = document.getElementById('hitThresholdIncludeOutsideHits')?.checked === true;
+    const hitThIncludeTermed = document.getElementById('hitThresholdIncludeTermedHits')?.checked !== false;
 
     if (enableThresholds) {
 
-        // Apply threshold logic (count = war hits + optional assists + optional outside hits)
+        // Apply threshold logic (count = war hits + optional termed / assists / outside hits)
         playersWithPayouts.forEach(player => {
+            const qh = player.qualifiedWarHits != null ? player.qualifiedWarHits : player.warHitsForPayout;
             const warHitsForThreshold = (player.warHitsForPayout || 0) + (player.termedWarHits || 0);
-            const combinedHits = warReportPlayerHitThresholdCount({ ...player, warHitsForPayout: warHitsForThreshold }, hitThIncludeAssists, hitThIncludeOutside);
+            const combinedHits = warReportPlayerHitThresholdCount(
+                { ...player, warHitsForPayout: qh },
+                hitThIncludeAssists,
+                hitThIncludeOutside,
+                hitThIncludeTermed
+            );
             
             if (combinedHits < minThreshold) {
                 // Below minimum: no war hit pay and no retals/assists/overseas/outside/other/low-FF pay
@@ -4010,7 +4146,7 @@ function renderPayoutTable() {
                             ${showHitManualBonusCol ? `<td class="war-report-col-group-lead" style="text-align: center;">
                                 <div style="display: inline-flex; align-items: center; gap: 6px;">
                                     <input type="checkbox" class="war-report-manual-bonus-select-cb" data-mode="hit" data-player-id="${player.id}" ${warData.hitManualBonusBulkCheckedIds.has(String(player.id)) ? 'checked' : ''} title="Tick to apply bulk bonus to this row" style="accent-color: #ffd700; width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
-                                    <input type="text" class="war-report-manual-bonus-input" data-mode="hit" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                                    <input type="text" class="war-report-manual-bonus-input" data-mode="hit" data-player-id="${player.id}" value="${warReportFormatManualBonusInputValue(player.manualBonus)}" placeholder="-" title="Bonus or deduction (e.g. -500k)" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
                                 </div>
                             </td>` : ''}
                             <td><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
@@ -4174,7 +4310,7 @@ function renderPayoutTable() {
             const pidStr = String(inp.getAttribute('data-player-id'));
             warReportManualBonusBulkUncheckRow('hit', pidStr);
             const v = parsePayoutInputInt(inp, 0);
-            if (v > 0) warData.hitManualBonusBulkSkipIds.add(pidStr);
+            if (v !== 0) warData.hitManualBonusBulkSkipIds.add(pidStr);
             else warData.hitManualBonusBulkSkipIds.delete(pidStr);
             const pid = inp.getAttribute('data-player-id');
             warReportSetManualBonusValue(warData.hitManualBonuses, pid, parsePayoutInputInt(inp, 0));
@@ -4409,11 +4545,18 @@ function exportPayoutToCSV() {
     const payoutMode = document.querySelector('input[name="hitPayoutMode"]:checked')?.value || 'ratio';
     const hitThIncludeAssists = document.getElementById('hitThresholdIncludeAssists')?.checked !== false;
     const hitThIncludeOutside = document.getElementById('hitThresholdIncludeOutsideHits')?.checked === true;
+    const hitThIncludeTermed = document.getElementById('hitThresholdIncludeTermedHits')?.checked !== false;
 
     if (enableThresholds) {
         playersWithPayouts.forEach(player => {
+            const qh = player.qualifiedWarHits != null ? player.qualifiedWarHits : player.warHitsForPayout;
             const warHitsForThreshold = (player.warHitsForPayout || 0) + (player.termedWarHits || 0);
-            const combinedHits = warReportPlayerHitThresholdCount({ ...player, warHitsForPayout: warHitsForThreshold }, hitThIncludeAssists, hitThIncludeOutside);
+            const combinedHits = warReportPlayerHitThresholdCount(
+                { ...player, warHitsForPayout: qh },
+                hitThIncludeAssists,
+                hitThIncludeOutside,
+                hitThIncludeTermed
+            );
             
             if (combinedHits < minThreshold) {
                 player.warHitPayout = 0;
@@ -4548,6 +4691,9 @@ function renderRespectPayoutTable() {
     }
     const warCapEffMapRes = warScoreCapThR > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStrRes) : null;
 
+    const respectSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('respectSurrenderTimeTct')?.value);
+    const respectRealWarFactor = warReportRealWarFactorForPayout(respectSurrenderUnix, 'respectApplyRealWarFactor', 'respectRealWarFactor');
+
     const playerRespectData = {};
     let totalBaseRespect = 0;
     let totalWarHits = 0;
@@ -4561,6 +4707,8 @@ function renderRespectPayoutTable() {
     Object.keys(playerStats).forEach(playerId => {
         playerRespectData[playerId] = {
             warRespect: 0, // Raw values for accurate totals
+            realWarRespect: 0,
+            termedWarRespect: 0,
             outsideRespect: 0,
             warHits: 0,
             outsideHits: 0,
@@ -4614,14 +4762,21 @@ function renderRespectPayoutTable() {
                     }
 
                     if (playerRespectData[attackerId]) {
+                        const isTermedWar = warReportIsTermedWarAttack(attack, respectSurrenderUnix);
                         playerRespectData[attackerId].warRespect += baseRespect;
+                        if (isTermedWar) {
+                            playerRespectData[attackerId].termedWarRespect += baseRespect;
+                        } else {
+                            playerRespectData[attackerId].realWarRespect += baseRespect;
+                        }
                         playerRespectData[attackerId].warHits++;
 
                         if (chainBonus) {
                             playerRespectData[attackerId].chainBonuses.push({
                                 ...chainBonus,
                                 attackerName: attack.attacker?.name,
-                                hitType: 'War Hit'
+                                hitType: 'War Hit',
+                                isTermed: isTermedWar
                             });
                         }
                     }
@@ -4660,6 +4815,11 @@ function renderRespectPayoutTable() {
             data.chainBonuses.forEach(bonus => {
                 if (bonus.hitType === 'War Hit') {
                     data.warRespect += bonus.deduction;
+                    if (bonus.isTermed) {
+                        data.termedWarRespect = (data.termedWarRespect || 0) + bonus.deduction;
+                    } else {
+                        data.realWarRespect = (data.realWarRespect || 0) + bonus.deduction;
+                    }
                     warDeductionsAdded += bonus.deduction;
                 } else if (bonus.hitType === 'Outside Hit') {
                     data.outsideRespect += bonus.deduction;
@@ -4726,11 +4886,10 @@ function renderRespectPayoutTable() {
     const combinedMin = Number.isFinite(combinedMinParsed) && combinedMinParsed >= 0 ? combinedMinParsed : 0;
     const combinedInclOutside = document.getElementById('respectCombinedIncludeOutsideHits')?.checked === true;
     const combinedInclAssists = document.getElementById('respectCombinedIncludeAssists')?.checked !== false;
+    const combinedInclTermed = document.getElementById('respectCombinedIncludeTermedHits')?.checked !== false;
     const filterLowFF = document.getElementById('respectFilterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('respectMinFFRating')?.value || '2.0');
 
-    const respectSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('respectSurrenderTimeTct')?.value);
-    const respectRealWarFactor = warReportRealWarFactorForPayout(respectSurrenderUnix, 'respectApplyRealWarFactor', 'respectRealWarFactor');
     const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, String(factionId), respectSurrenderUnix);
 
     // Phase 1: respect / combined / counts per player (no $ yet).
@@ -4738,8 +4897,9 @@ function renderRespectPayoutTable() {
     const respectRowsPhase1 = Object.values(playerStats).map((origPl) => {
         const player = warReportPlayerWithWarCapMerged(origPl, warCapEffMapRes);
         const playerIdStr = String(player.id);
-        const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
-        let playerWarRespect = playerData.warRespect;
+        const playerData = playerRespectData[playerIdStr] || { warRespect: 0, realWarRespect: 0, termedWarRespect: 0, outsideRespect: 0, warHits: 0, outsideHits: 0 };
+        let playerRealWarRespect = playerData.realWarRespect || 0;
+        let playerTermedWarRespect = playerData.termedWarRespect || 0;
         let playerOutsideRespect = playerData.outsideRespect;
         const termedWarHits = termedHitsMap.get(String(player.id)) || 0;
         let playerWarHits = Math.max(0, ((playerData.warHits ?? player.warHits) || 0) - termedWarHits);
@@ -4756,31 +4916,36 @@ function renderRespectPayoutTable() {
                     lowFFRespect += calculateBaseRespect(attack, removeModLocal);
                 });
 
-                playerWarRespect -= lowFFRespect;
+                playerRealWarRespect -= lowFFRespect;
                 playerWarHits = Math.max(0, playerWarHits - lowFFHits);
             }
         }
 
+        const playerWarRespect = playerRealWarRespect + playerTermedWarRespect;
+        const weightedWarRespect = warReportWeightedWarRespectForPayout(playerRealWarRespect, playerTermedWarRespect, respectRealWarFactor);
+
         const combinedCount = warReportPlayerRespectCombinedHitsCount(
-            player,
+            { ...player, termedWarHits },
             playerWarHits,
             true,
             combinedInclOutside,
-            combinedInclAssists
+            combinedInclAssists,
+            combinedInclTermed
         );
         const passesCombined = !enableCombinedMin || combinedCount >= combinedMin;
         const outsideHitsCount = warReportPlayerOutsideHitsCount(player);
         const otherAttacksCount = warReportPlayerOtherAttacksPayoutCount(player);
 
         const totalPlayerRespectDisp = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
-        const totalRespectDisp = includeOutsideRespect ? (totalBaseRespect + totalOutsideRespect) : totalBaseRespect;
-        const respectRatioDisp = totalRespectDisp > 0 ? totalPlayerRespectDisp / totalRespectDisp : 0;
         const respectPoolPoints =
-            playerWarRespect + (includeOutsideRespect && !payOutsideHits ? playerOutsideRespect : 0);
+            weightedWarRespect + (includeOutsideRespect && !payOutsideHits ? playerOutsideRespect : 0);
 
         return {
             player,
             playerWarRespect,
+            playerRealWarRespect,
+            playerTermedWarRespect,
+            weightedWarRespect,
             playerOutsideRespect,
             playerWarHits,
             termedWarHits,
@@ -4790,9 +4955,14 @@ function renderRespectPayoutTable() {
             passesCombined,
             outsideHitsCount,
             otherAttacksCount,
-            respectRatioDisp,
+            totalPlayerRespectDisp,
             respectPoolPoints
         };
+    });
+
+    const totalRespectPoolPoints = respectRowsPhase1.reduce((sum, r) => sum + (r.respectPoolPoints || 0), 0);
+    respectRowsPhase1.forEach((r) => {
+        r.respectRatioDisp = totalRespectPoolPoints > 0 ? (r.respectPoolPoints || 0) / totalRespectPoolPoints : 0;
     });
 
     // Pay per war hit matches hit-based logic: budget / (war hits + weighted modifier hits).
@@ -4842,6 +5012,9 @@ function renderRespectPayoutTable() {
             ...player,
             lowFFHits: r.lowFFHits,
             playerWarRespect: Math.round(r.playerWarRespect),
+            playerRealWarRespect: Math.round(r.playerRealWarRespect),
+            playerTermedWarRespect: Math.round(r.playerTermedWarRespect),
+            weightedWarRespect: Math.round(r.weightedWarRespect),
             playerOutsideRespect: Math.round(r.playerOutsideRespect),
             respectRatio: r.respectRatioDisp.toFixed(4),
             respectPoolPoints: r.respectPoolPoints,
@@ -4877,19 +5050,13 @@ function renderRespectPayoutTable() {
         return true; // If no combined minimum, all players qualify
     });
     
-    // Pool split uses respectPoolPoints (war respect + optional outside, but not outside when Pay Outside Hits pays those separately)
-    const totalQualifyingRespect = qualifyingPlayers.reduce((sum, p) => {
-        const baseHits = (p.warHitsForPayout || 0) + (p.termedWarHits || 0);
-        const boostRatio = baseHits > 0 ? ((p.weightedWarHits || baseHits) / baseHits) : 1;
-        return sum + ((p.respectPoolPoints || 0) * boostRatio);
-    }, 0);
+    // Pool split uses respectPoolPoints (weighted real war respect + termed + optional outside)
+    const totalQualifyingRespect = qualifyingPlayers.reduce((sum, p) => sum + (p.respectPoolPoints || 0), 0);
     
-    // Distribute remaining money proportionally based on respect
+    // Distribute remaining money proportionally based on weighted respect
     qualifyingPlayers.forEach(player => {
         if (totalQualifyingRespect > 0) {
-            const baseHits = (player.warHitsForPayout || 0) + (player.termedWarHits || 0);
-            const boostRatio = baseHits > 0 ? ((player.weightedWarHits || baseHits) / baseHits) : 1;
-            const weightedRespectPoints = (player.respectPoolPoints || 0) * boostRatio;
+            const weightedRespectPoints = player.respectPoolPoints || 0;
             const respectShare = weightedRespectPoints / totalQualifyingRespect;
             player.warHitPayout = Math.round(respectShare * respectDistributionPool);
         } else {
@@ -4905,6 +5072,14 @@ function renderRespectPayoutTable() {
     const minThreshold = parseFloat(document.getElementById('respectMinThreshold')?.value || '100');
     const maxThreshold = parseFloat(document.getElementById('respectMaxThreshold')?.value || '300');
     const payoutMode = document.querySelector('input[name="respectPayoutMode"]:checked')?.value || 'ratio';
+    const thresholdInflatedWarHits =
+        enableThresholds && document.getElementById('respectThresholdInflatedWarHits')?.checked === true;
+    const thresholdRatioOpts = {
+        maxThreshold,
+        includeOutsideRespect,
+        respectRealWarFactor,
+        inflatedWarHits: thresholdInflatedWarHits,
+    };
 
     if (enableThresholds) {
 
@@ -4923,27 +5098,19 @@ function renderRespectPayoutTable() {
         // Find qualifying players (respect min threshold AND combined hits when that gate is on)
         const qualifyingPlayers = playersWithRespectPayouts.filter(player => {
             if (respectFailsCombinedMin(player)) return false;
-            const playerIdStr = String(player.id);
-            const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0 };
-            const playerWarRespect = playerData.warRespect;
-            const playerOutsideRespect = playerData.outsideRespect;
-            const totalPlayerRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
+            const totalPlayerRespect = includeOutsideRespect
+                ? (player.playerWarRespect || 0) + (player.playerOutsideRespect || 0)
+                : (player.playerWarRespect || 0);
             
             return totalPlayerRespect >= minThreshold;
         });
 
-        // Ratio mode needs total adjusted respect BEFORE we visit anyone — below-threshold capping uses
-        // the same denominator as qualifying payouts. (Lazy init on first qualifying player broke when
-        // below-threshold rows ran first: _totalAdjustedRespect was still null → fell back to 1 → bad caps / errors when assist multipliers changed.)
+        // Ratio mode: raw respect for min/max gates; payout share uses capped raw or inflated real war (optional).
         if (payoutMode === 'ratio') {
-            window._totalAdjustedRespect = qualifyingPlayers.reduce((sum, p) => {
-                const pIdStr = String(p.id);
-                const pData = playerRespectData[pIdStr] || { warRespect: 0, outsideRespect: 0 };
-                const pWarRespect = pData.warRespect;
-                const pOutsideRespect = pData.outsideRespect;
-                const pTotalRespect = includeOutsideRespect ? (pWarRespect + pOutsideRespect) : pWarRespect;
-                return sum + Math.min(pTotalRespect, maxThreshold);
-            }, 0);
+            window._totalAdjustedRespect = qualifyingPlayers.reduce(
+                (sum, p) => sum + warReportRespectThresholdRatioPoints(p, thresholdRatioOpts),
+                0
+            );
         }
 
         // Apply threshold logic to each player
@@ -4960,11 +5127,9 @@ function renderRespectPayoutTable() {
                 return;
             }
 
-            const playerIdStr = String(player.id);
-            const playerData = playerRespectData[playerIdStr] || { warRespect: 0, outsideRespect: 0 };
-            const playerWarRespect = playerData.warRespect;
-            const playerOutsideRespect = playerData.outsideRespect;
-            const totalPlayerRespect = includeOutsideRespect ? (playerWarRespect + playerOutsideRespect) : playerWarRespect;
+            const totalPlayerRespect = includeOutsideRespect
+                ? (player.playerWarRespect || 0) + (player.playerOutsideRespect || 0)
+                : (player.playerWarRespect || 0);
             
             if (totalPlayerRespect < minThreshold) {
                 // Below minimum threshold - no war hit payout, but cap other modifiers at minimum threshold payout
@@ -4997,7 +5162,7 @@ function renderRespectPayoutTable() {
             } else {
                 // Above minimum threshold - respect share from pool; retals / overseas / other / low-FF off.
                 // Keep assist when "Pay assists" is on so assist multiplier affects totals.
-                const adjustedRespect = Math.min(totalPlayerRespect, maxThreshold);
+                const adjustedRespect = warReportRespectThresholdRatioPoints(player, thresholdRatioOpts);
                 
                 player.retalPayout = 0;
                 if (!payAssists) player.assistPayout = 0;
@@ -5137,9 +5302,9 @@ function renderRespectPayoutTable() {
         : `<th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" data-column="respectTotal" title="War + outside respect (total points)" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Respect <span class="sort-indicator">${resSortIndR}</span>${respectBreakdownLabelR}</th>`;
 
     const respectHeadRow2R = showRespectColBreakdownR
-        ? `<th class="war-report-col-group-lead" data-column="playerWarRespect" title="War ${removeModifiers ? 'base' : 'full'} respect from war hits" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">War ${removeModifiers ? 'Base' : 'Full'} <span class="sort-indicator">${warData.respectPayoutSortState.column === 'playerWarRespect' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+        ? `<th class="war-report-col-group-lead" data-column="playerWarRespect" title="War ${removeModifiers ? 'base' : 'full'} respect from war hits${respectRealWarFactor > 1 ? ' — hover for payout weight (real × ' + respectRealWarFactor + ')' : ''}" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">War ${removeModifiers ? 'Base' : 'Full'} <span class="sort-indicator">${warData.respectPayoutSortState.column === 'playerWarRespect' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="playerOutsideRespect" title="Outside ${removeModifiers ? 'base' : 'full'} respect (modifier 1 hits)" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Outside <span class="sort-indicator">${warData.respectPayoutSortState.column === 'playerOutsideRespect' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="respectRatio" title="Share of total respect pool used for payout split" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">% <span class="sort-indicator">${warData.respectPayoutSortState.column === 'respectRatio' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>`
+                    <th data-column="respectRatio" title="Share of weighted respect pool used for payout split" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">% <span class="sort-indicator">${warData.respectPayoutSortState.column === 'respectRatio' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>`
         : '';
 
     const supportHeadRow1R = showSupportColBreakdownR
@@ -5224,6 +5389,7 @@ function renderRespectPayoutTable() {
             <p><strong>Total Outside ${removeModifiers ? 'Base' : 'Full'} Respect:</strong> ${Math.round(totalOutsideRespect).toLocaleString()} ${includeOutsideRespect ? '(Included)' : '(Excluded)'}</p>
             <p><strong>Total War Hits:</strong> ${totalWarHitsDisplay.toLocaleString()}</p>
             <p><strong>Total Termed War Hits:</strong> ${totalTermedWarHitsDisplay.toLocaleString()}</p>
+            ${respectRealWarFactor > 1 && Number.isFinite(respectSurrenderUnix) ? `<p><strong>Real War Factor:</strong> ${respectRealWarFactor}× on pre-surrender war respect (termed &amp; outside at 1×)</p>` : ''}
             <p><strong>Pay Per War Hit (Auto-calculated):</strong> $${Math.round(payPerWarHit).toLocaleString()}</p>
             <p><strong>Total Payout:</strong> $${totalPayout.toLocaleString()}</p>
             <p><strong>Remaining:</strong> $${remaining2.toLocaleString()} <span style=\"color:#ffd700;font-weight:normal;\">(${remainingPercent}% of cache sales)</span></p>
@@ -5282,12 +5448,17 @@ function renderRespectPayoutTable() {
                     const oInt = player.otherAttacksInterrupted || 0;
                     const oOut = player.otherAttacksOutside || 0;
                     const oLost = player.otherAttacksLostEscape || 0;
+                    const warRespectTooltip = warReportFormatWarRespectPayoutTooltip(
+                        player.playerRealWarRespect,
+                        player.playerTermedWarRespect,
+                        respectRealWarFactor
+                    );
                     const otherCells = showOtherBreakdownR
                         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerOtherAttacksTotal(player)}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oInt}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oOut}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oLost}</td>`
                         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerOtherAttacksTotal(player)}</td>`;
                     const respectCellsR = showRespectColBreakdownR
-                        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerWarRespect || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerOutsideRespect || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${(parseFloat(player.respectRatio) * 100).toFixed(2)}%</td>`
-                        : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerRespectPointsTotal(player)}</td>`;
+                        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportRespectCellHtml(player.playerWarRespect || 0, warRespectTooltip)}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerOutsideRespect || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${(parseFloat(player.respectRatio) * 100).toFixed(2)}%</td>`
+                        : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportRespectCellHtml(warReportPlayerRespectPointsTotal(player), warRespectTooltip || '')}</td>`;
                     const supportCellsR = showSupportColBreakdownR
                         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warRetals || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warAssists || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.overseasHits || 0}</td>`
                         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerSupportHitsTotal(player)}</td>`;
@@ -5304,7 +5475,7 @@ function renderRespectPayoutTable() {
                             ${showRespectManualBonusCol ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">
                                 <div style="display: inline-flex; align-items: center; gap: 6px;">
                                     <input type="checkbox" class="war-report-manual-bonus-select-cb" data-mode="respect" data-player-id="${player.id}" ${warData.respectManualBonusBulkCheckedIds.has(String(player.id)) ? 'checked' : ''} title="Tick to apply bulk bonus to this row" style="accent-color: #ffd700; width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
-                                    <input type="text" class="war-report-manual-bonus-input" data-mode="respect" data-player-id="${player.id}" value="${player.manualBonus ? player.manualBonus.toLocaleString(PAYOUT_INPUT_NUMBER_LOCALE, { maximumFractionDigits: 0 }) : ''}" placeholder="-" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
+                                    <input type="text" class="war-report-manual-bonus-input" data-mode="respect" data-player-id="${player.id}" value="${warReportFormatManualBonusInputValue(player.manualBonus)}" placeholder="-" title="Bonus or deduction (e.g. -500k)" style="width: 100px; padding: 4px 6px; text-align: right; background-color: #1a1a1a; border: 1px solid #404040; color: #fff; border-radius: 4px;">
                                 </div>
                             </td>` : ''}
                             <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${Math.round(player.totalPayout).toLocaleString()}</strong></td>
@@ -5563,7 +5734,7 @@ function renderRespectPayoutTable() {
             const pidStr = String(inp.getAttribute('data-player-id'));
             warReportManualBonusBulkUncheckRow('respect', pidStr);
             const v = parsePayoutInputInt(inp, 0);
-            if (v > 0) warData.respectManualBonusBulkSkipIds.add(pidStr);
+            if (v !== 0) warData.respectManualBonusBulkSkipIds.add(pidStr);
             else warData.respectManualBonusBulkSkipIds.delete(pidStr);
             const pid = inp.getAttribute('data-player-id');
             warReportSetManualBonusValue(warData.respectManualBonuses, pid, parsePayoutInputInt(inp, 0));
