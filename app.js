@@ -770,12 +770,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     wrap.remove();
                 }
                 const badge = a.querySelector('.newsletter-access-badge');
-                if (badge) badge.textContent = 'preview';
+                if (badge) badge.textContent = 'alpha';
             } else {
                 a.classList.add('coming-soon-locked');
                 a.setAttribute('title', tooltip);
                 const badge = a.querySelector('.newsletter-access-badge');
-                if (badge) badge.textContent = 'coming soon';
+                if (badge) badge.textContent = 'alpha';
                 if (a.classList.contains('tool-card') && !a.closest('.tool-card-coming-soon-wrap')) {
                     const wrap = document.createElement('div');
                     wrap.className = 'tool-card-coming-soon-wrap';
@@ -1594,7 +1594,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '</ul>' +
             '<h4>VIP 2</h4>' +
             '<ul>' +
-            '<li><strong>War Dashboard</strong> — full access from <strong>April 15th</strong> (currently in beta and free to try until then).</li>' +
+            '<li><strong>War Dashboard</strong> — free to try until the <strong>end of June</strong> (currently in beta); becomes <strong>VIP 2</strong> from <strong>1 July</strong>.</li>' +
             '<li><strong>Chain watch</strong> (in War Dashboard) — <strong>VIP 2+</strong> can create or edit the faction schedule and use editor-only tools (extra backup watcher columns, extend visible days, watch attendance review). Anyone in the faction can still <strong>view</strong> the grid and <strong>sign up</strong> for slots once a schedule exists.</li>' +
             '</ul>' +
             '<h4>VIP 3</h4>' +
