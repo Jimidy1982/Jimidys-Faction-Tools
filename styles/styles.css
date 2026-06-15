@@ -9052,6 +9052,328 @@ td.alliance-dash-vault-actions .alliance-dash-vault-icon-btn + .alliance-dash-va
     margin-bottom: 6px;
 }
 
+.newsletter-war-rules-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.newsletter-section-editor-block {
+    margin-bottom: 18px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #3a3a3a;
+}
+
+.newsletter-section-editor-block:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.newsletter-section-editor-title {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--accent-color, #ffd700);
+}
+
+.newsletter-section-editor-block .newsletter-war-rules-panel {
+    border-top: none;
+    padding-top: 0;
+    margin-top: 0;
+}
+
+.newsletter-section-editor-block .newsletter-textarea {
+    margin-bottom: 0;
+}
+
+.newsletter-war-rules-category {
+    margin-bottom: 14px;
+}
+
+.newsletter-war-type-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 12px 0;
+}
+
+.newsletter-war-type-option {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    cursor: pointer;
+}
+
+.newsletter-war-type-option input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+
+.newsletter-war-type-option span {
+    display: inline-block;
+    padding: 8px 14px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #2a2a2a;
+    color: #ccc;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.newsletter-war-type-option:hover span {
+    border-color: rgba(255, 215, 0, 0.45);
+    color: #eee;
+}
+
+.newsletter-war-type-option--active span,
+.newsletter-war-type-option input[type="radio"]:checked + span {
+    border-color: var(--accent-color, #ffd700);
+    background: rgba(255, 215, 0, 0.12);
+    color: var(--accent-color, #ffd700);
+}
+
+.newsletter-war-rules-panel {
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid #444;
+}
+
+.newsletter-war-rules-category-title {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--accent-color, #ffd700);
+}
+
+.newsletter-war-rules-panel .newsletter-war-rule-add-row {
+    margin-top: 10px;
+}
+
+.newsletter-war-rule-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.newsletter-war-rule-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: pointer;
+}
+
+.newsletter-war-rule-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-top: 1px;
+    line-height: 1.45;
+}
+
+.newsletter-war-rule-body--stacked {
+    padding-top: 0;
+}
+
+.newsletter-war-rule-inline {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+}
+
+.newsletter-war-rule-text {
+    display: block;
+    color: #ccc;
+}
+
+.newsletter-war-rules-panel .newsletter-war-rule-input,
+.newsletter-section-editor-block .newsletter-war-rule-input {
+    width: auto;
+    max-width: 100%;
+    flex: 0 0 auto;
+    margin-left: 0;
+    padding: 3px 8px;
+    font-size: 13px;
+    line-height: 1.3;
+}
+
+.newsletter-war-rules-panel .newsletter-war-rule-input--choice,
+.newsletter-section-editor-block .newsletter-war-rule-input--choice {
+    min-width: 4.25rem;
+    padding-right: 22px;
+}
+
+.newsletter-war-rules-panel .newsletter-war-rule-input--score,
+.newsletter-section-editor-block .newsletter-war-rule-input--score {
+    width: 5.5rem;
+    min-width: 0;
+    text-align: right;
+}
+
+.newsletter-war-rules-panel .newsletter-war-rule-input--prize,
+.newsletter-section-editor-block .newsletter-war-rule-input--prize {
+    width: 8rem;
+    min-width: 0;
+}
+
+.newsletter-competition-add-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.newsletter-competition-type-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.newsletter-competitions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.newsletter-competition-card {
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.15);
+}
+
+.newsletter-competition-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.newsletter-competition-card-title {
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--accent-color, #ffd700);
+}
+
+.newsletter-competition-places-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #ccc;
+    margin-bottom: 8px;
+}
+
+.newsletter-competition-prizes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.newsletter-competition-prize-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.newsletter-competition-prize-label {
+    flex: 0 0 2rem;
+    font-size: 13px;
+    color: #aaa;
+    text-align: right;
+}
+
+.newsletter-competition-custom-add {
+    margin-top: 12px;
+}
+
+.newsletter-competition-custom-list {
+    list-style: none;
+    margin: 12px 0 0 0;
+    padding: 0;
+}
+
+.newsletter-competition-custom-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.newsletter-competition-custom-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    color: #ccc;
+    line-height: 1.45;
+}
+
+.newsletter-war-rule-scoring-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.newsletter-war-rule-scoring-option {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    font-size: 13px;
+    color: #ccc;
+    cursor: pointer;
+}
+
+.newsletter-war-rule-scoring-option input[type="radio"] {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    margin: 2px 0 0 0;
+    flex-shrink: 0;
+    accent-color: var(--accent-color, #ffd700);
+    cursor: pointer;
+}
+
+.newsletter-war-rule-delete {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    padding: 0 8px;
+    min-width: 28px;
+    height: 28px;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background: #2a2a2a;
+    color: #ccc;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.newsletter-war-rule-delete:hover {
+    border-color: #c45c5c;
+    color: #f5a5a5;
+}
+
+.newsletter-war-rule-add-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+}
+
+.newsletter-war-rule-add-row .newsletter-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 .newsletter-hint {
     font-size: 12px;
     color: #888;

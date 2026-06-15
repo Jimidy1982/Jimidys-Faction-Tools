@@ -744,6 +744,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const MEMBER_PERFORMANCE_VIP_REQUIRED = 1;
     /** Faction Newsletter — coming soon for everyone except early-access player IDs (Jimidy). */
     const NEWSLETTER_EARLY_ACCESS_PLAYER_IDS = [2935825];
+    const NEWSLETTER_STATUS_BADGE = 'alpha · VIP 3';
     window.currentVipLevel = window.currentVipLevel ?? 0;
     /** True only after we've fetched VIP (welcome flow); avoids redirecting on refresh before key is validated. */
     window.vipLevelKnown = window.vipLevelKnown ?? false;
@@ -770,12 +771,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     wrap.remove();
                 }
                 const badge = a.querySelector('.newsletter-access-badge');
-                if (badge) badge.textContent = 'alpha';
+                if (badge) badge.textContent = NEWSLETTER_STATUS_BADGE;
             } else {
                 a.classList.add('coming-soon-locked');
                 a.setAttribute('title', tooltip);
                 const badge = a.querySelector('.newsletter-access-badge');
-                if (badge) badge.textContent = 'alpha';
+                if (badge) badge.textContent = NEWSLETTER_STATUS_BADGE;
                 if (a.classList.contains('tool-card') && !a.closest('.tool-card-coming-soon-wrap')) {
                     const wrap = document.createElement('div');
                     wrap.className = 'tool-card-coming-soon-wrap';
@@ -1600,6 +1601,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '<h4>VIP 3</h4>' +
             '<ul>' +
             '<li><strong>Recruitment</strong> — full access to the Recruitment tool.</li>' +
+            '<li><strong>Faction Newsletter</strong> — ranked-war rally mail builder (currently in <strong>alpha</strong> preview; will require <strong>VIP 3</strong> at launch).</li>' +
             '</ul>' +
             '<p>Other tools may show VIP badges as smaller options are added.</p>' +
             '<p class="vip-info-special-offer"><strong>Special offer:</strong> All Xanax sent before the end of <strong>April</strong> will be <strong>doubled</strong> in your balance.</p>' +

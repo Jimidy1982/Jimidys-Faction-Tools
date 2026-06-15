@@ -2,7 +2,7 @@
     <header class="newsletter-page-header">
         <h1>Faction Newsletter</h1>
         <p class="newsletter-page-lead">Build a ranked-war rally mail for Torn faction mail. Pick sections, edit text, preview what Torn will keep, then copy HTML into the mail editor.</p>
-        <p class="newsletter-alpha-notice">This tool is in <strong>alpha</strong> — features and Torn mail formatting may change as we polish it.</p>
+        <p class="newsletter-alpha-notice">This tool is in <strong>alpha</strong> and will require <strong>VIP 3</strong> at launch — features and Torn mail formatting may change as we polish it.</p>
     </header>
 
     <div id="newsletter-api-hint" class="newsletter-api-hint" style="display: none;">
@@ -34,7 +34,7 @@
             <div class="newsletter-block">
                 <h2 class="newsletter-block-title">Branding</h2>
                 <label class="newsletter-field-label" for="newsletter-title">Mail title</label>
-                <input type="text" id="newsletter-title" class="newsletter-input" placeholder="e.g. War vs Enemy — Saturday 20:00 TCT">
+                <input type="text" id="newsletter-title" class="newsletter-input" placeholder="War briefing">
                 <label class="newsletter-check newsletter-check--block">
                     <input type="checkbox" id="newsletter-use-faction-tag" checked>
                     <span>Show faction tag in header</span>
@@ -78,7 +78,7 @@
                 <ul id="newsletter-sections-list" class="newsletter-sections-list"></ul>
             </div>
 
-            <div id="newsletter-fields-wrap" class="newsletter-block newsletter-fields-wrap"></div>
+            <div id="newsletter-sections-editor" class="newsletter-block newsletter-sections-editor"></div>
         </aside>
 
         <section class="newsletter-panel newsletter-panel--preview" aria-label="Preview and copy">

@@ -6,6 +6,165 @@
     'use strict';
 
     const STORAGE_KEY = 'newsletter_war_draft_v1';
+    /** Persists war rule toggles + custom rules across drafts (localStorage). */
+    const WAR_RULES_STORAGE_KEY = 'newsletter_war_rules_v2';
+    const PAYOUT_RULES_STORAGE_KEY = 'newsletter_payout_rules_v3';
+    const INCENTIVE_COMPETITIONS_STORAGE_KEY = 'newsletter_incentive_competitions_v1';
+
+    /**
+     * Built-in war rules by category. inputType:
+     * - win_lose: Win / Lose select
+     * - score: numeric target score
+     * - scoring_limit: stop at score OR keep hitting till we win
+     */
+    const WAR_RULE_CATEGORIES = [
+        {
+            id: 'real_war',
+            title: 'Real War!!!',
+            rules: [
+                { id: 'real-hosp-online', text: 'Hospitalise Online Players as Priority', defaultOn: true },
+                { id: 'real-revives-off', text: 'Turn Your Revives off', defaultOn: true },
+                { id: 'real-fly-offline', text: 'Fly or Self Hospitalise before going offline', defaultOn: true },
+                { id: 'real-chain', text: 'Keep Chain alive at all costs', defaultOn: true },
+                { id: 'real-online-pushes', text: 'Be online at war start and all pushes', defaultOn: true }
+            ]
+        },
+        {
+            id: 'termed_war',
+            title: 'Termed War',
+            rules: [
+                {
+                    id: 'termed-offline-only',
+                    text: 'Only hit Offline players (Med Pacts are allowed)',
+                    defaultOn: true
+                },
+                {
+                    id: 'termed-win-lose',
+                    inputType: 'win_lose',
+                    defaultOn: true,
+                    defaultValue: 'Win'
+                },
+                {
+                    id: 'termed-loser-score',
+                    inputType: 'score',
+                    defaultOn: true
+                },
+                {
+                    id: 'termed-scoring-limit',
+                    inputType: 'scoring_limit',
+                    defaultOn: true,
+                    defaultMode: 'stop'
+                }
+            ]
+        }
+    ];
+
+    /**
+     * Flat rule pickers (payout, incentives) — same UX as war rules without categories.
+     * inputType inline_text: before + input + after; chain_prize: chain target + prize text.
+     */
+    const FLAT_SECTION_RULE_SETS = {
+        payout: {
+            storageKey: PAYOUT_RULES_STORAGE_KEY,
+            stateKey: 'payoutRules',
+            selectedCategoryStateKey: 'selectedPayoutCategory',
+            hint: 'Choose Respect-based or Hit-based payout — options for that type appear below.',
+            addPlaceholder: 'Add a custom payout rule…',
+            mailHeading: 'Payout method',
+            emptyMail: 'No payout rules selected — tick items in the Payout method panel.',
+            categories: [
+                {
+                    id: 'respect_based',
+                    title: 'Respect-based',
+                    mailLine: 'Respect-based payout',
+                    rules: [
+                        {
+                            id: 'respect-outside',
+                            text: 'Outside respect is paid',
+                            defaultOn: false
+                        },
+                        {
+                            id: 'respect-assists',
+                            text: 'Assists are paid',
+                            defaultOn: false
+                        },
+                        {
+                            id: 'respect-chain-excluded',
+                            text: 'Chain bonuses are excluded',
+                            defaultOn: true
+                        },
+                        {
+                            id: 'respect-minimum',
+                            inputType: 'min_or',
+                            before: 'Minimum ',
+                            primaryAfter: ' respect required for pay or ',
+                            after: ' assists',
+                            primaryPlaceholder: '50',
+                            secondaryPlaceholder: '10',
+                            defaultOn: true
+                        },
+                        {
+                            id: 'respect-max-cap',
+                            inputType: 'inline_text',
+                            before: 'Maximum respect cap of ',
+                            after: '',
+                            placeholder: '50000',
+                            defaultOn: true
+                        }
+                    ]
+                },
+                {
+                    id: 'hit_based',
+                    title: 'Hit-based',
+                    mailLine: 'Hit-based payout',
+                    rules: [
+                        {
+                            id: 'hit-outside',
+                            text: 'Outside hits are paid',
+                            defaultOn: false
+                        },
+                        {
+                            id: 'hit-assists',
+                            text: 'Assists are paid',
+                            defaultOn: false
+                        },
+                        {
+                            id: 'hit-retal-bonus',
+                            text: 'Retals and war hits get a bonus',
+                            defaultOn: false
+                        },
+                        {
+                            id: 'hit-minimum',
+                            inputType: 'inline_text',
+                            before: 'Minimum ',
+                            after: ' hits/assists required for pay',
+                            placeholder: '10',
+                            defaultOn: true
+                        },
+                        {
+                            id: 'hit-max',
+                            inputType: 'inline_text',
+                            before: 'Maximum ',
+                            after: ' hits',
+                            placeholder: '20',
+                            defaultOn: true
+                        }
+                    ]
+                }
+            ]
+        }
+    };
+
+    /** War competitions with place-based prizes (Competitions & incentives section). */
+    const COMPETITION_TYPES = [
+        { id: 'most_hits', label: 'Most war hits' },
+        { id: 'most_respect', label: 'Most respect' },
+        { id: 'most_assists', label: 'Most assists' },
+        { id: 'most_active', label: 'Most active' }
+    ];
+
+    const COMPETITION_MAX_PLACES = 5;
+    const COMPETITION_DEFAULT_PLACES = 3;
 
     /** Solid panel colours (only style Torn mail reliably keeps). */
     const PANEL_BG_PRESETS = [
@@ -52,12 +211,12 @@
     const WAR_SECTIONS = [
         { id: 'intro', label: 'Opening rally', defaultOn: true, fieldLabel: 'Opening message', placeholder: 'Faction mates - ranked war is coming. Read everything below and be ready.' },
         { id: 'war_overview', label: 'War overview', defaultOn: true, auto: true },
-        { id: 'enemy_stats', label: 'Enemy stats', defaultOn: true, auto: true },
-        { id: 'enemy_analysis', label: 'Enemy analysis', defaultOn: true, fieldLabel: 'Enemy analysis notes', placeholder: 'Key targets, chains to watch, respect gap, etc. Auto table of top members is included when data is loaded.' },
-        { id: 'war_rules', label: 'War rules & terms', defaultOn: true, fieldLabel: 'Rules & terms', placeholder: 'Term length, min score, outside hits, terms, etc.' },
+        { id: 'war_rules', label: 'War rules & terms', defaultOn: true, rulesPicker: true },
         { id: 'strategy', label: 'Strategy', defaultOn: true, fieldLabel: 'Strategy', placeholder: 'Chains, timing, who hits whom, hospital rules...' },
-        { id: 'payout', label: 'Payout method', defaultOn: true, fieldLabel: 'Payout method', placeholder: 'How war pay will be calculated and when it will be sent.' },
-        { id: 'incentives', label: 'Competitions & incentives', defaultOn: false, fieldLabel: 'Competitions & incentives', placeholder: 'Bonus pools, MVPs, chain rewards...' },
+        { id: 'enemy_stats', label: 'Enemy stats', defaultOn: true, auto: true },
+        { id: 'enemy_analysis', label: 'Enemy analysis', defaultOn: true, fieldLabel: 'Enemy analysis notes', placeholder: 'Key targets, chains to watch, respect gap, etc. Full enemy roster (2 columns) is included when war data is loaded.' },
+        { id: 'payout', label: 'Payout method', defaultOn: true, rulesPicker: true, flatRulesId: 'payout' },
+        { id: 'incentives', label: 'Competitions & incentives', defaultOn: false, competitionsPicker: true },
         { id: 'closing', label: 'Closing rally', defaultOn: true, fieldLabel: 'Closing message', placeholder: 'Show up strong. Questions -> faction chat or leaders.' }
     ];
 
@@ -85,8 +244,42 @@
         enemyBattleStats: {},
         sectionEnabled: {},
         sectionText: {},
+        /** { id, text, enabled, custom?, category, values? }[] — loaded from WAR_RULES_STORAGE_KEY */
+        warRules: [],
+        /** Active war type in editor + mail: real_war | termed_war */
+        selectedWarRuleCategory: 'real_war',
+        /** Flat rule pickers — payout & incentives */
+        payoutRules: [],
+        selectedPayoutCategory: 'respect_based',
+        /** { id, typeId, placeCount, prizes[] } */
+        competitions: [],
+        /** Free-text incentives appended in mail */
+        customIncentives: [],
         loading: false
     };
+
+    function normalizeWarRuleCategoryId(cat) {
+        return cat === 'termed_war' ? 'termed_war' : 'real_war';
+    }
+
+    function getActiveWarRuleCategoryId() {
+        return normalizeWarRuleCategoryId(state.selectedWarRuleCategory);
+    }
+
+    function getWarRuleCategoryDef(catId) {
+        const id = normalizeWarRuleCategoryId(catId);
+        for (let i = 0; i < WAR_RULE_CATEGORIES.length; i++) {
+            if (WAR_RULE_CATEGORIES[i].id === id) return WAR_RULE_CATEGORIES[i];
+        }
+        return WAR_RULE_CATEGORIES[0];
+    }
+
+    function setSelectedWarRuleCategory(catId) {
+        state.selectedWarRuleCategory = normalizeWarRuleCategoryId(catId);
+        saveWarRulesPrefs();
+        renderWarRulesPicker();
+        renderPreview();
+    }
 
     function getApiKey() {
         return (localStorage.getItem('tornApiKey') || '').trim();
@@ -163,11 +356,31 @@
         return n.toLocaleString('en-US');
     }
 
+    /** Numeric value for sorting FF Scouter estimates (null when missing). */
+    function parseBattleStatSortValue(bs) {
+        if (bs == null || bs === '' || bs === 'N/A') return null;
+        if (typeof bs === 'number' && !isNaN(bs)) return bs;
+        const n = parseFloat(String(bs).replace(/,/g, ''));
+        return isNaN(n) ? null : n;
+    }
+
+    function sortEnemyRoster(members) {
+        return members.slice().sort(function (a, b) {
+            const aBs = parseBattleStatSortValue(a.bs);
+            const bBs = parseBattleStatSortValue(b.bs);
+            if (aBs != null && bBs != null) {
+                if (bBs !== aBs) return bBs - aBs;
+            } else if (aBs != null) return -1;
+            else if (bBs != null) return 1;
+            return (b.level || 0) - (a.level || 0) || String(a.name || '').localeCompare(String(b.name || ''));
+        });
+    }
+
     function attachBattleStatsToSummary(summary, bsMap) {
-        if (!summary || !summary.topByLevel || !bsMap) return;
-        summary.topByLevel = summary.topByLevel.map(function (m) {
+        if (!summary || !summary.allMembers) return;
+        summary.allMembers = summary.allMembers.map(function (m) {
             const id = String(m.id);
-            const bs = bsMap[id] != null ? bsMap[id] : bsMap[m.id];
+            const bs = bsMap && (bsMap[id] != null ? bsMap[id] : bsMap[m.id]);
             return {
                 id: m.id,
                 name: m.name,
@@ -175,6 +388,7 @@
                 bs: bs != null && bs !== '' ? bs : null
             };
         });
+        summary.allMembers = sortEnemyRoster(summary.allMembers);
     }
 
     async function fetchEnemyBattleStats(apiKey, memberIds) {
@@ -366,7 +580,7 @@
                 nameHtml +
                 '</a>';
         }
-        const titleLine = document.getElementById('newsletter-title')?.value?.trim() || defaultMailTitle();
+        const titleRaw = document.getElementById('newsletter-title')?.value?.trim() || defaultMailTitle();
         const subtitle = document.getElementById('newsletter-subtitle')?.value?.trim() || '';
 
         let html = '';
@@ -378,7 +592,8 @@
             '<h1 style="margin:0;font-size:24px;text-align:center;text-transform:uppercase;font-weight:bold;letter-spacing:2px;line-height:1.3;color:' +
             getContentTextColor() +
             ';">' +
-            esc(tag + titleLine) +
+            (tag ? esc(tag) : '') +
+            buildMailTitleHtml(titleRaw, accent) +
             '</h1>';
         if (subtitle) {
             html += '<p style="' + subtitleTextStyleAttr() + '">' + esc(subtitle) + '</p>';
@@ -398,11 +613,38 @@
         return html;
     }
 
+    /** Mail title with accent-coloured "vs" when present (Torn mail keeps inline colour). */
+    function buildMailTitleHtml(titleLine, accent) {
+        const match = String(titleLine || '').match(/^(.+?)\s+vs\s+(.+)$/i);
+        if (!match) return esc(titleLine);
+        return (
+            esc(match[1].trim()) +
+            ' <span style="color:' +
+            accent +
+            ';">vs</span> ' +
+            esc(match[2].trim())
+        );
+    }
+
     function defaultMailTitle() {
+        if (!hasNewsletterEnemySelected()) return 'War briefing';
+        const ours = state.ourFactionName || 'Our faction';
         const enemy = state.enemyFactionName || 'Enemy';
-        if (state.warKind === 'upcoming') return 'Upcoming war vs ' + enemy;
-        if (state.warKind === 'ongoing') return 'Ranked war vs ' + enemy;
-        return 'War briefing - ' + enemy;
+        return ours + ' vs ' + enemy;
+    }
+
+    function hasNewsletterEnemySelected() {
+        const fromState = state.enemyFactionId != null && String(state.enemyFactionId).trim() !== '';
+        if (fromState) return true;
+        const input = document.getElementById('newsletter-enemy-id');
+        return !!(input && String(input.value || '').trim());
+    }
+
+    /** Grey placeholder hint — never write defaults into the input value. */
+    function syncMailTitlePlaceholder() {
+        const t = document.getElementById('newsletter-title');
+        if (!t) return;
+        t.placeholder = defaultMailTitle();
     }
 
     function buildWarOverviewSection() {
@@ -457,21 +699,71 @@
     }
 
     function summarizeEnemyMembers(members) {
-        const byLevel = members
-            .map(function (m) {
-                return {
-                    id: m.id,
-                    name: m.name || 'Unknown',
-                    level: m.level != null ? Number(m.level) : 0
-                };
-            })
-            .sort(function (a, b) {
-                return b.level - a.level;
-            });
+        const roster = members.map(function (m) {
+            return {
+                id: m.id,
+                name: m.name || 'Unknown',
+                level: m.level != null ? Number(m.level) : 0,
+                bs: null
+            };
+        });
         return {
             count: members.length,
-            topByLevel: byLevel.slice(0, 8)
+            allMembers: sortEnemyRoster(roster)
         };
+    }
+
+    function buildEnemyMemberTableHtml(members, hasEstStats) {
+        if (!members || !members.length) return '';
+        let html =
+            '<table border="0" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px;"><thead><tr>' +
+            '<th style="' +
+            tableHeaderCellStyle('left') +
+            '">Name</th>' +
+            '<th style="' +
+            tableHeaderCellStyle('right') +
+            '">Lvl</th>';
+        if (hasEstStats) {
+            html += '<th style="' + tableHeaderCellStyle('right') + '">Est.</th>';
+        }
+        html += '</tr></thead><tbody>';
+        members.forEach(function (m) {
+            html +=
+                '<tr><td style="' +
+                tableBodyCellStyle('left') +
+                '"><a href="https://www.torn.com/profiles.php?XID=' +
+                encodeURIComponent(String(m.id)) +
+                '">' +
+                esc(m.name) +
+                '</a></td><td style="' +
+                tableBodyCellStyle('right') +
+                '">' +
+                esc(String(m.level)) +
+                '</td>';
+            if (hasEstStats) {
+                html +=
+                    '<td style="' +
+                    tableBodyCellStyle('right') +
+                    '">' +
+                    esc(formatEstimatedBattleStat(m.bs)) +
+                    '</td>';
+            }
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        return html;
+    }
+
+    function enemyRosterColumnCellStyle(side, showSeparator) {
+        const base = 'width:50%;vertical-align:top;';
+        if (side === 'left') {
+            return base + 'padding-right:12px;';
+        }
+        let style = base + 'padding-left:12px;';
+        if (showSeparator) {
+            style += 'border-left:2px solid ' + getAccentHex() + ';';
+        }
+        return style;
     }
 
     function buildEnemyStatsSection() {
@@ -513,50 +805,1678 @@
         if (notes.trim()) html += textToParagraphsHtml(notes);
 
         const sum = state.enemySummary;
-        if (sum && sum.topByLevel.length) {
-            const hasEstStats = sum.topByLevel.some(function (m) {
+        if (sum && sum.allMembers && sum.allMembers.length) {
+            const members = sum.allMembers;
+            const hasEstStats = members.some(function (m) {
                 return m.bs != null && m.bs !== '';
             });
             html +=
                 '<p style="' +
                 bodyPStyle('font-size:12px;') +
-                '">Top members by level' +
-                (hasEstStats ? ' (est. stats from FF Scouter, same as Faction Battle Stats)' : '') +
+                '">All enemy members by ' +
+                (hasEstStats ? 'est. battle stats' : 'level (est. stats unavailable)') +
+                ' (' +
+                esc(String(members.length)) +
+                ')' +
+                (hasEstStats ? ' — FF Scouter, same as Faction Battle Stats' : '') +
                 ':</p>';
+            const mid = Math.ceil(members.length / 2);
+            const leftCol = members.slice(0, mid);
+            const rightCol = members.slice(mid);
+            const showColumnSeparator = rightCol.length > 0;
             html +=
-                '<table border="0" cellpadding="4" cellspacing="0" style="border-collapse:collapse;margin-top:6px;font-size:12px;"><thead><tr>' +
-                '<th style="' +
-                tableHeaderCellStyle('left') +
-                '">Name</th>' +
-                '<th style="' +
-                tableHeaderCellStyle('right') +
-                '">Lvl</th>' +
-                '<th style="' +
-                tableHeaderCellStyle('right') +
-                '">Est. stats</th></tr></thead><tbody>';
-            sum.topByLevel.forEach(function (m) {
-                html +=
-                    '<tr><td style="' +
-                    tableBodyCellStyle('left') +
-                    '"><a href="https://www.torn.com/profiles.php?XID=' +
-                    encodeURIComponent(String(m.id)) +
-                    '">' +
-                    esc(m.name) +
-                    '</a></td><td style="' +
-                    tableBodyCellStyle('right') +
-                    '">' +
-                    esc(String(m.level)) +
-                    '</td><td style="' +
-                    tableBodyCellStyle('right') +
-                    '">' +
-                    esc(formatEstimatedBattleStat(m.bs)) +
-                    '</td></tr>';
-            });
-            html += '</tbody></table>';
+                '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin-top:6px;"><tr>' +
+                '<td style="' +
+                enemyRosterColumnCellStyle('left', showColumnSeparator) +
+                '">' +
+                buildEnemyMemberTableHtml(leftCol, hasEstStats) +
+                '</td>' +
+                '<td style="' +
+                enemyRosterColumnCellStyle('right', showColumnSeparator) +
+                '">' +
+                buildEnemyMemberTableHtml(rightCol, hasEstStats) +
+                '</td></tr></table>';
         } else if (!notes.trim()) {
             html += '<p style="' + bodyPStyle() + '">Add notes above or load war data for a member snapshot.</p>';
         }
         return html;
+    }
+
+    function getWarRuleTemplate(ruleId) {
+        for (let c = 0; c < WAR_RULE_CATEGORIES.length; c++) {
+            const cat = WAR_RULE_CATEGORIES[c];
+            for (let r = 0; r < cat.rules.length; r++) {
+                if (cat.rules[r].id === ruleId) {
+                    return { category: cat, template: cat.rules[r] };
+                }
+            }
+        }
+        return null;
+    }
+
+    function defaultValuesForTemplate(tmpl) {
+        const values = {};
+        if (!tmpl || !tmpl.inputType) return values;
+        if (tmpl.inputType === 'win_lose') values.choice = tmpl.defaultValue || 'Win';
+        if (tmpl.inputType === 'score') values.score = tmpl.defaultScore || '';
+        if (tmpl.inputType === 'scoring_limit') {
+            values.mode = tmpl.defaultMode || 'stop';
+            values.stopScore = tmpl.defaultStopScore || '';
+        }
+        return values;
+    }
+
+    function ruleFromTemplate(catId, tmpl) {
+        return {
+            id: tmpl.id,
+            category: catId,
+            enabled: tmpl.defaultOn !== false,
+            custom: false,
+            values: defaultValuesForTemplate(tmpl)
+        };
+    }
+
+    function buildDefaultWarRulesList() {
+        const list = [];
+        WAR_RULE_CATEGORIES.forEach(function (cat) {
+            cat.rules.forEach(function (tmpl) {
+                list.push(ruleFromTemplate(cat.id, tmpl));
+            });
+        });
+        return list;
+    }
+
+    function mergeRuleValues(tmpl, savedValues) {
+        const values = defaultValuesForTemplate(tmpl);
+        if (!savedValues || typeof savedValues !== 'object') return values;
+        if (tmpl.inputType === 'win_lose' && savedValues.choice) {
+            values.choice = savedValues.choice === 'Lose' ? 'Lose' : 'Win';
+        }
+        if (tmpl.inputType === 'score' && savedValues.score != null) {
+            values.score = String(savedValues.score);
+        }
+        if (tmpl.inputType === 'scoring_limit') {
+            values.mode = savedValues.mode === 'fight_on' ? 'fight_on' : 'stop';
+            if (savedValues.stopScore != null) values.stopScore = String(savedValues.stopScore);
+        }
+        return values;
+    }
+
+    function mergeSavedWarRules(savedRules) {
+        const defaults = buildDefaultWarRulesList();
+        if (!savedRules || !savedRules.length) return defaults;
+        const savedById = {};
+        savedRules.forEach(function (r) {
+            if (r && r.id) savedById[r.id] = r;
+        });
+        const merged = defaults.map(function (d) {
+            const s = savedById[d.id];
+            const found = getWarRuleTemplate(d.id);
+            const tmpl = found ? found.template : null;
+            return {
+                id: d.id,
+                category: d.category,
+                enabled: s != null ? !!s.enabled : d.enabled,
+                custom: false,
+                values: tmpl ? mergeRuleValues(tmpl, s && s.values) : {}
+            };
+        });
+        savedRules.forEach(function (r) {
+            if (!r || !r.id || !r.custom) return;
+            if (merged.some(function (m) { return m.id === r.id; })) return;
+            const text = String(r.text || '').trim();
+            if (!text) return;
+            merged.push({
+                id: r.id,
+                category: normalizeWarRuleCategoryId(r.category),
+                text: text,
+                enabled: r.enabled !== false,
+                custom: true,
+                values: r.values && typeof r.values === 'object' ? r.values : {}
+            });
+        });
+        return merged;
+    }
+
+    function loadWarRulesPrefs() {
+        try {
+            const raw = localStorage.getItem(WAR_RULES_STORAGE_KEY);
+            if (!raw) {
+                state.warRules = buildDefaultWarRulesList();
+                state.selectedWarRuleCategory = 'real_war';
+                saveWarRulesPrefs();
+                return;
+            }
+            const parsed = JSON.parse(raw);
+            state.warRules = mergeSavedWarRules(parsed.rules);
+            state.selectedWarRuleCategory = normalizeWarRuleCategoryId(parsed.selectedCategory);
+        } catch (e) {
+            state.warRules = buildDefaultWarRulesList();
+        }
+    }
+
+    function saveWarRulesPrefs() {
+        try {
+            localStorage.setItem(
+                WAR_RULES_STORAGE_KEY,
+                JSON.stringify({
+                    selectedCategory: getActiveWarRuleCategoryId(),
+                    rules: state.warRules.map(function (r) {
+                        const out = {
+                            id: r.id,
+                            category: r.category,
+                            enabled: !!r.enabled,
+                            custom: !!r.custom
+                        };
+                        if (r.custom) out.text = r.text;
+                        if (r.values && Object.keys(r.values).length) out.values = r.values;
+                        return out;
+                    })
+                })
+            );
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
+    function formatWarRuleScore(raw) {
+        const s = String(raw == null ? '' : raw).replace(/,/g, '').trim();
+        if (!s) return '';
+        const n = parseInt(s, 10);
+        if (!Number.isFinite(n) || n < 0) return s;
+        return n.toLocaleString('en-US');
+    }
+
+    function resolveWarRuleDisplayText(rule) {
+        if (rule.custom) return String(rule.text || '').trim();
+        const found = getWarRuleTemplate(rule.id);
+        const tmpl = found ? found.template : null;
+        if (!tmpl) return '';
+        const values = rule.values || {};
+        if (tmpl.inputType === 'win_lose') {
+            const choice = values.choice === 'Lose' ? 'Lose' : 'Win';
+            return 'We will take the ' + choice;
+        }
+        if (tmpl.inputType === 'score') {
+            const score = formatWarRuleScore(values.score);
+            return score ? 'Loser will score ' + score : 'Loser will score (set target score)';
+        }
+        if (tmpl.inputType === 'scoring_limit') {
+            if (values.mode === 'fight_on') return 'We will keep hitting till we win';
+            const stop = formatWarRuleScore(values.stopScore);
+            return stop ? 'We will stop scoring at ' + stop : 'We will stop scoring at (set target score)';
+        }
+        return tmpl.text || '';
+    }
+
+    function getEnabledWarRulesGrouped() {
+        const catId = getActiveWarRuleCategoryId();
+        const cat = getWarRuleCategoryDef(catId);
+        const builtIn = state.warRules.filter(function (r) {
+            return !r.custom && r.category === catId && r.enabled;
+        });
+        const custom = state.warRules.filter(function (r) {
+            return r.custom && r.category === catId && r.enabled && String(r.text || '').trim();
+        });
+        const rules = builtIn.concat(custom);
+        if (!rules.length) return [];
+        return [{ title: cat.title, rules: rules }];
+    }
+
+    function setWarRuleEnabled(ruleId, enabled) {
+        const rule = state.warRules.find(function (r) {
+            return r.id === ruleId;
+        });
+        if (!rule) return;
+        rule.enabled = !!enabled;
+        saveWarRulesPrefs();
+        renderWarRulesPicker();
+        renderPreview();
+    }
+
+    function setWarRuleValue(ruleId, key, value) {
+        const rule = state.warRules.find(function (r) {
+            return r.id === ruleId;
+        });
+        if (!rule) return;
+        if (!rule.values) rule.values = {};
+        rule.values[key] = value;
+        saveWarRulesPrefs();
+        renderPreview();
+    }
+
+    function addCustomWarRule(text) {
+        const trimmed = String(text || '').trim();
+        if (!trimmed) return false;
+        state.warRules.push({
+            id: 'custom-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+            category: getActiveWarRuleCategoryId(),
+            text: trimmed,
+            enabled: true,
+            custom: true,
+            values: {}
+        });
+        saveWarRulesPrefs();
+        renderWarRulesPicker();
+        renderPreview();
+        return true;
+    }
+
+    function removeCustomWarRule(ruleId) {
+        const idx = state.warRules.findIndex(function (r) {
+            return r.id === ruleId && r.custom;
+        });
+        if (idx < 0) return;
+        state.warRules.splice(idx, 1);
+        saveWarRulesPrefs();
+        renderWarRulesPicker();
+        renderPreview();
+    }
+
+    function getFlatSectionRuleSet(sectionId) {
+        return FLAT_SECTION_RULE_SETS[sectionId] || null;
+    }
+
+    function getFlatSectionCategories(def) {
+        return def && def.categories && def.categories.length ? def.categories : null;
+    }
+
+    function normalizeFlatSectionCategoryId(sectionId, cat) {
+        if (sectionId === 'payout') return cat === 'hit_based' ? 'hit_based' : 'respect_based';
+        return cat;
+    }
+
+    function getActiveFlatSectionCategoryId(sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def || !def.selectedCategoryStateKey) return null;
+        return normalizeFlatSectionCategoryId(sectionId, state[def.selectedCategoryStateKey]);
+    }
+
+    function getFlatSectionCategoryDef(sectionId, catId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        const categories = getFlatSectionCategories(def);
+        if (!categories) return null;
+        const id = normalizeFlatSectionCategoryId(sectionId, catId);
+        for (let i = 0; i < categories.length; i++) {
+            if (categories[i].id === id) return categories[i];
+        }
+        return categories[0];
+    }
+
+    function setSelectedFlatSectionCategory(sectionId, catId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def || !def.selectedCategoryStateKey) return;
+        state[def.selectedCategoryStateKey] = normalizeFlatSectionCategoryId(sectionId, catId);
+        saveFlatSectionRulesPrefs(sectionId);
+        renderFlatSectionRulesPicker(sectionId);
+        renderPreview();
+    }
+
+    function getFlatSectionRulesArray(sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return [];
+        return state[def.stateKey] || [];
+    }
+
+    function defaultValuesForFlatTemplate(tmpl) {
+        const values = {};
+        if (!tmpl || !tmpl.inputType) return values;
+        if (tmpl.inputType === 'inline_text') {
+            values.text = tmpl.defaultValue != null ? String(tmpl.defaultValue) : '';
+        }
+        if (tmpl.inputType === 'chain_prize') {
+            values.chain = tmpl.defaultChain != null ? String(tmpl.defaultChain) : '';
+            values.prize = tmpl.defaultPrize != null ? String(tmpl.defaultPrize) : '';
+        }
+        if (tmpl.inputType === 'min_or') {
+            values.primary = tmpl.defaultPrimary != null ? String(tmpl.defaultPrimary) : '';
+            values.secondary = tmpl.defaultSecondary != null ? String(tmpl.defaultSecondary) : '';
+        }
+        return values;
+    }
+
+    function flatRuleFromTemplate(sectionId, tmpl, catId) {
+        const row = {
+            id: tmpl.id,
+            sectionId: sectionId,
+            enabled: tmpl.defaultOn !== false,
+            custom: false,
+            values: defaultValuesForFlatTemplate(tmpl)
+        };
+        if (catId) row.category = catId;
+        return row;
+    }
+
+    function buildDefaultFlatSectionRules(sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return [];
+        const categories = getFlatSectionCategories(def);
+        if (categories) {
+            const list = [];
+            categories.forEach(function (cat) {
+                cat.rules.forEach(function (tmpl) {
+                    list.push(flatRuleFromTemplate(sectionId, tmpl, cat.id));
+                });
+            });
+            return list;
+        }
+        return def.rules.map(function (tmpl) {
+            return flatRuleFromTemplate(sectionId, tmpl);
+        });
+    }
+
+    function getFlatRuleTemplate(sectionId, ruleId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return null;
+        const categories = getFlatSectionCategories(def);
+        if (categories) {
+            for (let c = 0; c < categories.length; c++) {
+                const cat = categories[c];
+                for (let r = 0; r < cat.rules.length; r++) {
+                    if (cat.rules[r].id === ruleId) return cat.rules[r];
+                }
+            }
+            return null;
+        }
+        for (let i = 0; i < def.rules.length; i++) {
+            if (def.rules[i].id === ruleId) return def.rules[i];
+        }
+        return null;
+    }
+
+    function mergeFlatRuleValues(tmpl, savedValues) {
+        const values = defaultValuesForFlatTemplate(tmpl);
+        if (!savedValues || typeof savedValues !== 'object') return values;
+        if (tmpl.inputType === 'inline_text' && savedValues.text != null) {
+            values.text = String(savedValues.text);
+        }
+        if (tmpl.inputType === 'chain_prize') {
+            if (savedValues.chain != null) values.chain = String(savedValues.chain);
+            if (savedValues.prize != null) values.prize = String(savedValues.prize);
+        }
+        if (tmpl.inputType === 'min_or') {
+            if (savedValues.primary != null) values.primary = String(savedValues.primary);
+            if (savedValues.secondary != null) values.secondary = String(savedValues.secondary);
+        }
+        return values;
+    }
+
+    function mergeSavedFlatSectionRules(sectionId, savedRules) {
+        const defaults = buildDefaultFlatSectionRules(sectionId);
+        if (!savedRules || !savedRules.length) return defaults;
+        const savedById = {};
+        savedRules.forEach(function (r) {
+            if (r && r.id) savedById[r.id] = r;
+        });
+        const merged = defaults.map(function (d) {
+            const s = savedById[d.id];
+            const tmpl = getFlatRuleTemplate(sectionId, d.id);
+            const row = {
+                id: d.id,
+                sectionId: sectionId,
+                enabled: s != null ? !!s.enabled : d.enabled,
+                custom: false,
+                values: tmpl ? mergeFlatRuleValues(tmpl, s && s.values) : {}
+            };
+            if (d.category) row.category = d.category;
+            return row;
+        });
+        savedRules.forEach(function (r) {
+            if (!r || !r.id || !r.custom) return;
+            if (merged.some(function (m) { return m.id === r.id; })) return;
+            const text = String(r.text || '').trim();
+            if (!text) return;
+            merged.push({
+                id: r.id,
+                sectionId: sectionId,
+                category: r.category
+                    ? normalizeFlatSectionCategoryId(sectionId, r.category)
+                    : getActiveFlatSectionCategoryId(sectionId) || undefined,
+                text: text,
+                enabled: r.enabled !== false,
+                custom: true,
+                values: r.values && typeof r.values === 'object' ? r.values : {}
+            });
+        });
+        return merged;
+    }
+
+    function loadFlatSectionRulesPrefs(sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return;
+        try {
+            const raw = localStorage.getItem(def.storageKey);
+            if (!raw) {
+                state[def.stateKey] = buildDefaultFlatSectionRules(sectionId);
+                if (def.selectedCategoryStateKey) {
+                    state[def.selectedCategoryStateKey] = normalizeFlatSectionCategoryId(sectionId, 'respect_based');
+                }
+                saveFlatSectionRulesPrefs(sectionId);
+                return;
+            }
+            const parsed = JSON.parse(raw);
+            state[def.stateKey] = mergeSavedFlatSectionRules(sectionId, parsed.rules);
+            if (def.selectedCategoryStateKey) {
+                state[def.selectedCategoryStateKey] = normalizeFlatSectionCategoryId(
+                    sectionId,
+                    parsed.selectedCategory
+                );
+            }
+        } catch (e) {
+            state[def.stateKey] = buildDefaultFlatSectionRules(sectionId);
+        }
+    }
+
+    function saveFlatSectionRulesPrefs(sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return;
+        const rules = getFlatSectionRulesArray(sectionId);
+        const payload = {
+            rules: rules.map(function (r) {
+                const out = {
+                    id: r.id,
+                    enabled: !!r.enabled,
+                    custom: !!r.custom
+                };
+                if (r.category) out.category = r.category;
+                if (r.custom) out.text = r.text;
+                if (r.values && Object.keys(r.values).length) out.values = r.values;
+                return out;
+            })
+        };
+        if (def.selectedCategoryStateKey) {
+            payload.selectedCategory = getActiveFlatSectionCategoryId(sectionId);
+        }
+        try {
+            localStorage.setItem(def.storageKey, JSON.stringify(payload));
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
+    function loadAllFlatSectionRulesPrefs() {
+        Object.keys(FLAT_SECTION_RULE_SETS).forEach(loadFlatSectionRulesPrefs);
+    }
+
+    function resolveFlatRuleDisplayText(sectionId, rule) {
+        if (rule.custom) return String(rule.text || '').trim();
+        const tmpl = getFlatRuleTemplate(sectionId, rule.id);
+        if (!tmpl) return '';
+        const values = rule.values || {};
+        if (tmpl.inputType === 'inline_text') {
+            const val = String(values.text != null ? values.text : '').trim();
+            const before = tmpl.before || '';
+            const after = tmpl.after || '';
+            if (!val && tmpl.defaultOn !== false) {
+                return before + (tmpl.placeholder || '…') + after;
+            }
+            return before + val + after;
+        }
+        if (tmpl.inputType === 'chain_prize') {
+            const chain = String(values.chain != null ? values.chain : '').trim();
+            const prize = String(values.prize != null ? values.prize : '').trim();
+            if (!chain && !prize) return 'Chain bonus (set chain target and prize)';
+            return (
+                'Chain bonus at ' +
+                (chain || '…') +
+                ' chain' +
+                (prize ? ' — ' + prize : '')
+            );
+        }
+        if (tmpl.inputType === 'min_or') {
+            const primary = String(values.primary != null ? values.primary : '').trim();
+            const secondary = String(values.secondary != null ? values.secondary : '').trim();
+            const primaryDisp = primary || tmpl.primaryPlaceholder || '…';
+            const secondaryDisp = secondary || tmpl.secondaryPlaceholder || '…';
+            return (
+                (tmpl.before || '') +
+                primaryDisp +
+                (tmpl.primaryAfter || '') +
+                secondaryDisp +
+                (tmpl.after || '')
+            );
+        }
+        return tmpl.text || '';
+    }
+
+    function getEnabledFlatSectionRules(sectionId) {
+        const activeCatId = getActiveFlatSectionCategoryId(sectionId);
+        return getFlatSectionRulesArray(sectionId).filter(function (r) {
+            if (!r.enabled) return false;
+            if (activeCatId && r.category && normalizeFlatSectionCategoryId(sectionId, r.category) !== activeCatId) {
+                return false;
+            }
+            if (r.custom) return String(r.text || '').trim().length > 0;
+            return true;
+        });
+    }
+
+    function setFlatSectionRuleEnabled(sectionId, ruleId, enabled) {
+        const rules = getFlatSectionRulesArray(sectionId);
+        const rule = rules.find(function (r) {
+            return r.id === ruleId;
+        });
+        if (!rule) return;
+        rule.enabled = !!enabled;
+        saveFlatSectionRulesPrefs(sectionId);
+        renderFlatSectionRulesPicker(sectionId);
+        renderPreview();
+    }
+
+    function setFlatSectionRuleValue(sectionId, ruleId, key, value) {
+        const rules = getFlatSectionRulesArray(sectionId);
+        const rule = rules.find(function (r) {
+            return r.id === ruleId;
+        });
+        if (!rule) return;
+        if (!rule.values) rule.values = {};
+        rule.values[key] = value;
+        saveFlatSectionRulesPrefs(sectionId);
+        renderPreview();
+    }
+
+    function addCustomFlatSectionRule(sectionId, text) {
+        const trimmed = String(text || '').trim();
+        if (!trimmed) return false;
+        const rules = getFlatSectionRulesArray(sectionId);
+        const row = {
+            id: 'custom-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+            sectionId: sectionId,
+            text: trimmed,
+            enabled: true,
+            custom: true,
+            values: {}
+        };
+        const activeCatId = getActiveFlatSectionCategoryId(sectionId);
+        if (activeCatId) row.category = activeCatId;
+        rules.push(row);
+        saveFlatSectionRulesPrefs(sectionId);
+        renderFlatSectionRulesPicker(sectionId);
+        renderPreview();
+        return true;
+    }
+
+    function removeCustomFlatSectionRule(sectionId, ruleId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return;
+        const rules = state[def.stateKey];
+        const idx = rules.findIndex(function (r) {
+            return r.id === ruleId && r.custom;
+        });
+        if (idx < 0) return;
+        rules.splice(idx, 1);
+        saveFlatSectionRulesPrefs(sectionId);
+        renderFlatSectionRulesPicker(sectionId);
+        renderPreview();
+    }
+
+    function migrateLegacySectionTextToFlatRules(sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return;
+        const text = String(state.sectionText[sectionId] || '').trim();
+        if (!text) return;
+        const rules = getFlatSectionRulesArray(sectionId);
+        const hasLegacy = rules.some(function (r) {
+            return r.custom && String(r.id).indexOf('legacy-' + sectionId) === 0;
+        });
+        if (hasLegacy) return;
+        rules.push({
+            id: 'legacy-' + sectionId + '-' + Date.now().toString(36),
+            sectionId: sectionId,
+            text: text,
+            enabled: true,
+            custom: true,
+            values: {}
+        });
+        state.sectionText[sectionId] = '';
+        saveFlatSectionRulesPrefs(sectionId);
+        saveDraft();
+    }
+
+    function appendFlatRuleInputControls(sectionId, rule, label, tmpl) {
+        const values = rule.values || {};
+        const disabled = !rule.enabled;
+        const body = document.createElement('div');
+        body.className = 'newsletter-war-rule-body';
+        label.appendChild(body);
+
+        if (tmpl && tmpl.inputType === 'inline_text') {
+            const line = document.createElement('span');
+            line.className = 'newsletter-war-rule-inline';
+            if (tmpl.before) line.appendChild(document.createTextNode(tmpl.before));
+            const inp = document.createElement('input');
+            inp.type = 'text';
+            inp.className = 'newsletter-input newsletter-war-rule-input newsletter-war-rule-input--score';
+            inp.dataset.flatRuleInput = '1';
+            inp.dataset.flatRuleSection = sectionId;
+            inp.dataset.flatRuleId = rule.id;
+            inp.dataset.valueKey = 'text';
+            inp.placeholder = tmpl.placeholder || '';
+            inp.value = values.text != null ? String(values.text) : '';
+            inp.disabled = disabled;
+            line.appendChild(inp);
+            if (tmpl.after) line.appendChild(document.createTextNode(tmpl.after));
+            body.appendChild(line);
+            return;
+        }
+
+        if (tmpl && tmpl.inputType === 'chain_prize') {
+            const line = document.createElement('span');
+            line.className = 'newsletter-war-rule-inline';
+            line.appendChild(document.createTextNode('Chain bonus at '));
+            const chainInp = document.createElement('input');
+            chainInp.type = 'text';
+            chainInp.inputMode = 'numeric';
+            chainInp.className = 'newsletter-input newsletter-war-rule-input newsletter-war-rule-input--score';
+            chainInp.dataset.flatRuleInput = '1';
+            chainInp.dataset.flatRuleSection = sectionId;
+            chainInp.dataset.flatRuleId = rule.id;
+            chainInp.dataset.valueKey = 'chain';
+            chainInp.placeholder = '100';
+            chainInp.value = values.chain != null ? String(values.chain) : '';
+            chainInp.disabled = disabled;
+            line.appendChild(chainInp);
+            line.appendChild(document.createTextNode(' chain — '));
+            const prizeInp = document.createElement('input');
+            prizeInp.type = 'text';
+            prizeInp.className = 'newsletter-input newsletter-war-rule-input';
+            prizeInp.dataset.flatRuleInput = '1';
+            prizeInp.dataset.flatRuleSection = sectionId;
+            prizeInp.dataset.flatRuleId = rule.id;
+            prizeInp.dataset.valueKey = 'prize';
+            prizeInp.placeholder = '25m';
+            prizeInp.value = values.prize != null ? String(values.prize) : '';
+            prizeInp.disabled = disabled;
+            line.appendChild(prizeInp);
+            body.appendChild(line);
+            return;
+        }
+
+        if (tmpl && tmpl.inputType === 'min_or') {
+            const line = document.createElement('span');
+            line.className = 'newsletter-war-rule-inline';
+            if (tmpl.before) line.appendChild(document.createTextNode(tmpl.before));
+            const primaryInp = document.createElement('input');
+            primaryInp.type = 'text';
+            primaryInp.inputMode = 'numeric';
+            primaryInp.className = 'newsletter-input newsletter-war-rule-input newsletter-war-rule-input--score';
+            primaryInp.dataset.flatRuleInput = '1';
+            primaryInp.dataset.flatRuleSection = sectionId;
+            primaryInp.dataset.flatRuleId = rule.id;
+            primaryInp.dataset.valueKey = 'primary';
+            primaryInp.placeholder = tmpl.primaryPlaceholder || '';
+            primaryInp.value = values.primary != null ? String(values.primary) : '';
+            primaryInp.disabled = disabled;
+            line.appendChild(primaryInp);
+            if (tmpl.primaryAfter) line.appendChild(document.createTextNode(tmpl.primaryAfter));
+            const secondaryInp = document.createElement('input');
+            secondaryInp.type = 'text';
+            secondaryInp.inputMode = 'numeric';
+            secondaryInp.className = 'newsletter-input newsletter-war-rule-input newsletter-war-rule-input--score';
+            secondaryInp.dataset.flatRuleInput = '1';
+            secondaryInp.dataset.flatRuleSection = sectionId;
+            secondaryInp.dataset.flatRuleId = rule.id;
+            secondaryInp.dataset.valueKey = 'secondary';
+            secondaryInp.placeholder = tmpl.secondaryPlaceholder || '';
+            secondaryInp.value = values.secondary != null ? String(values.secondary) : '';
+            secondaryInp.disabled = disabled;
+            line.appendChild(secondaryInp);
+            if (tmpl.after) line.appendChild(document.createTextNode(tmpl.after));
+            body.appendChild(line);
+            return;
+        }
+
+        const span = document.createElement('span');
+        span.className = 'newsletter-war-rule-text';
+        span.textContent = rule.custom ? rule.text : tmpl && tmpl.text ? tmpl.text : '';
+        body.appendChild(span);
+    }
+
+    function renderFlatSectionRulesPickerInto(parent, sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!parent || !def) return;
+
+        const categories = getFlatSectionCategories(def);
+        const activeCat = categories ? getFlatSectionCategoryDef(sectionId, getActiveFlatSectionCategoryId(sectionId)) : null;
+
+        let html =
+            '<p class="newsletter-hint">' +
+            esc(def.hint) +
+            '</p>';
+
+        if (categories && activeCat) {
+            html +=
+                '<div class="newsletter-war-type-picker" role="radiogroup" aria-label="Payout type">' +
+                categories
+                    .map(function (cat) {
+                        const on = cat.id === activeCat.id;
+                        return (
+                            '<label class="newsletter-war-type-option' +
+                            (on ? ' newsletter-war-type-option--active' : '') +
+                            '">' +
+                            '<input type="radio" name="newsletter-flat-type-' +
+                            esc(sectionId) +
+                            '" value="' +
+                            esc(cat.id) +
+                            '" data-flat-rule-category-select="1" data-flat-rule-section="' +
+                            esc(sectionId) +
+                            '"' +
+                            (on ? ' checked' : '') +
+                            '>' +
+                            '<span>' +
+                            esc(cat.title) +
+                            '</span></label>'
+                        );
+                    })
+                    .join('') +
+                '</div>';
+        }
+
+        html +=
+            '<div class="newsletter-war-rules-panel">' +
+            '<ul class="newsletter-war-rules-list"></ul>' +
+            '<div class="newsletter-war-rule-add-row">' +
+            '<input type="text" id="newsletter-flat-rule-new-' +
+            esc(sectionId) +
+            '" class="newsletter-input" placeholder="' +
+            esc(
+                activeCat
+                    ? 'Add a custom ' + activeCat.title.toLowerCase() + ' rule…'
+                    : def.addPlaceholder
+            ) +
+            '" maxlength="280">' +
+            '<button type="button" class="btn btn-secondary" data-flat-rule-add="' +
+            esc(sectionId) +
+            '">Add rule</button>' +
+            '</div></div>';
+
+        parent.innerHTML = html;
+
+        const list = parent.querySelector('.newsletter-war-rules-list');
+        if (!list) return;
+
+        const ruleTemplates = activeCat ? activeCat.rules : def.rules || [];
+
+        ruleTemplates.forEach(function (tmpl) {
+            const rule = getFlatSectionRulesArray(sectionId).find(function (r) {
+                return r.id === tmpl.id;
+            });
+            if (!rule) return;
+
+            const li = document.createElement('li');
+            li.className = 'newsletter-war-rule-row';
+
+            const label = document.createElement('label');
+            label.className = 'newsletter-check newsletter-war-rule-check';
+
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!rule.enabled;
+            cb.dataset.flatRuleSection = sectionId;
+            cb.dataset.flatRuleId = rule.id;
+            label.appendChild(cb);
+
+            appendFlatRuleInputControls(sectionId, rule, label, tmpl);
+            li.appendChild(label);
+            list.appendChild(li);
+        });
+
+        getFlatSectionRulesArray(sectionId)
+            .filter(function (r) {
+                if (!r.custom) return false;
+                if (!activeCat) return true;
+                return normalizeFlatSectionCategoryId(sectionId, r.category) === activeCat.id;
+            })
+            .forEach(function (rule) {
+                const li = document.createElement('li');
+                li.className = 'newsletter-war-rule-row';
+
+                const label = document.createElement('label');
+                label.className = 'newsletter-check newsletter-war-rule-check';
+
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = !!rule.enabled;
+                cb.dataset.flatRuleSection = sectionId;
+                cb.dataset.flatRuleId = rule.id;
+                label.appendChild(cb);
+
+                appendFlatRuleInputControls(sectionId, rule, label, null);
+                li.appendChild(label);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'newsletter-war-rule-delete';
+                delBtn.dataset.deleteFlatRuleSection = sectionId;
+                delBtn.dataset.deleteFlatRuleId = rule.id;
+                delBtn.setAttribute('aria-label', 'Remove custom rule');
+                delBtn.title = 'Remove rule';
+                delBtn.textContent = '×';
+                li.appendChild(delBtn);
+
+                list.appendChild(li);
+            });
+    }
+
+    function renderFlatSectionRulesPicker(sectionId) {
+        const block = document.querySelector('[data-section-editor="' + sectionId + '"]');
+        if (!block) {
+            renderNewsletterSectionEditors();
+            return;
+        }
+        renderFlatSectionRulesPickerInto(block, sectionId);
+    }
+
+    function buildFlatSectionRulesSection(sectionId) {
+        const def = getFlatSectionRuleSet(sectionId);
+        if (!def) return '';
+        const enabled = getEnabledFlatSectionRules(sectionId);
+        const activeCat = getFlatSectionCategories(def)
+            ? getFlatSectionCategoryDef(sectionId, getActiveFlatSectionCategoryId(sectionId))
+            : null;
+        let html = sectionHeading(def.mailHeading);
+        if (!enabled.length) {
+            html +=
+                '<p style="' +
+                bodyPStyle('font-style:italic;') +
+                '">' +
+                esc(def.emptyMail) +
+                '</p>';
+            return html;
+        }
+        if (activeCat && activeCat.mailLine) {
+            html +=
+                '<p style="' +
+                bodyTextStyle('font-weight:bold;margin:14px 0 6px 0;font-size:14px;') +
+                '">' +
+                esc(activeCat.mailLine) +
+                '</p>';
+        }
+        html += '<ul style="' + newsletterBulletListOpenStyle() + '">';
+        enabled.forEach(function (rule) {
+            html += newsletterBulletItemHtml(resolveFlatRuleDisplayText(sectionId, rule));
+        });
+        html += '</ul>';
+        return html;
+    }
+
+    function getCompetitionTypeDef(typeId) {
+        for (let i = 0; i < COMPETITION_TYPES.length; i++) {
+            if (COMPETITION_TYPES[i].id === typeId) return COMPETITION_TYPES[i];
+        }
+        return null;
+    }
+
+    function placeOrdinal(n) {
+        const v = Number(n);
+        if (v === 1) return '1st';
+        if (v === 2) return '2nd';
+        if (v === 3) return '3rd';
+        return v + 'th';
+    }
+
+    function normalizeCompetitionPrizes(placeCount, prizes) {
+        const count = Math.max(1, Math.min(COMPETITION_MAX_PLACES, Number(placeCount) || 1));
+        const out = [];
+        for (let i = 0; i < count; i++) {
+            out.push(prizes && prizes[i] != null ? String(prizes[i]) : '');
+        }
+        return out;
+    }
+
+    function createCompetition(typeId) {
+        return {
+            id: 'comp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+            typeId: typeId,
+            placeCount: COMPETITION_DEFAULT_PLACES,
+            prizes: normalizeCompetitionPrizes(COMPETITION_DEFAULT_PLACES, [])
+        };
+    }
+
+    function loadCompetitionsPrefs() {
+        try {
+            const raw = localStorage.getItem(INCENTIVE_COMPETITIONS_STORAGE_KEY);
+            if (!raw) {
+                state.competitions = [];
+                state.customIncentives = [];
+                return;
+            }
+            const parsed = JSON.parse(raw);
+            state.competitions = (parsed.competitions || [])
+                .filter(function (c) {
+                    return c && c.typeId && getCompetitionTypeDef(c.typeId);
+                })
+                .map(function (c) {
+                    const placeCount = Math.max(
+                        1,
+                        Math.min(COMPETITION_MAX_PLACES, Number(c.placeCount) || COMPETITION_DEFAULT_PLACES)
+                    );
+                    return {
+                        id: c.id || 'comp-' + Math.random().toString(36).slice(2, 8),
+                        typeId: c.typeId,
+                        placeCount: placeCount,
+                        prizes: normalizeCompetitionPrizes(placeCount, c.prizes)
+                    };
+                });
+            state.customIncentives = (parsed.customIncentives || [])
+                .filter(function (item) {
+                    return item && String(item.text || '').trim();
+                })
+                .map(function (item) {
+                    return {
+                        id: item.id || 'inc-' + Math.random().toString(36).slice(2, 8),
+                        text: String(item.text).trim()
+                    };
+                });
+        } catch (e) {
+            state.competitions = [];
+            state.customIncentives = [];
+        }
+    }
+
+    function saveCompetitionsPrefs() {
+        try {
+            localStorage.setItem(
+                INCENTIVE_COMPETITIONS_STORAGE_KEY,
+                JSON.stringify({
+                    competitions: state.competitions.map(function (c) {
+                        return {
+                            id: c.id,
+                            typeId: c.typeId,
+                            placeCount: c.placeCount,
+                            prizes: c.prizes
+                        };
+                    }),
+                    customIncentives: state.customIncentives.map(function (item) {
+                        return { id: item.id, text: item.text };
+                    })
+                })
+            );
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
+    function getAvailableCompetitionTypes() {
+        const used = {};
+        state.competitions.forEach(function (c) {
+            used[c.typeId] = true;
+        });
+        return COMPETITION_TYPES.filter(function (t) {
+            return !used[t.id];
+        });
+    }
+
+    function addCompetition(typeId) {
+        if (!getCompetitionTypeDef(typeId)) return false;
+        if (state.competitions.some(function (c) {
+            return c.typeId === typeId;
+        })) {
+            return false;
+        }
+        state.competitions.push(createCompetition(typeId));
+        saveCompetitionsPrefs();
+        renderCompetitionsPicker();
+        renderPreview();
+        return true;
+    }
+
+    function removeCompetition(compId) {
+        const idx = state.competitions.findIndex(function (c) {
+            return c.id === compId;
+        });
+        if (idx < 0) return;
+        state.competitions.splice(idx, 1);
+        saveCompetitionsPrefs();
+        renderCompetitionsPicker();
+        renderPreview();
+    }
+
+    function setCompetitionPlaceCount(compId, count) {
+        const comp = state.competitions.find(function (c) {
+            return c.id === compId;
+        });
+        if (!comp) return;
+        const placeCount = Math.max(1, Math.min(COMPETITION_MAX_PLACES, Number(count) || 1));
+        comp.placeCount = placeCount;
+        comp.prizes = normalizeCompetitionPrizes(placeCount, comp.prizes);
+        saveCompetitionsPrefs();
+        renderCompetitionsPicker();
+        renderPreview();
+    }
+
+    function setCompetitionPrize(compId, placeIndex, value) {
+        const comp = state.competitions.find(function (c) {
+            return c.id === compId;
+        });
+        if (!comp) return;
+        const idx = Number(placeIndex);
+        if (idx < 0 || idx >= comp.placeCount) return;
+        if (!comp.prizes) comp.prizes = [];
+        comp.prizes[idx] = value;
+        saveCompetitionsPrefs();
+        renderPreview();
+    }
+
+    function addCustomIncentive(text) {
+        const trimmed = String(text || '').trim();
+        if (!trimmed) return false;
+        state.customIncentives.push({
+            id: 'inc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+            text: trimmed
+        });
+        saveCompetitionsPrefs();
+        renderCompetitionsPicker();
+        renderPreview();
+        return true;
+    }
+
+    function removeCustomIncentive(incId) {
+        const idx = state.customIncentives.findIndex(function (item) {
+            return item.id === incId;
+        });
+        if (idx < 0) return;
+        state.customIncentives.splice(idx, 1);
+        saveCompetitionsPrefs();
+        renderCompetitionsPicker();
+        renderPreview();
+    }
+
+    function buildCompetitionMailHtml(comp) {
+        const type = getCompetitionTypeDef(comp.typeId);
+        if (!type) return '';
+        const accent = getAccentHex();
+        const border = bodyBoxBorderStyle();
+        let rows = '';
+        let hasPrize = false;
+        let rowIndex = 0;
+
+        for (let i = 0; i < comp.placeCount; i++) {
+            const prize = String(comp.prizes[i] || '').trim();
+            if (!prize) continue;
+            hasPrize = true;
+            const rowBg = rowIndex % 2 === 0 ? '#0c0c0c' : '#161616';
+            const placeStyle =
+                i === 0
+                    ? 'padding:7px 10px;font-weight:bold;color:' + accent + ';font-size:14px;'
+                    : 'padding:7px 10px;font-weight:bold;color:' + accent + ';';
+            rows +=
+                '<tr style="background:' +
+                rowBg +
+                ';"><td style="' +
+                bodyTextStyle(placeStyle + 'width:4rem;white-space:nowrap;vertical-align:middle;') +
+                '">' +
+                esc(placeOrdinal(i + 1)) +
+                '</td><td style="' +
+                bodyTextStyle('padding:7px 10px;vertical-align:middle;border-left:1px solid ' + border + ';') +
+                '"><span style="color:' +
+                accent +
+                ';font-weight:bold;margin-right:6px;">&#8226;</span><span style="font-weight:600;color:#f0f0f0;">' +
+                esc(prize) +
+                '</span></td></tr>';
+            rowIndex++;
+        }
+
+        if (!hasPrize) {
+            rows =
+                '<tr style="background:#0c0c0c;"><td colspan="2" style="' +
+                bodyTextStyle('padding:10px 12px;font-style:italic;') +
+                '">Prizes not set</td></tr>';
+        }
+
+        return (
+            '<div style="margin-top:14px;border:1px solid ' +
+            border +
+            ';border-left:4px solid ' +
+            accent +
+            ';border-radius:4px;overflow:hidden;">' +
+            '<div style="background:#000000;padding:0;">' +
+            '<p style="' +
+            bodyTextStyle(
+                'margin:0;padding:10px 12px;font-weight:bold;font-size:14px;text-transform:uppercase;letter-spacing:0.6px;color:#f5f5f5;'
+            ) +
+            '">' +
+            '<span style="color:' +
+            accent +
+            ';">&#9733;</span> ' +
+            esc(type.label) +
+            '</p>' +
+            '<div style="height:2px;background:linear-gradient(90deg,' +
+            accent +
+            ' 0%,transparent 85%);line-height:0;font-size:0;">&nbsp;</div>' +
+            '</div>' +
+            '<table border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:13px;">' +
+            '<thead><tr style="background:#000000;">' +
+            '<th style="' +
+            tableHeaderCellStyle('left') +
+            'color:' +
+            accent +
+            ';font-size:11px;text-transform:uppercase;letter-spacing:0.5px;width:4rem;">Place</th>' +
+            '<th style="' +
+            tableHeaderCellStyle('left') +
+            'color:' +
+            accent +
+            ';font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-left:1px solid ' +
+            border +
+            ';">Prize</th>' +
+            '</tr></thead><tbody>' +
+            rows +
+            '</tbody></table></div>'
+        );
+    }
+
+    function buildCompetitionsSection() {
+        let html = sectionHeading('Competitions & incentives');
+        const hasCompetitions = state.competitions.length > 0;
+        const hasCustom = state.customIncentives.length > 0;
+        if (!hasCompetitions && !hasCustom) {
+            html +=
+                '<p style="' +
+                bodyPStyle('font-style:italic;') +
+                '">No competitions added — use the editor panel.</p>';
+            return html;
+        }
+        state.competitions.forEach(function (comp) {
+            html += buildCompetitionMailHtml(comp);
+        });
+        if (hasCustom) {
+            html +=
+                '<p style="' +
+                bodyTextStyle('font-weight:bold;margin:16px 0 6px 0;font-size:13px;') +
+                '">Other incentives</p>';
+            html += '<ul style="' + newsletterBulletListOpenStyle() + '">';
+            state.customIncentives.forEach(function (item) {
+                html += newsletterBulletItemHtml(item.text);
+            });
+            html += '</ul>';
+        }
+        return html;
+    }
+
+    function buildCompetitionEditorCard(comp) {
+        const type = getCompetitionTypeDef(comp.typeId);
+        const card = document.createElement('div');
+        card.className = 'newsletter-competition-card';
+        card.dataset.competitionId = comp.id;
+
+        const header = document.createElement('div');
+        header.className = 'newsletter-competition-card-header';
+
+        const title = document.createElement('span');
+        title.className = 'newsletter-competition-card-title';
+        title.textContent = type ? type.label : comp.typeId;
+        header.appendChild(title);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'newsletter-war-rule-delete';
+        delBtn.dataset.deleteCompetitionId = comp.id;
+        delBtn.setAttribute('aria-label', 'Remove competition');
+        delBtn.title = 'Remove competition';
+        delBtn.textContent = '×';
+        header.appendChild(delBtn);
+        card.appendChild(header);
+
+        const placesRow = document.createElement('div');
+        placesRow.className = 'newsletter-competition-places-row';
+        placesRow.appendChild(document.createTextNode('Places paying out: '));
+        const placesSel = document.createElement('select');
+        placesSel.className = 'newsletter-select newsletter-select--compact';
+        placesSel.dataset.competitionPlaceCount = '1';
+        placesSel.dataset.competitionId = comp.id;
+        for (let n = 1; n <= COMPETITION_MAX_PLACES; n++) {
+            const o = document.createElement('option');
+            o.value = String(n);
+            o.textContent = String(n);
+            if (n === comp.placeCount) o.selected = true;
+            placesSel.appendChild(o);
+        }
+        placesRow.appendChild(placesSel);
+        card.appendChild(placesRow);
+
+        const prizesWrap = document.createElement('div');
+        prizesWrap.className = 'newsletter-competition-prizes';
+        for (let i = 0; i < comp.placeCount; i++) {
+            const row = document.createElement('div');
+            row.className = 'newsletter-competition-prize-row';
+
+            const label = document.createElement('span');
+            label.className = 'newsletter-competition-prize-label';
+            label.textContent = placeOrdinal(i + 1);
+            row.appendChild(label);
+
+            const inp = document.createElement('input');
+            inp.type = 'text';
+            inp.className = 'newsletter-input newsletter-war-rule-input newsletter-war-rule-input--prize';
+            inp.dataset.competitionPrizeInput = '1';
+            inp.dataset.competitionId = comp.id;
+            inp.dataset.placeIndex = String(i);
+            inp.placeholder = 'e.g. 100m';
+            inp.value = comp.prizes[i] || '';
+            row.appendChild(inp);
+
+            prizesWrap.appendChild(row);
+        }
+        card.appendChild(prizesWrap);
+
+        return card;
+    }
+
+    function renderCompetitionsPickerInto(parent) {
+        if (!parent) return;
+
+        const hint = document.createElement('p');
+        hint.className = 'newsletter-hint';
+        hint.textContent =
+            'Add a competition, choose how many places pay out, then enter the prize for each position.';
+        parent.appendChild(hint);
+
+        const available = getAvailableCompetitionTypes();
+        const addRow = document.createElement('div');
+        addRow.className = 'newsletter-competition-add-row';
+
+        const select = document.createElement('select');
+        select.id = 'newsletter-competition-type-select';
+        select.className = 'newsletter-select newsletter-competition-type-select';
+        select.disabled = !available.length;
+
+        const placeholderOpt = document.createElement('option');
+        placeholderOpt.value = '';
+        placeholderOpt.textContent = available.length ? 'Select competition…' : 'All competitions added';
+        select.appendChild(placeholderOpt);
+
+        available.forEach(function (t) {
+            const o = document.createElement('option');
+            o.value = t.id;
+            o.textContent = t.label;
+            select.appendChild(o);
+        });
+
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'btn btn-secondary';
+        addBtn.id = 'newsletter-competition-add';
+        addBtn.textContent = 'Add competition';
+        addBtn.disabled = !available.length;
+
+        addRow.appendChild(select);
+        addRow.appendChild(addBtn);
+        parent.appendChild(addRow);
+
+        const list = document.createElement('div');
+        list.className = 'newsletter-competitions-list';
+        state.competitions.forEach(function (comp) {
+            list.appendChild(buildCompetitionEditorCard(comp));
+        });
+        parent.appendChild(list);
+
+        if (state.customIncentives.length) {
+            const customList = document.createElement('ul');
+            customList.className = 'newsletter-competition-custom-list';
+            state.customIncentives.forEach(function (item) {
+                const li = document.createElement('li');
+                li.className = 'newsletter-competition-custom-row';
+
+                const span = document.createElement('span');
+                span.className = 'newsletter-competition-custom-text';
+                span.textContent = item.text;
+                li.appendChild(span);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'newsletter-war-rule-delete';
+                delBtn.dataset.deleteCustomIncentiveId = item.id;
+                delBtn.setAttribute('aria-label', 'Remove custom incentive');
+                delBtn.title = 'Remove incentive';
+                delBtn.textContent = '×';
+                li.appendChild(delBtn);
+
+                customList.appendChild(li);
+            });
+            parent.appendChild(customList);
+        }
+
+        const customAddRow = document.createElement('div');
+        customAddRow.className = 'newsletter-war-rule-add-row newsletter-competition-custom-add';
+        const customInput = document.createElement('input');
+        customInput.type = 'text';
+        customInput.id = 'newsletter-custom-incentive-new';
+        customInput.className = 'newsletter-input';
+        customInput.placeholder = 'Add a custom incentive…';
+        customInput.maxLength = 280;
+        const customAddBtn = document.createElement('button');
+        customAddBtn.type = 'button';
+        customAddBtn.className = 'btn btn-secondary';
+        customAddBtn.id = 'newsletter-custom-incentive-add';
+        customAddBtn.textContent = 'Add incentive';
+        customAddRow.appendChild(customInput);
+        customAddRow.appendChild(customAddBtn);
+        parent.appendChild(customAddRow);
+    }
+
+    function renderCompetitionsPicker() {
+        const block = document.querySelector('[data-section-editor="incentives"]');
+        if (!block) {
+            renderNewsletterSectionEditors();
+            return;
+        }
+        const heading = block.querySelector('.newsletter-section-editor-title');
+        const titleText = heading ? heading.textContent : 'Competitions & incentives';
+        block.innerHTML = '';
+        const newHeading = document.createElement('h3');
+        newHeading.className = 'newsletter-section-editor-title';
+        newHeading.textContent = titleText;
+        block.appendChild(newHeading);
+        renderCompetitionsPickerInto(block);
+    }
+
+    function newsletterBulletListOpenStyle() {
+        return 'margin:0 0 4px 0;padding:0;list-style-type:none;' + bodyTextStyle('');
+    }
+
+    /** Accent bullet + body text — inline colours survive Torn mail better than list-style-color. */
+    function newsletterBulletItemHtml(text) {
+        const accent = getAccentHex();
+        return (
+            '<li style="' +
+            bodyTextStyle('line-height:1.5;margin:0 0 8px 0;') +
+            '"><span style="color:' +
+            accent +
+            ';font-weight:bold;">&#8226;</span> ' +
+            esc(text) +
+            '</li>'
+        );
+    }
+
+    function getWarRuleCategoryMailLine(catId) {
+        if (normalizeWarRuleCategoryId(catId) === 'termed_war') return 'This is a Termed War';
+        return 'This is a Real War!!!';
+    }
+
+    function buildWarRulesSection() {
+        let html = sectionHeading('War rules & terms');
+        const groups = getEnabledWarRulesGrouped();
+        if (!groups.length) {
+            html +=
+                '<p style="' +
+                bodyPStyle('font-style:italic;') +
+                '">No rules selected — tick items in the War rules & terms panel.</p>';
+            return html;
+        }
+        groups.forEach(function (group) {
+            html +=
+                '<p style="' +
+                bodyTextStyle('font-weight:bold;margin:14px 0 6px 0;font-size:14px;') +
+                '">' +
+                esc(getWarRuleCategoryMailLine(getActiveWarRuleCategoryId())) +
+                '</p>';
+            html += '<ul style="' + newsletterBulletListOpenStyle() + '">';
+            group.rules.forEach(function (rule) {
+                html += newsletterBulletItemHtml(resolveWarRuleDisplayText(rule));
+            });
+            html += '</ul>';
+        });
+        return html;
+    }
+
+    function appendWarRuleInputControls(rule, label, tmpl) {
+        const values = rule.values || {};
+        const disabled = !rule.enabled;
+        const body = document.createElement('div');
+        body.className = 'newsletter-war-rule-body';
+        if (tmpl && tmpl.inputType === 'scoring_limit') {
+            body.classList.add('newsletter-war-rule-body--stacked');
+        }
+        label.appendChild(body);
+
+        if (tmpl && tmpl.inputType === 'win_lose') {
+            const line = document.createElement('span');
+            line.className = 'newsletter-war-rule-inline';
+            line.appendChild(document.createTextNode('We will take the '));
+            const sel = document.createElement('select');
+            sel.className = 'newsletter-select newsletter-select--compact newsletter-war-rule-input newsletter-war-rule-input--choice';
+            sel.dataset.warRuleInput = '1';
+            sel.dataset.warRuleId = rule.id;
+            sel.dataset.valueKey = 'choice';
+            sel.disabled = disabled;
+            ['Win', 'Lose'].forEach(function (opt) {
+                const o = document.createElement('option');
+                o.value = opt;
+                o.textContent = opt;
+                sel.appendChild(o);
+            });
+            sel.value = values.choice === 'Lose' ? 'Lose' : 'Win';
+            line.appendChild(sel);
+            body.appendChild(line);
+            return;
+        }
+
+        if (tmpl && tmpl.inputType === 'score') {
+            const line = document.createElement('span');
+            line.className = 'newsletter-war-rule-inline';
+            line.appendChild(document.createTextNode('Loser will score '));
+            const inp = document.createElement('input');
+            inp.type = 'text';
+            inp.inputMode = 'numeric';
+            inp.className = 'newsletter-input newsletter-war-rule-input newsletter-war-rule-input--score';
+            inp.dataset.warRuleInput = '1';
+            inp.dataset.warRuleId = rule.id;
+            inp.dataset.valueKey = 'score';
+            inp.placeholder = '4200';
+            inp.value = values.score != null ? String(values.score) : '';
+            inp.disabled = disabled;
+            line.appendChild(inp);
+            body.appendChild(line);
+            return;
+        }
+
+        if (tmpl && tmpl.inputType === 'scoring_limit') {
+            const wrap = document.createElement('div');
+            wrap.className = 'newsletter-war-rule-scoring-options';
+
+            const stopLabel = document.createElement('label');
+            stopLabel.className = 'newsletter-war-rule-scoring-option';
+            const stopRadio = document.createElement('input');
+            stopRadio.type = 'radio';
+            stopRadio.name = 'newsletter-scoring-' + rule.id;
+            stopRadio.value = 'stop';
+            stopRadio.checked = values.mode !== 'fight_on';
+            stopRadio.dataset.warRuleInput = '1';
+            stopRadio.dataset.warRuleId = rule.id;
+            stopRadio.dataset.valueKey = 'mode';
+            stopRadio.disabled = disabled;
+            stopLabel.appendChild(stopRadio);
+            stopLabel.appendChild(document.createTextNode('Stop scoring at '));
+            const stopInp = document.createElement('input');
+            stopInp.type = 'text';
+            stopInp.inputMode = 'numeric';
+            stopInp.className = 'newsletter-input newsletter-war-rule-input newsletter-war-rule-input--score';
+            stopInp.dataset.warRuleInput = '1';
+            stopInp.dataset.warRuleId = rule.id;
+            stopInp.dataset.valueKey = 'stopScore';
+            stopInp.placeholder = '5000';
+            stopInp.value = values.stopScore != null ? String(values.stopScore) : '';
+            stopInp.disabled = disabled || values.mode === 'fight_on';
+            stopLabel.appendChild(stopInp);
+            wrap.appendChild(stopLabel);
+
+            const fightLabel = document.createElement('label');
+            fightLabel.className = 'newsletter-war-rule-scoring-option';
+            const fightRadio = document.createElement('input');
+            fightRadio.type = 'radio';
+            fightRadio.name = 'newsletter-scoring-' + rule.id;
+            fightRadio.value = 'fight_on';
+            fightRadio.checked = values.mode === 'fight_on';
+            fightRadio.dataset.warRuleInput = '1';
+            fightRadio.dataset.warRuleId = rule.id;
+            fightRadio.dataset.valueKey = 'mode';
+            fightRadio.disabled = disabled;
+            fightLabel.appendChild(fightRadio);
+            fightLabel.appendChild(document.createTextNode('Keep hitting till we win'));
+            wrap.appendChild(fightLabel);
+
+            body.appendChild(wrap);
+            return;
+        }
+
+        const span = document.createElement('span');
+        span.className = 'newsletter-war-rule-text';
+        span.textContent = rule.custom ? rule.text : tmpl && tmpl.text ? tmpl.text : '';
+        body.appendChild(span);
+    }
+
+    function appendSectionTextEditor(parent, sec) {
+        if (state.sectionText[sec.id] == null) state.sectionText[sec.id] = '';
+        const ta = document.createElement('textarea');
+        ta.id = 'newsletter-field-' + sec.id;
+        ta.className = 'newsletter-textarea';
+        ta.rows = 4;
+        ta.placeholder = sec.placeholder || '';
+        ta.value = state.sectionText[sec.id];
+        ta.addEventListener('input', function () {
+            state.sectionText[sec.id] = ta.value;
+            saveDraft();
+            renderPreview();
+        });
+        parent.appendChild(ta);
+    }
+
+    function renderWarRulesPickerInto(parent) {
+        if (!parent) return;
+        const activeCatId = getActiveWarRuleCategoryId();
+        const activeCat = getWarRuleCategoryDef(activeCatId);
+
+        parent.innerHTML =
+            '<p class="newsletter-hint">Choose Real or Termed war — rules for that type appear below.</p>' +
+            '<div class="newsletter-war-type-picker" role="radiogroup" aria-label="War type">' +
+            WAR_RULE_CATEGORIES.map(function (cat) {
+                const on = cat.id === activeCatId;
+                return (
+                    '<label class="newsletter-war-type-option' +
+                    (on ? ' newsletter-war-type-option--active' : '') +
+                    '">' +
+                    '<input type="radio" name="newsletter-war-type" value="' +
+                    esc(cat.id) +
+                    '" data-war-rule-category-select="1"' +
+                    (on ? ' checked' : '') +
+                    '>' +
+                    '<span>' +
+                    esc(cat.title) +
+                    '</span></label>'
+                );
+            }).join('') +
+            '</div>' +
+            '<div class="newsletter-war-rules-panel">' +
+            '<ul class="newsletter-war-rules-list"></ul>' +
+            '<div class="newsletter-war-rule-add-row">' +
+            '<input type="text" id="newsletter-war-rule-new" class="newsletter-input" placeholder="Add a custom ' +
+            esc(activeCat.title.replace(/!!!$/, '').trim()) +
+            ' rule…" maxlength="280">' +
+            '<button type="button" id="newsletter-war-rule-add" class="btn btn-secondary">Add rule</button>' +
+            '</div></div>';
+
+        const list = parent.querySelector('.newsletter-war-rules-list');
+        if (!list) return;
+
+        activeCat.rules.forEach(function (tmpl) {
+            const rule = state.warRules.find(function (r) {
+                return r.id === tmpl.id;
+            });
+            if (!rule) return;
+
+            const li = document.createElement('li');
+            li.className = 'newsletter-war-rule-row';
+
+            const label = document.createElement('label');
+            label.className = 'newsletter-check newsletter-war-rule-check';
+
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!rule.enabled;
+            cb.dataset.warRuleId = rule.id;
+            label.appendChild(cb);
+
+            appendWarRuleInputControls(rule, label, tmpl);
+            li.appendChild(label);
+            list.appendChild(li);
+        });
+
+        state.warRules
+            .filter(function (r) {
+                return r.custom && normalizeWarRuleCategoryId(r.category) === activeCatId;
+            })
+            .forEach(function (rule) {
+                const li = document.createElement('li');
+                li.className = 'newsletter-war-rule-row';
+
+                const label = document.createElement('label');
+                label.className = 'newsletter-check newsletter-war-rule-check';
+
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = !!rule.enabled;
+                cb.dataset.warRuleId = rule.id;
+                label.appendChild(cb);
+
+                const body = document.createElement('div');
+                body.className = 'newsletter-war-rule-body';
+                const span = document.createElement('span');
+                span.className = 'newsletter-war-rule-text';
+                span.textContent = rule.text;
+                body.appendChild(span);
+                label.appendChild(body);
+                li.appendChild(label);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'newsletter-war-rule-delete';
+                delBtn.dataset.deleteWarRuleId = rule.id;
+                delBtn.setAttribute('aria-label', 'Remove custom rule');
+                delBtn.title = 'Remove rule';
+                delBtn.textContent = '×';
+                li.appendChild(delBtn);
+
+                list.appendChild(li);
+            });
+    }
+
+    function renderNewsletterSectionEditors() {
+        const wrap = document.getElementById('newsletter-sections-editor');
+        if (!wrap) return;
+        wrap.innerHTML =
+            '<h2 class="newsletter-block-title">Section content</h2>' +
+            '<p class="newsletter-hint">Same order as the newsletter preview below.</p>';
+
+        WAR_SECTIONS.forEach(function (sec) {
+            if (sec.auto) return;
+
+            const block = document.createElement('div');
+            block.className = 'newsletter-section-editor-block';
+            block.dataset.sectionEditor = sec.id;
+
+            const heading = document.createElement('h3');
+            heading.className = 'newsletter-section-editor-title';
+            heading.textContent = sec.label;
+            block.appendChild(heading);
+
+            if (sec.competitionsPicker) {
+                renderCompetitionsPickerInto(block);
+            } else if (sec.rulesPicker) {
+                if (sec.flatRulesId) {
+                    renderFlatSectionRulesPickerInto(block, sec.flatRulesId);
+                } else {
+                    renderWarRulesPickerInto(block);
+                }
+            } else {
+                appendSectionTextEditor(block, sec);
+            }
+
+            wrap.appendChild(block);
+        });
+    }
+
+    function renderWarRulesPicker() {
+        renderNewsletterSectionEditors();
     }
 
     function buildManualSection(sectionId, heading) {
@@ -582,10 +2502,10 @@
             else if (sec.id === 'enemy_analysis') body += buildEnemyAnalysisSection();
             else if (sec.auto) return;
             else if (sec.id === 'intro') body += buildManualSection('intro', 'Message from leadership');
-            else if (sec.id === 'war_rules') body += buildManualSection('war_rules', 'War rules & terms');
+            else if (sec.id === 'war_rules') body += buildWarRulesSection();
             else if (sec.id === 'strategy') body += buildManualSection('strategy', 'Strategy');
-            else if (sec.id === 'payout') body += buildManualSection('payout', 'Payout method');
-            else if (sec.id === 'incentives') body += buildManualSection('incentives', 'Competitions & incentives');
+            else if (sec.id === 'payout') body += buildFlatSectionRulesSection('payout');
+            else if (sec.id === 'incentives') body += buildCompetitionsSection();
             else if (sec.id === 'closing') body += buildManualSection('closing', 'Closing');
         });
 
@@ -623,7 +2543,6 @@
             const payload = {
                 sectionEnabled: state.sectionEnabled,
                 sectionText: state.sectionText,
-                title: document.getElementById('newsletter-title')?.value || '',
                 subtitle: document.getElementById('newsletter-subtitle')?.value || '',
                 panelColor: getPanelBgHex(),
                 accent: document.getElementById('newsletter-accent')?.value || 'gold',
@@ -646,10 +2565,6 @@
             const d = JSON.parse(raw);
             if (d.sectionEnabled) Object.assign(state.sectionEnabled, d.sectionEnabled);
             if (d.sectionText) Object.assign(state.sectionText, d.sectionText);
-            if (d.title != null) {
-                const t = document.getElementById('newsletter-title');
-                if (t) t.value = d.title;
-            }
             if (d.subtitle != null) {
                 const s = document.getElementById('newsletter-subtitle');
                 if (s) s.value = d.subtitle;
@@ -710,34 +2625,6 @@
             label.appendChild(span);
             li.appendChild(label);
             ul.appendChild(li);
-        });
-    }
-
-    function renderTextFields() {
-        const wrap = document.getElementById('newsletter-fields-wrap');
-        if (!wrap) return;
-        wrap.innerHTML = '<h2 class="newsletter-block-title">Section text</h2>';
-        WAR_SECTIONS.filter(function (s) {
-            return !s.auto;
-        }).forEach(function (sec) {
-            if (state.sectionText[sec.id] == null) state.sectionText[sec.id] = '';
-            const label = document.createElement('label');
-            label.className = 'newsletter-field-label';
-            label.setAttribute('for', 'newsletter-field-' + sec.id);
-            label.textContent = sec.fieldLabel || sec.label;
-            const ta = document.createElement('textarea');
-            ta.id = 'newsletter-field-' + sec.id;
-            ta.className = 'newsletter-textarea';
-            ta.rows = 4;
-            ta.placeholder = sec.placeholder || '';
-            ta.value = state.sectionText[sec.id];
-            ta.addEventListener('input', function () {
-                state.sectionText[sec.id] = ta.value;
-                saveDraft();
-                renderPreview();
-            });
-            wrap.appendChild(label);
-            wrap.appendChild(ta);
         });
     }
 
@@ -964,11 +2851,8 @@
                 }
             }
 
-            const titleEl = document.getElementById('newsletter-title');
-            if (titleEl && !titleEl.value.trim()) titleEl.value = defaultMailTitle();
-
             const estCount = state.enemySummary
-                ? state.enemySummary.topByLevel.filter(function (m) {
+                ? state.enemySummary.allMembers.filter(function (m) {
                       return m.bs != null && m.bs !== '';
                   }).length
                 : 0;
@@ -982,11 +2866,12 @@
                         state.enemyFactionId +
                         '). ' +
                         (state.enemySummary ? state.enemySummary.count + ' members' : '') +
-                        (estCount ? ', est. stats for top targets.' : '.'),
+                        (estCount ? ', est. stats for ' + estCount + ' members.' : '.'),
                     false
                 );
             }
             saveDraft();
+            syncMailTitlePlaceholder();
             renderPreview();
             if (window.logToolUsage) window.logToolUsage('newsletter');
         } catch (err) {
@@ -1054,6 +2939,51 @@
     function onNewsletterEditorChange(e) {
         const t = e.target;
         if (!t) return;
+        if (t.dataset && t.dataset.warRuleCategorySelect) {
+            if (t.checked) setSelectedWarRuleCategory(t.value);
+            return;
+        }
+        if (t.dataset && t.dataset.flatRuleCategorySelect && t.dataset.flatRuleSection) {
+            if (t.checked) setSelectedFlatSectionCategory(t.dataset.flatRuleSection, t.value);
+            return;
+        }
+        if (t.dataset && t.dataset.warRuleId && !t.dataset.warRuleInput) {
+            setWarRuleEnabled(t.dataset.warRuleId, !!t.checked);
+            return;
+        }
+        if (t.dataset && t.dataset.competitionPlaceCount && t.dataset.competitionId) {
+            setCompetitionPlaceCount(t.dataset.competitionId, t.value);
+            return;
+        }
+        if (t.dataset && t.dataset.competitionPrizeInput && t.dataset.competitionId != null) {
+            setCompetitionPrize(t.dataset.competitionId, t.dataset.placeIndex, t.value);
+            return;
+        }
+        if (t.dataset && t.dataset.flatRuleSection && t.dataset.flatRuleId && !t.dataset.flatRuleInput) {
+            setFlatSectionRuleEnabled(t.dataset.flatRuleSection, t.dataset.flatRuleId, !!t.checked);
+            return;
+        }
+        if (t.dataset && t.dataset.flatRuleInput && t.dataset.flatRuleSection && t.dataset.flatRuleId && t.dataset.valueKey) {
+            setFlatSectionRuleValue(
+                t.dataset.flatRuleSection,
+                t.dataset.flatRuleId,
+                t.dataset.valueKey,
+                t.value
+            );
+            return;
+        }
+        if (t.dataset && t.dataset.warRuleInput && t.dataset.warRuleId && t.dataset.valueKey) {
+            let val = t.value;
+            if (t.type === 'radio') {
+                if (!t.checked) return;
+                val = t.value;
+            }
+            setWarRuleValue(t.dataset.warRuleId, t.dataset.valueKey, val);
+            if (t.dataset.valueKey === 'mode') {
+                renderWarRulesPicker();
+            }
+            return;
+        }
         if (t.dataset && t.dataset.sectionId) {
             state.sectionEnabled[t.dataset.sectionId] = !!t.checked;
             saveDraft();
@@ -1076,6 +3006,80 @@
         if (pageRoot) {
             pageRoot.addEventListener('change', onNewsletterEditorChange, { signal: signal });
             pageRoot.addEventListener('input', onNewsletterEditorChange, { signal: signal });
+            pageRoot.addEventListener('click', function (e) {
+                const addCompBtn = e.target.closest('#newsletter-competition-add');
+                if (addCompBtn) {
+                    const sel = document.getElementById('newsletter-competition-type-select');
+                    if (sel && sel.value) addCompetition(sel.value);
+                    return;
+                }
+                const delCompBtn = e.target.closest('[data-delete-competition-id]');
+                if (delCompBtn) {
+                    removeCompetition(delCompBtn.getAttribute('data-delete-competition-id'));
+                    return;
+                }
+                const addIncBtn = e.target.closest('#newsletter-custom-incentive-add');
+                if (addIncBtn) {
+                    const input = document.getElementById('newsletter-custom-incentive-new');
+                    if (addCustomIncentive(input ? input.value : '')) {
+                        if (input) input.value = '';
+                    }
+                    return;
+                }
+                const delIncBtn = e.target.closest('[data-delete-custom-incentive-id]');
+                if (delIncBtn) {
+                    removeCustomIncentive(delIncBtn.getAttribute('data-delete-custom-incentive-id'));
+                    return;
+                }
+                const addBtn = e.target.closest('[data-flat-rule-add]');
+                if (addBtn) {
+                    const sectionId = addBtn.getAttribute('data-flat-rule-add');
+                    const input = document.getElementById('newsletter-flat-rule-new-' + sectionId);
+                    if (addCustomFlatSectionRule(sectionId, input ? input.value : '')) {
+                        if (input) input.value = '';
+                    }
+                    return;
+                }
+                const delFlatBtn = e.target.closest('[data-delete-flat-rule-id]');
+                if (delFlatBtn) {
+                    removeCustomFlatSectionRule(
+                        delFlatBtn.getAttribute('data-delete-flat-rule-section'),
+                        delFlatBtn.getAttribute('data-delete-flat-rule-id')
+                    );
+                    return;
+                }
+                const addBtnWar = e.target.closest('#newsletter-war-rule-add');
+                if (addBtnWar) {
+                    const input = document.getElementById('newsletter-war-rule-new');
+                    if (addCustomWarRule(input ? input.value : '')) {
+                        if (input) input.value = '';
+                    }
+                    return;
+                }
+                const delBtn = e.target.closest('[data-delete-war-rule-id]');
+                if (delBtn) {
+                    removeCustomWarRule(delBtn.getAttribute('data-delete-war-rule-id'));
+                }
+            }, { signal: signal });
+            pageRoot.addEventListener('keydown', function (e) {
+                if (e.key !== 'Enter') return;
+                const flatId = e.target && e.target.id && e.target.id.indexOf('newsletter-flat-rule-new-') === 0
+                    ? e.target.id.replace('newsletter-flat-rule-new-', '')
+                    : '';
+                if (flatId) {
+                    e.preventDefault();
+                    if (addCustomFlatSectionRule(flatId, e.target.value)) e.target.value = '';
+                    return;
+                }
+                if (e.target?.id === 'newsletter-custom-incentive-new') {
+                    e.preventDefault();
+                    if (addCustomIncentive(e.target.value)) e.target.value = '';
+                    return;
+                }
+                if (e.target?.id !== 'newsletter-war-rule-new') return;
+                e.preventDefault();
+                if (addCustomWarRule(e.target.value)) e.target.value = '';
+            }, { signal: signal });
         }
 
         document.getElementById('newsletter-load-war')?.addEventListener('click', function () {
@@ -1126,12 +3130,20 @@
             if (state.sectionEnabled[s.id] == null) state.sectionEnabled[s.id] = s.defaultOn;
         });
         renderPanelColorPicker();
+        loadWarRulesPrefs();
+        loadAllFlatSectionRulesPrefs();
+        loadCompetitionsPrefs();
         loadDraft();
+        const mailTitleEl = document.getElementById('newsletter-title');
+        if (mailTitleEl) mailTitleEl.value = '';
+        syncMailTitlePlaceholder();
+        migrateLegacySectionTextToFlatRules('payout');
         syncPanelColorPicker();
         renderSectionCheckboxes();
-        renderTextFields();
+        renderNewsletterSectionEditors();
         wireEvents();
         syncPreviewThemeShell();
+        saveDraft();
         renderPreview();
 
         const key = getApiKey();
