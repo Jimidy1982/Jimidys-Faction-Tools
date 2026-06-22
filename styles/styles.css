@@ -8987,12 +8987,26 @@ td.alliance-dash-vault-actions .alliance-dash-vault-icon-btn + .alliance-dash-va
 .newsletter-inline-field {
     display: flex;
     gap: 8px;
-    align-items: center;
+    align-items: stretch;
 }
 
+.newsletter-inline-field .newsletter-input,
 .newsletter-inline-field input {
     flex: 1;
     min-width: 0;
+    width: auto;
+    margin: 0;
+}
+
+.newsletter-inline-field .btn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 8px 14px;
+    font-size: 13px;
+    line-height: 1.2;
 }
 
 .newsletter-check {
@@ -9413,7 +9427,8 @@ td.alliance-dash-vault-actions .alliance-dash-vault-icon-btn + .alliance-dash-va
     padding: 14px;
     min-height: 200px;
     max-height: 70vh;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 .newsletter-preview-shell--light {
@@ -9454,6 +9469,30 @@ td.alliance-dash-vault-actions .alliance-dash-vault-icon-btn + .alliance-dash-va
 
 .newsletter-preview-inner a {
     color: #5b8fd4;
+}
+
+/* Newsletter mail preview — suppress phantom scrollbars on tables (Torn/editor artefact in preview) */
+.newsletter-preview-inner [data-newsletter-panel],
+.newsletter-preview-inner [data-newsletter-panel] * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.newsletter-preview-inner [data-newsletter-panel] *::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+
+.newsletter-preview-inner [data-newsletter-panel] table {
+    overflow: visible !important;
+    display: table !important;
+    max-width: 100%;
+}
+
+.newsletter-preview-inner [data-newsletter-enemy-roster] {
+    max-width: 100%;
+    overflow: visible;
 }
 
 .newsletter-copy-row {

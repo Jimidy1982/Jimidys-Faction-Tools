@@ -28,6 +28,8 @@
     const ACTIVITY_DATA_PREFIX = 'war_dashboard_activity_data_';
     /** Per-faction timestamp (ms): ignore Firestore + local samples with t < this (user cleared cache; shared cloud docs cannot be deleted per user). */
     const ACTIVITY_CLOUD_IGNORE_BEFORE_PREFIX = 'war_dashboard_activity_cloud_ignore_before_';
+    /** Max `t` (ms) from Firestore activitySamples we've merged — enables incremental sync. */
+    const ACTIVITY_CLOUD_CURSOR_KEY = 'war_dashboard_activity_cloud_cursor_v1';
     const ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
@@ -36,12 +38,18 @@
     const ACTIVITY_SAMPLES_COLLECTION = 'activitySamples';
     /** Must match functions/chainWatch.js MAX_HOUR_SLOTS (50 days of hourly slots). */
     const CHAIN_WATCH_MAX_HOUR_SLOTS = 50 * 24;
-    /** Re-fetch cloud samples at most this often so 24/7 backend data actually appears without a full reload. */
-    const ACTIVITY_FIRESTORE_REFRESH_MS = 2.5 * 60 * 1000;
+    /** Re-fetch cloud samples at most this often (matches 5-min server tick). One shared query for all factions. */
+    const ACTIVITY_FIRESTORE_REFRESH_MS = ACTIVITY_INTERVAL_MS;
     /** In-memory cache of merged Firestore + localStorage activity data per faction (so getActivityData stays sync). */
     let activityDataCache = {};
-    /** Last time we merged Firestore into activityDataCache for each faction (ms). */
-    let activityDataCloudFetchAt = {};
+    /** Last shared Firestore activitySamples query (ms) — not per-faction. */
+    let activitySamplesCloudFetchAt = 0;
+    /** Parsed cloud samples from last query: { byFaction, docCount, lastFetch, readError }. */
+    let activitySamplesCloudCache = null;
+    /** In-flight dedupe so parallel callers share one Firestore read. */
+    let activitySamplesCloudFetchPromise = null;
+    /** Cached max sample timestamp from Firestore (mirrors localStorage cursor). */
+    let activityCloudCursorT = 0;
     /** Per faction: { firestoreCount, lastFetch, readError } for UI. */
     let activityDataCloudMeta = {};
     /** Per faction: { ok, error, at } after addTrackedFaction callable. */
@@ -990,6 +998,98 @@
         return getActivityDataFromStorage(factionId);
     }
 
+    function getActivityCloudCursorT() {
+        if (activityCloudCursorT > 0) return activityCloudCursorT;
+        try {
+            const raw = localStorage.getItem(ACTIVITY_CLOUD_CURSOR_KEY);
+            const n = raw != null ? Number(raw) : 0;
+            if (Number.isFinite(n) && n > 0) {
+                activityCloudCursorT = n;
+                return n;
+            }
+        } catch (e) { /* ignore */ }
+        return 0;
+    }
+
+    function setActivityCloudCursorT(t) {
+        const n = Number(t);
+        if (!Number.isFinite(n) || n <= 0) return;
+        activityCloudCursorT = n;
+        try {
+            localStorage.setItem(ACTIVITY_CLOUD_CURSOR_KEY, String(n));
+        } catch (e) { /* ignore */ }
+    }
+
+    function clearActivityCloudCursor() {
+        activityCloudCursorT = 0;
+        try {
+            localStorage.removeItem(ACTIVITY_CLOUD_CURSOR_KEY);
+        } catch (e) { /* ignore */ }
+    }
+
+    /** Latest sample `t` across tracked factions in localStorage (persisted merge history). */
+    function getMaxActivitySampleTForFaction(factionId) {
+        const data = getActivityDataFromStorage(factionId);
+        let maxT = 0;
+        (data.samples || []).forEach(function (s) {
+            if (s && s.t > maxT) maxT = s.t;
+        });
+        return maxT;
+    }
+
+    function getMaxActivitySampleTForTrackedFactions() {
+        const cfg = getActivityConfig();
+        let maxT = 0;
+        cfg.tracked.forEach(function (t) {
+            const m = getMaxActivitySampleTForFaction(t.factionId);
+            if (m > maxT) maxT = m;
+        });
+        return maxT;
+    }
+
+    /** True when this faction has no usable persisted samples in the 7-day window. */
+    function factionNeedsActivityCloudBootstrap(factionId) {
+        const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
+        return getMaxActivitySampleTForFaction(factionId) < cutoff;
+    }
+
+    /** Full 7-day query when no cursor, cursor expired, or any tracked faction lacks local history. */
+    function shouldFullBootstrapActivityCloud(options) {
+        if (options && options.full) return true;
+        const cursor = getActivityCloudCursorT();
+        if (!cursor) return true;
+        const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
+        if (cursor < cutoff) return true;
+        const cfg = getActivityConfig();
+        return cfg.tracked.some(function (t) {
+            return factionNeedsActivityCloudBootstrap(t.factionId);
+        });
+    }
+
+    function maxSampleTFromSnapshot(snap) {
+        let maxT = 0;
+        if (!snap || !snap.docs) return maxT;
+        snap.docs.forEach(function (doc) {
+            const d = doc.data();
+            const tVal = d.t != null && typeof d.t.toMillis === 'function' ? d.t.toMillis() : Number(d.t);
+            if (Number.isFinite(tVal) && tVal > maxT) maxT = tVal;
+        });
+        return maxT;
+    }
+
+    /** Load persisted samples from localStorage into memory — charts render instantly on refresh. */
+    function hydrateActivityDataCacheFromLocalStorage(factionIds) {
+        const ids = factionIds || getActivityConfig().tracked.map(function (t) {
+            return String(t.factionId);
+        });
+        ids.forEach(function (fid) {
+            const stored = getActivityDataFromStorage(fid);
+            if ((stored.samples && stored.samples.length) || (stored.members && stored.members.length)) {
+                activityDataCache[fid] = stored;
+            }
+        });
+    }
+
     function formatActivityRelativeTime(ms) {
         if (ms == null || !ms) return '—';
         const sec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
@@ -999,51 +1099,133 @@
         return Math.floor(sec / 86400) + 'd ago';
     }
 
-    /** Load activity samples from Firestore, merge with local, update cache. Refreshes on a timer (see ACTIVITY_FIRESTORE_REFRESH_MS) so cloud ticks accumulate. */
-    async function ensureActivityDataLoaded(factionId, options) {
+    /** Parse activitySamples query into per-faction sample arrays. */
+    function parseActivitySamplesSnapshot(snap) {
+        const byFaction = {};
+        if (!snap || !snap.docs) return byFaction;
+        snap.docs.forEach(function (doc) {
+            const d = doc.data();
+            const factions = d.factions || {};
+            const tVal = d.t != null && typeof d.t.toMillis === 'function' ? d.t.toMillis() : Number(d.t);
+            if (!Number.isFinite(tVal)) return;
+            Object.keys(factions).forEach(function (fid) {
+                const factionData = factions[fid];
+                if (!factionData || !Array.isArray(factionData.onlineIds)) return;
+                if (!byFaction[fid]) byFaction[fid] = [];
+                byFaction[fid].push({ t: tVal, onlineIds: factionData.onlineIds });
+            });
+        });
+        return byFaction;
+    }
+
+    /** Firestore fetch: full 7-day bootstrap once, then incremental `t > cursor` (~1 doc per tick). */
+    async function fetchActivitySamplesCloud(options) {
         const force = options && options.force;
-        const fid = String(factionId);
         const now = Date.now();
-        if (!force && activityDataCache[fid] != null && activityDataCloudFetchAt[fid] != null &&
-            (now - activityDataCloudFetchAt[fid]) < ACTIVITY_FIRESTORE_REFRESH_MS) {
-            return;
+        if (
+            !force &&
+            activitySamplesCloudCache != null &&
+            activitySamplesCloudFetchAt &&
+            now - activitySamplesCloudFetchAt < ACTIVITY_FIRESTORE_REFRESH_MS
+        ) {
+            return activitySamplesCloudCache;
+        }
+        if (activitySamplesCloudFetchPromise) {
+            return activitySamplesCloudFetchPromise;
         }
 
-        var db = null;
-        try {
-            if (typeof firebase !== 'undefined' && firebase.firestore) db = firebase.firestore();
-        } catch (e) { /* ignore */ }
-        if (!db) {
-            activityDataCloudMeta[fid] = {
-                firestoreCount: 0,
+        activitySamplesCloudFetchPromise = (async function () {
+            var db = null;
+            try {
+                if (typeof firebase !== 'undefined' && firebase.firestore) db = firebase.firestore();
+            } catch (e) { /* ignore */ }
+
+            const emptyResult = {
+                byFaction: {},
+                docCount: 0,
                 lastFetch: now,
-                readError: typeof firebase === 'undefined' ? 'Firebase not loaded' : 'Firestore unavailable'
+                readError: !db
+                    ? typeof firebase === 'undefined'
+                        ? 'Firebase not loaded'
+                        : 'Firestore unavailable'
+                    : null,
+                incremental: false
             };
-            return;
-        }
-        const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
-        var firestoreSamples = [];
-        var readError = null;
-        try {
-            const snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
-                .where('t', '>=', cutoff)
-                .orderBy('t')
-                .get();
-            snap.docs.forEach(function (doc) {
-                const d = doc.data();
-                const factions = d.factions || {};
-                const factionData = factions[fid];
-                if (factionData && Array.isArray(factionData.onlineIds)) {
-                    const tVal = d.t != null && typeof d.t.toMillis === 'function' ? d.t.toMillis() : Number(d.t);
-                    if (Number.isFinite(tVal)) {
-                        firestoreSamples.push({ t: tVal, onlineIds: factionData.onlineIds });
+
+            if (!db) {
+                activitySamplesCloudCache = emptyResult;
+                activitySamplesCloudFetchAt = now;
+                return emptyResult;
+            }
+
+            const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
+            const fullBootstrap = shouldFullBootstrapActivityCloud(options);
+            var readError = null;
+            var byFaction = {};
+            var docCount = 0;
+            try {
+                let snap;
+                if (fullBootstrap) {
+                    snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
+                        .where('t', '>=', cutoff)
+                        .orderBy('t')
+                        .get();
+                } else {
+                    const cursor = getActivityCloudCursorT();
+                    snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
+                        .where('t', '>', cursor)
+                        .orderBy('t')
+                        .get();
+                }
+                docCount = snap.docs.length;
+                byFaction = parseActivitySamplesSnapshot(snap);
+                const maxT = maxSampleTFromSnapshot(snap);
+                if (maxT > 0) {
+                    const prev = getActivityCloudCursorT();
+                    if (maxT > prev) setActivityCloudCursorT(maxT);
+                }
+            } catch (e) {
+                readError = (e && e.message) ? e.message : String(e);
+                console.warn('Activity Firestore read failed', e);
+                if (!fullBootstrap) {
+                    try {
+                        const snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
+                            .where('t', '>=', cutoff)
+                            .orderBy('t')
+                            .get();
+                        docCount = snap.docs.length;
+                        byFaction = parseActivitySamplesSnapshot(snap);
+                        const maxT = maxSampleTFromSnapshot(snap);
+                        if (maxT > 0) setActivityCloudCursorT(maxT);
+                        readError = null;
+                    } catch (e2) {
+                        readError = (e2 && e2.message) ? e2.message : String(e2);
+                        console.warn('Activity Firestore full bootstrap fallback failed', e2);
                     }
                 }
-            });
-        } catch (e) {
-            readError = (e && e.message) ? e.message : String(e);
-            console.warn('Activity Firestore read failed for faction', fid, e);
-        }
+            }
+
+            const result = {
+                byFaction: byFaction,
+                docCount: docCount,
+                lastFetch: now,
+                readError: readError,
+                incremental: !fullBootstrap
+            };
+            activitySamplesCloudCache = result;
+            activitySamplesCloudFetchAt = now;
+            return result;
+        })().finally(function () {
+            activitySamplesCloudFetchPromise = null;
+        });
+
+        return activitySamplesCloudFetchPromise;
+    }
+
+    function mergeActivityCloudForFaction(factionId, cloud) {
+        const fid = String(factionId);
+        const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
+        let firestoreSamples = (cloud.byFaction && cloud.byFaction[fid]) ? cloud.byFaction[fid].slice() : [];
         const ignoreBefore = getActivityCloudIgnoreBeforeMs(fid);
         if (ignoreBefore > 0) {
             firestoreSamples = firestoreSamples.filter(function (s) {
@@ -1057,14 +1239,57 @@
         const byT = {};
         localSamples.forEach(function (s) { byT[s.t] = s; });
         firestoreSamples.forEach(function (s) { byT[s.t] = s; });
-        const merged = Object.keys(byT).map(function (k) { return byT[k]; }).filter(function (s) { return s.t >= cutoff; }).sort(function (a, b) { return a.t - b.t; });
+        const merged = Object.keys(byT)
+            .map(function (k) { return byT[k]; })
+            .filter(function (s) { return s.t >= cutoff; })
+            .sort(function (a, b) { return a.t - b.t; });
         activityDataCache[fid] = { samples: merged, members: local.members || [] };
-        activityDataCloudFetchAt[fid] = now;
+        try {
+            setActivityData(fid, activityDataCache[fid]);
+        } catch (e) { /* ignore */ }
         activityDataCloudMeta[fid] = {
             firestoreCount: firestoreSamples.length,
-            lastFetch: now,
-            readError: readError
+            lastFetch: cloud.lastFetch,
+            readError: cloud.readError,
+            incremental: cloud.incremental === true
         };
+    }
+
+    /** Local cache first, then Firestore (incremental when possible). Persists merged result to localStorage. */
+    async function refreshAllTrackedActivityFromCloud(options) {
+        hydrateActivityDataCacheFromLocalStorage();
+        const cloud = await fetchActivitySamplesCloud(options);
+        const cfg = getActivityConfig();
+        cfg.tracked.forEach(function (t) {
+            mergeActivityCloudForFaction(t.factionId, cloud);
+        });
+        return cloud;
+    }
+
+    /** Periodic cloud refresh: one Firestore read, update all enabled tracked factions. */
+    function runActivityCloudRefreshTick() {
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        const cfg = getActivityConfig();
+        if (!cfg.tracked.some(function (t) { return t.enabled; })) return;
+        refreshAllTrackedActivityFromCloud().then(function () {
+            cfg.tracked.forEach(function (t) {
+                if (!t.enabled) return;
+                const fid = String(t.factionId);
+                if (document.getElementById('war-dashboard-activity-chart-' + fid)) {
+                    renderActivityTrackerChart(fid);
+                    renderActivityTrackerTable(fid);
+                    updateActivityCloudStatusUI(fid);
+                }
+            });
+        }).catch(function () {});
+    }
+
+    /** Load activity samples from Firestore, merge with local, update cache. Uses one shared query. */
+    async function ensureActivityDataLoaded(factionId, options) {
+        hydrateActivityDataCacheFromLocalStorage([String(factionId)]);
+        const cloud = await fetchActivitySamplesCloud(options);
+        mergeActivityCloudForFaction(factionId, cloud);
     }
 
     function updateActivityCloudStatusUI(factionId) {
@@ -1079,12 +1304,16 @@
         } else if (reg && reg.ok) {
             bits.push('Server samples (Firebase) enabled.');
         }
+        const localCount = (getActivityData(fid).samples || []).length;
         if (meta) {
             if (meta.readError) {
                 bits.push('Could not read cloud history — ' + meta.readError + (meta.readError.indexOf('index') !== -1 ? ' (create the Firestore index if the console links one.)' : ''));
             } else {
-                bits.push('Cloud data points (7d window): ' + (meta.firestoreCount || 0) + '. Merged ' + formatActivityRelativeTime(meta.lastFetch) + '.');
+                const syncLabel = meta.incremental ? 'Synced new cloud data' : 'Loaded cloud history';
+                bits.push(syncLabel + ' (' + (meta.firestoreCount || 0) + ' doc' + ((meta.firestoreCount || 0) === 1 ? '' : 's') + ' this fetch, ' + localCount + ' cached). ' + formatActivityRelativeTime(meta.lastFetch) + '.');
             }
+        } else if (localCount > 0) {
+            bits.push('Showing ' + localCount + ' cached samples. Syncing new cloud data…');
         }
         el.textContent = bits.length ? bits.join(' ') : 'Loading cloud status…';
         const bad = (reg && reg.ok === false) || (meta && meta.readError);
@@ -4045,6 +4274,8 @@
     }
 
     function updateActivityTrackerUI() {
+        hydrateActivityDataCacheFromLocalStorage();
+
         Object.keys(activityTrackerChartInstances).forEach(fid => {
             try { activityTrackerChartInstances[fid].destroy(); } catch (e) { /* ignore */ }
         });
@@ -4119,11 +4350,16 @@
                 headerBtn.setAttribute('aria-expanded', !expanded);
                 arrow.textContent = expanded ? '▶' : '▼';
                 if (!expanded) {
-                    await ensureActivityDataLoaded(fid, { force: true });
-                    await ensureActivityTrackerBattleStats(fid);
-                    updateActivityCloudStatusUI(fid);
+                    hydrateActivityDataCacheFromLocalStorage([fid]);
                     renderActivityTrackerChart(fid);
                     renderActivityTrackerTable(fid);
+                    updateActivityCloudStatusUI(fid);
+                    refreshAllTrackedActivityFromCloud().then(function () {
+                        updateActivityCloudStatusUI(fid);
+                        renderActivityTrackerChart(fid);
+                        renderActivityTrackerTable(fid);
+                    }).catch(function () {});
+                    await ensureActivityTrackerBattleStats(fid);
                 }
             });
 
@@ -4159,7 +4395,6 @@
                     localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid);
                 } catch (e) { /* ignore */ }
                 delete activityDataCache[fid];
-                delete activityDataCloudFetchAt[fid];
                 delete activityDataCloudMeta[fid];
                 setActivityConfig(config);
                 updateActivityTrackerUI();
@@ -4173,7 +4408,6 @@
                 try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
                 clearActivityCloudIgnoreBeforeMs(fid);
                 delete activityDataCache[fid];
-                delete activityDataCloudFetchAt[fid];
                 delete activityDataCloudMeta[fid];
                 setActivityConfig(config);
                 syncTrackedFactionToFirestore(fid, 'remove');
@@ -4195,7 +4429,7 @@
             updateActivityCloudStatusUI(t.factionId);
         });
 
-        Promise.all(config.tracked.map(t => ensureActivityDataLoaded(t.factionId)))
+        refreshAllTrackedActivityFromCloud()
             .then(function () {
                 config.tracked.forEach(function (t) {
                     renderActivityTrackerChart(t.factionId);
@@ -4359,7 +4593,7 @@
             const reg = await syncTrackedFactionToFirestore(factionId, 'add');
             updateActivityCloudStatusUI(factionId);
             if (!reg.ok && reg.error) showError('Cloud activity (24/7): ' + reg.error + ' — this tab will still sample every 5 min while open.');
-            await ensureActivityDataLoaded(factionId, { force: true });
+            await refreshAllTrackedActivityFromCloud();
             updateActivityCloudStatusUI(factionId);
             updateActivityTrackerUI();
         } catch (e) {
@@ -4706,22 +4940,7 @@
         updateActivityCountdown();
 
         if (window._warDashboardActivityCloudRefreshId) clearInterval(window._warDashboardActivityCloudRefreshId);
-        window._warDashboardActivityCloudRefreshId = setInterval(function () {
-            const page = (window.location.hash || '').replace('#', '').split('/')[0];
-            if (page !== 'war-dashboard') return;
-            const cfg = getActivityConfig();
-            cfg.tracked.forEach(function (t) {
-                if (!t.enabled) return;
-                const fid = String(t.factionId);
-                ensureActivityDataLoaded(fid, { force: true }).then(function () {
-                    if (document.getElementById('war-dashboard-activity-chart-' + fid)) {
-                        renderActivityTrackerChart(fid);
-                        renderActivityTrackerTable(fid);
-                        updateActivityCloudStatusUI(fid);
-                    }
-                }).catch(function () {});
-            });
-        }, ACTIVITY_FIRESTORE_REFRESH_MS);
+        window._warDashboardActivityCloudRefreshId = setInterval(runActivityCloudRefreshTick, ACTIVITY_FIRESTORE_REFRESH_MS);
 
         // Only run timer when on this page; stop when user navigates away
         function onHashChange() {
@@ -4756,21 +4975,7 @@
                     updateActivityCountdown();
                 }
                 if (!window._warDashboardActivityCloudRefreshId) {
-                    window._warDashboardActivityCloudRefreshId = setInterval(function () {
-                        const p = (window.location.hash || '').replace('#', '').split('/')[0];
-                        if (p !== 'war-dashboard') return;
-                        getActivityConfig().tracked.forEach(function (t) {
-                            if (!t.enabled) return;
-                            const fid = String(t.factionId);
-                            ensureActivityDataLoaded(fid, { force: true }).then(function () {
-                                if (document.getElementById('war-dashboard-activity-chart-' + fid)) {
-                                    renderActivityTrackerChart(fid);
-                                    renderActivityTrackerTable(fid);
-                                    updateActivityCloudStatusUI(fid);
-                                }
-                            }).catch(function () {});
-                        });
-                    }, ACTIVITY_FIRESTORE_REFRESH_MS);
+                    window._warDashboardActivityCloudRefreshId = setInterval(runActivityCloudRefreshTick, ACTIVITY_FIRESTORE_REFRESH_MS);
                 }
                 if (!window._warDashboardChainWatchPollId) {
                     window._warDashboardChainWatchPollId = setInterval(function () {

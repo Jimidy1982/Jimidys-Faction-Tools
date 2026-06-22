@@ -6,6 +6,8 @@
     'use strict';
 
     const STORAGE_KEY = 'newsletter_war_draft_v1';
+    /** Section copy (intro, strategy, enemy analysis, closing) — saved separately so it always persists. */
+    const SECTION_TEXT_STORAGE_KEY = 'newsletter_section_text_v1';
     /** Persists war rule toggles + custom rules across drafts (localStorage). */
     const WAR_RULES_STORAGE_KEY = 'newsletter_war_rules_v2';
     const PAYOUT_RULES_STORAGE_KEY = 'newsletter_payout_rules_v3';
@@ -214,7 +216,7 @@
         { id: 'war_rules', label: 'War rules & terms', defaultOn: true, rulesPicker: true },
         { id: 'strategy', label: 'Strategy', defaultOn: true, fieldLabel: 'Strategy', placeholder: 'Chains, timing, who hits whom, hospital rules...' },
         { id: 'enemy_stats', label: 'Enemy stats', defaultOn: true, auto: true },
-        { id: 'enemy_analysis', label: 'Enemy analysis', defaultOn: true, fieldLabel: 'Enemy analysis notes', placeholder: 'Key targets, chains to watch, respect gap, etc. Full enemy roster (2 columns) is included when war data is loaded.' },
+        { id: 'enemy_analysis', label: 'Enemy analysis', defaultOn: true, fieldLabel: 'Enemy analysis notes', placeholder: 'Key targets, chains to watch, respect gap, etc. Full enemy roster (3 columns) is included when war data is loaded.' },
         { id: 'payout', label: 'Payout method', defaultOn: true, rulesPicker: true, flatRulesId: 'payout' },
         { id: 'incentives', label: 'Competitions & incentives', defaultOn: false, competitionsPicker: true },
         { id: 'closing', label: 'Closing rally', defaultOn: true, fieldLabel: 'Closing message', placeholder: 'Show up strong. Questions -> faction chat or leaders.' }
@@ -506,16 +508,6 @@
         return isBodyTextLight() ? '#666666' : '#999999';
     }
 
-    function tableHeaderCellStyle(align) {
-        const a = align || 'left';
-        return 'text-align:' + a + ';background:#000000;color:#e8e8e8;padding:4px;';
-    }
-
-    function tableBodyCellStyle(align, extra) {
-        let s = 'padding:4px;text-align:' + (align || 'left') + ';' + (extra || '');
-        return bodyTextStyle(s);
-    }
-
     function textToParagraphsHtml(text) {
         const raw = String(text || '').trim();
         if (!raw) return '';
@@ -713,57 +705,93 @@
         };
     }
 
-    function buildEnemyMemberTableHtml(members, hasEstStats) {
-        if (!members || !members.length) return '';
-        let html =
-            '<table border="0" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px;"><thead><tr>' +
-            '<th style="' +
-            tableHeaderCellStyle('left') +
-            '">Name</th>' +
-            '<th style="' +
-            tableHeaderCellStyle('right') +
-            '">Lvl</th>';
-        if (hasEstStats) {
-            html += '<th style="' + tableHeaderCellStyle('right') + '">Est.</th>';
+    function splitMembersIntoColumns(members, columnCount) {
+        const cols = [];
+        const size = Math.ceil(members.length / columnCount);
+        for (let i = 0; i < columnCount; i++) {
+            const chunk = members.slice(i * size, (i + 1) * size);
+            if (chunk.length) cols.push(chunk);
         }
-        html += '</tr></thead><tbody>';
-        members.forEach(function (m) {
-            html +=
-                '<tr><td style="' +
-                tableBodyCellStyle('left') +
-                '"><a href="https://www.torn.com/profiles.php?XID=' +
-                encodeURIComponent(String(m.id)) +
-                '">' +
-                esc(m.name) +
-                '</a></td><td style="' +
-                tableBodyCellStyle('right') +
-                '">' +
-                esc(String(m.level)) +
-                '</td>';
-            if (hasEstStats) {
-                html +=
-                    '<td style="' +
-                    tableBodyCellStyle('right') +
-                    '">' +
-                    esc(formatEstimatedBattleStat(m.bs)) +
-                    '</td>';
-            }
-            html += '</tr>';
-        });
-        html += '</tbody></table>';
-        return html;
+        return cols;
     }
 
-    function enemyRosterColumnCellStyle(side, showSeparator) {
-        const base = 'width:50%;vertical-align:top;';
-        if (side === 'left') {
-            return base + 'padding-right:12px;';
+    function enemyRosterRowWidths(hasEstStats) {
+        if (hasEstStats) {
+            return { name: '44%', lvl: '11%', est: '45%' };
         }
-        let style = base + 'padding-left:12px;';
-        if (showSeparator) {
-            style += 'border-left:2px solid ' + getAccentHex() + ';';
-        }
-        return style;
+        return { name: '68%', lvl: '32%', est: '0' };
+    }
+
+    function enemyRosterInlineCol(style) {
+        return 'display:inline-block;vertical-align:top;box-sizing:border-box;' + style;
+    }
+
+    /** Div-based 3-column roster — float layout fits Torn mail width (inline-block + padding overflows). */
+    function buildEnemyRosterColumnsHtml(members, hasEstStats) {
+        const cols = splitMembersIntoColumns(members, 3);
+        const accent = getAccentHex();
+        const border = bodyBoxBorderStyle();
+        const w = enemyRosterRowWidths(hasEstStats);
+        let html =
+            '<div data-newsletter-enemy-roster="1" style="margin:8px 0 0 0;width:100%;max-width:100%;overflow:hidden;">';
+        cols.forEach(function (colMembers, idx) {
+            const sep =
+                (idx > 0 ? 'border-left:1px solid ' + accent + ';padding-left:3px;' : '') +
+                (idx < cols.length - 1 ? 'padding-right:4px;' : 'padding-right:2px;');
+            html +=
+                '<div style="float:left;width:33.33%;box-sizing:border-box;text-align:left;font-size:10px;line-height:1.35;' +
+                sep +
+                '">';
+            html +=
+                '<p style="' +
+                bodyTextStyle(
+                    'margin:0 0 4px 0;padding-bottom:3px;border-bottom:1px solid ' +
+                        border +
+                        ';font-size:10px;font-weight:bold;text-transform:uppercase;'
+                ) +
+                '"><span style="' +
+                enemyRosterInlineCol('width:' + w.name + ';color:' + accent + ';') +
+                '">Name</span><span style="' +
+                enemyRosterInlineCol('width:' + w.lvl + ';text-align:right;color:' + accent + ';') +
+                '">Lvl</span>';
+            if (hasEstStats) {
+                html +=
+                    '<span style="' +
+                    enemyRosterInlineCol('width:' + w.est + ';text-align:right;color:' + accent + ';padding-right:3px;') +
+                    '">Est</span>';
+            }
+            html += '</p>';
+            colMembers.forEach(function (m) {
+                html +=
+                    '<p style="' +
+                    bodyTextStyle('margin:0;padding:1px 0;font-size:10px;line-height:1.35;') +
+                    '"><span style="' +
+                    enemyRosterInlineCol(
+                        'width:' + w.name + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+                    ) +
+                    '"><a href="https://www.torn.com/profiles.php?XID=' +
+                    encodeURIComponent(String(m.id)) +
+                    '">' +
+                    esc(m.name) +
+                    '</a></span><span style="' +
+                    enemyRosterInlineCol('width:' + w.lvl + ';text-align:right;') +
+                    '">' +
+                    esc(String(m.level)) +
+                    '</span>';
+                if (hasEstStats) {
+                    html +=
+                        '<span style="' +
+                        enemyRosterInlineCol('width:' + w.est + ';text-align:right;font-size:9px;padding-right:3px;') +
+                        '">' +
+                        esc(formatEstimatedBattleStat(m.bs)) +
+                        '</span>';
+                }
+                html += '</p>';
+            });
+            html += '</div>';
+        });
+        html += '<div style="clear:both;height:0;line-height:0;font-size:0;">&nbsp;</div></div>';
+        return html;
     }
 
     function buildEnemyStatsSection() {
@@ -774,19 +802,18 @@
             html += '<p style="' + bodyPStyle() + '">Load war data to fill enemy intel.</p>';
             return html;
         }
-        html +=
-            '<table border="0" cellpadding="4" cellspacing="0" style="border-collapse:collapse;margin-top:10px;font-size:13px;"><tbody>';
+        html += '<div style="margin-top:10px;font-size:13px;">';
         function row(label, val) {
             return (
-                '<tr><td style="' +
-                bodyTextStyle('padding:6px 8px 6px 0;') +
+                '<p style="' +
+                bodyPStyle('margin-top:4px;') +
+                '"><span style="' +
+                bodyTextStyle('') +
                 '">' +
                 esc(label) +
-                '</td><td style="' +
-                bodyTextStyle('padding:6px 0;font-weight:600;') +
-                '">' +
+                '</span> <strong>' +
                 esc(val) +
-                '</td></tr>'
+                '</strong></p>'
             );
         }
         if (state.enemyFactionName) html += row('Faction', state.enemyFactionName);
@@ -795,7 +822,7 @@
         if (state.enemyChain && state.enemyChain.highest != null && state.enemyChain.highest > 0) {
             html += row('Highest chain', formatNumber(state.enemyChain.highest));
         }
-        html += '</tbody></table>';
+        html += '</div>';
         return html;
     }
 
@@ -817,25 +844,8 @@
                 (hasEstStats ? 'est. battle stats' : 'level (est. stats unavailable)') +
                 ' (' +
                 esc(String(members.length)) +
-                ')' +
-                (hasEstStats ? ' — FF Scouter, same as Faction Battle Stats' : '') +
-                ':</p>';
-            const mid = Math.ceil(members.length / 2);
-            const leftCol = members.slice(0, mid);
-            const rightCol = members.slice(mid);
-            const showColumnSeparator = rightCol.length > 0;
-            html +=
-                '<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin-top:6px;"><tr>' +
-                '<td style="' +
-                enemyRosterColumnCellStyle('left', showColumnSeparator) +
-                '">' +
-                buildEnemyMemberTableHtml(leftCol, hasEstStats) +
-                '</td>' +
-                '<td style="' +
-                enemyRosterColumnCellStyle('right', showColumnSeparator) +
-                '">' +
-                buildEnemyMemberTableHtml(rightCol, hasEstStats) +
-                '</td></tr></table>';
+                '):</p>';
+            html += buildEnemyRosterColumnsHtml(members, hasEstStats);
         } else if (!notes.trim()) {
             html += '<p style="' + bodyPStyle() + '">Add notes above or load war data for a member snapshot.</p>';
         }
@@ -1815,6 +1825,7 @@
             return false;
         }
         state.competitions.push(createCompetition(typeId));
+        ensureIncentivesSectionEnabled();
         saveCompetitionsPrefs();
         renderCompetitionsPicker();
         renderPreview();
@@ -1865,6 +1876,7 @@
             id: 'inc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
             text: trimmed
         });
+        ensureIncentivesSectionEnabled();
         saveCompetitionsPrefs();
         renderCompetitionsPicker();
         renderPreview();
@@ -1887,7 +1899,7 @@
         if (!type) return '';
         const accent = getAccentHex();
         const border = bodyBoxBorderStyle();
-        let rows = '';
+        let prizeRows = '';
         let hasPrize = false;
         let rowIndex = 0;
 
@@ -1896,32 +1908,33 @@
             if (!prize) continue;
             hasPrize = true;
             const rowBg = rowIndex % 2 === 0 ? '#0c0c0c' : '#161616';
-            const placeStyle =
-                i === 0
-                    ? 'padding:7px 10px;font-weight:bold;color:' + accent + ';font-size:14px;'
-                    : 'padding:7px 10px;font-weight:bold;color:' + accent + ';';
-            rows +=
-                '<tr style="background:' +
+            prizeRows +=
+                '<div style="padding:8px 12px;background:' +
                 rowBg +
-                ';"><td style="' +
-                bodyTextStyle(placeStyle + 'width:4rem;white-space:nowrap;vertical-align:middle;') +
+                ';' +
+                (rowIndex > 0 ? 'border-top:1px solid ' + border + ';' : '') +
                 '">' +
-                esc(placeOrdinal(i + 1)) +
-                '</td><td style="' +
-                bodyTextStyle('padding:7px 10px;vertical-align:middle;border-left:1px solid ' + border + ';') +
-                '"><span style="color:' +
+                '<span style="color:' +
                 accent +
-                ';font-weight:bold;margin-right:6px;">&#8226;</span><span style="font-weight:600;color:#f0f0f0;">' +
+                ';font-weight:bold;display:inline-block;min-width:2.75em;font-size:' +
+                (i === 0 ? '14px' : '13px') +
+                ';">' +
+                esc(placeOrdinal(i + 1)) +
+                '</span>' +
+                '<span style="color:' +
+                accent +
+                ';font-weight:bold;margin-right:6px;">&#8226;</span>' +
+                '<span style="font-weight:600;color:#f0f0f0;">' +
                 esc(prize) +
-                '</span></td></tr>';
+                '</span></div>';
             rowIndex++;
         }
 
         if (!hasPrize) {
-            rows =
-                '<tr style="background:#0c0c0c;"><td colspan="2" style="' +
-                bodyTextStyle('padding:10px 12px;font-style:italic;') +
-                '">Prizes not set</td></tr>';
+            prizeRows =
+                '<div style="' +
+                bodyTextStyle('padding:10px 12px;font-style:italic;background:#0c0c0c;') +
+                '">Prizes not set</div>';
         }
 
         return (
@@ -1936,32 +1949,24 @@
                 'margin:0;padding:10px 12px;font-weight:bold;font-size:14px;text-transform:uppercase;letter-spacing:0.6px;color:#f5f5f5;'
             ) +
             '">' +
-            '<span style="color:' +
-            accent +
-            ';">&#9733;</span> ' +
             esc(type.label) +
             '</p>' +
             '<div style="height:2px;background:linear-gradient(90deg,' +
             accent +
             ' 0%,transparent 85%);line-height:0;font-size:0;">&nbsp;</div>' +
             '</div>' +
-            '<table border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:13px;">' +
-            '<thead><tr style="background:#000000;">' +
-            '<th style="' +
-            tableHeaderCellStyle('left') +
-            'color:' +
-            accent +
-            ';font-size:11px;text-transform:uppercase;letter-spacing:0.5px;width:4rem;">Place</th>' +
-            '<th style="' +
-            tableHeaderCellStyle('left') +
-            'color:' +
-            accent +
-            ';font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-left:1px solid ' +
-            border +
-            ';">Prize</th>' +
-            '</tr></thead><tbody>' +
-            rows +
-            '</tbody></table></div>'
+            '<div style="padding:0;">' +
+            '<div style="' +
+            bodyTextStyle(
+                'padding:6px 12px;font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;color:' +
+                    accent +
+                    ';background:#000000;border-bottom:1px solid ' +
+                    border +
+                    ';'
+            ) +
+            '">Place <span style="color:#888;font-weight:normal;text-transform:none;letter-spacing:0;"> — Prize</span></div>' +
+            prizeRows +
+            '</div></div>'
         );
     }
 
@@ -2325,18 +2330,138 @@
         body.appendChild(span);
     }
 
+    function getEditableSectionIds() {
+        return WAR_SECTIONS.filter(function (sec) {
+            return !sec.auto && !sec.rulesPicker && !sec.competitionsPicker;
+        }).map(function (sec) {
+            return sec.id;
+        });
+    }
+
+    function syncSectionTextFromDom() {
+        const editor = document.getElementById('newsletter-sections-editor');
+        if (!editor) return;
+        getEditableSectionIds().forEach(function (sectionId) {
+            const el =
+                editor.querySelector('textarea[data-section-text="' + sectionId + '"]') ||
+                editor.querySelector('#newsletter-field-' + sectionId);
+            if (el && el.tagName === 'TEXTAREA') {
+                state.sectionText[sectionId] = el.value;
+            }
+        });
+    }
+
+    function getSectionTextSnapshot(pendingUpdate) {
+        const editor = document.getElementById('newsletter-sections-editor');
+        const snap = {};
+        getEditableSectionIds().forEach(function (sectionId) {
+            if (pendingUpdate && pendingUpdate.id === sectionId) {
+                snap[sectionId] = String(pendingUpdate.value != null ? pendingUpdate.value : '');
+                state.sectionText[sectionId] = snap[sectionId];
+                return;
+            }
+            let value = state.sectionText[sectionId] != null ? String(state.sectionText[sectionId]) : '';
+            if (editor) {
+                const el =
+                    editor.querySelector('textarea[data-section-text="' + sectionId + '"]') ||
+                    editor.querySelector('#newsletter-field-' + sectionId);
+                if (el && el.tagName === 'TEXTAREA') {
+                    value = el.value;
+                    state.sectionText[sectionId] = value;
+                }
+            }
+            snap[sectionId] = value;
+        });
+        return snap;
+    }
+
+    function writeSectionTextCache(snapshot) {
+        try {
+            localStorage.setItem(SECTION_TEXT_STORAGE_KEY, JSON.stringify(snapshot));
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
+    function loadSectionTextCache() {
+        try {
+            const raw = localStorage.getItem(SECTION_TEXT_STORAGE_KEY);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return;
+            getEditableSectionIds().forEach(function (sectionId) {
+                if (parsed[sectionId] != null) {
+                    state.sectionText[sectionId] = String(parsed[sectionId]);
+                }
+            });
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
+    function applySectionTextToDom() {
+        const editor = document.getElementById('newsletter-sections-editor');
+        if (!editor) return;
+        getEditableSectionIds().forEach(function (sectionId) {
+            const el =
+                editor.querySelector('textarea[data-section-text="' + sectionId + '"]') ||
+                editor.querySelector('#newsletter-field-' + sectionId);
+            if (el && el.tagName === 'TEXTAREA' && state.sectionText[sectionId] != null) {
+                el.value = state.sectionText[sectionId];
+            }
+        });
+    }
+
+    function mergeLegacySectionTextFromDraft(d) {
+        if (!d || typeof d !== 'object') return;
+        if (d.sectionText && typeof d.sectionText === 'object') {
+            Object.assign(state.sectionText, d.sectionText);
+        }
+        const legacy = {
+            intro: d.intro != null ? d.intro : d.openingRally != null ? d.openingRally : d.opening_rally,
+            strategy: d.strategy,
+            enemy_analysis: d.enemy_analysis != null ? d.enemy_analysis : d.enemyAnalysis,
+            closing: d.closing
+        };
+        Object.keys(legacy).forEach(function (key) {
+            if (legacy[key] != null && String(legacy[key]).trim()) {
+                state.sectionText[key] = String(legacy[key]);
+            }
+        });
+    }
+
+    function onSectionTextInput(sectionId, value) {
+        const snap = getSectionTextSnapshot({ id: sectionId, value: value });
+        writeSectionTextCache(snap);
+        saveDraft(snap);
+        renderPreview();
+    }
+
+    function ensureIncentivesSectionEnabled() {
+        if (state.sectionEnabled.incentives) return;
+        state.sectionEnabled.incentives = true;
+        const cb = document.querySelector('.newsletter-sections-list [data-section-id="incentives"]');
+        if (cb) cb.checked = true;
+        saveDraft();
+    }
+
     function appendSectionTextEditor(parent, sec) {
         if (state.sectionText[sec.id] == null) state.sectionText[sec.id] = '';
         const ta = document.createElement('textarea');
         ta.id = 'newsletter-field-' + sec.id;
         ta.className = 'newsletter-textarea';
+        ta.dataset.sectionText = sec.id;
         ta.rows = 4;
         ta.placeholder = sec.placeholder || '';
         ta.value = state.sectionText[sec.id];
         ta.addEventListener('input', function () {
-            state.sectionText[sec.id] = ta.value;
-            saveDraft();
-            renderPreview();
+            onSectionTextInput(sec.id, ta.value);
+        });
+        ta.addEventListener('change', function () {
+            onSectionTextInput(sec.id, ta.value);
+        });
+        ta.addEventListener('blur', function () {
+            onSectionTextInput(sec.id, ta.value);
         });
         parent.appendChild(ta);
     }
@@ -2441,6 +2566,7 @@
     }
 
     function renderNewsletterSectionEditors() {
+        syncSectionTextFromDom();
         const wrap = document.getElementById('newsletter-sections-editor');
         if (!wrap) return;
         wrap.innerHTML =
@@ -2515,6 +2641,7 @@
 
     /** Full fragment for Torn editor (matches common faction newsletter pattern). */
     function buildExportHtml() {
+        syncSectionTextFromDom();
         const inner = buildNewsletterBodyHtml();
         return (
             '<p class="bold m-bottom10">This is a newsletter from your faction:</p>' +
@@ -2529,6 +2656,7 @@
         const source = document.getElementById('newsletter-source');
         if (!preview) return;
         try {
+            syncSectionTextFromDom();
             syncPreviewThemeShell();
             const html = buildExportHtml();
             preview.innerHTML = html;
@@ -2538,11 +2666,13 @@
         }
     }
 
-    function saveDraft() {
+    function saveDraft(sectionTextOverride) {
         try {
+            const sectionText = sectionTextOverride || getSectionTextSnapshot();
+            writeSectionTextCache(sectionText);
             const payload = {
                 sectionEnabled: state.sectionEnabled,
-                sectionText: state.sectionText,
+                sectionText: sectionText,
                 subtitle: document.getElementById('newsletter-subtitle')?.value || '',
                 panelColor: getPanelBgHex(),
                 accent: document.getElementById('newsletter-accent')?.value || 'gold',
@@ -2550,9 +2680,21 @@
                 useTag: document.getElementById('newsletter-use-faction-tag')?.checked,
                 showFactionName: document.getElementById('newsletter-show-faction-name')?.checked,
                 linkFaction: document.getElementById('newsletter-link-faction')?.checked,
-                enemyFactionId: state.enemyFactionId
+                enemyFactionId: state.enemyFactionId,
+                competitions: state.competitions.map(function (c) {
+                    return {
+                        id: c.id,
+                        typeId: c.typeId,
+                        placeCount: c.placeCount,
+                        prizes: c.prizes
+                    };
+                }),
+                customIncentives: state.customIncentives.map(function (item) {
+                    return { id: item.id, text: item.text };
+                })
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+            saveCompetitionsPrefs();
         } catch (e) {
             /* ignore */
         }
@@ -2564,7 +2706,11 @@
             if (!raw) return;
             const d = JSON.parse(raw);
             if (d.sectionEnabled) Object.assign(state.sectionEnabled, d.sectionEnabled);
-            if (d.sectionText) Object.assign(state.sectionText, d.sectionText);
+            mergeLegacySectionTextFromDraft(d);
+            getEditableSectionIds().forEach(function (sectionId) {
+                if (state.sectionText[sectionId] == null) state.sectionText[sectionId] = '';
+            });
+            loadSectionTextCache();
             if (d.subtitle != null) {
                 const s = document.getElementById('newsletter-subtitle');
                 if (s) s.value = d.subtitle;
@@ -2596,6 +2742,36 @@
                 if (c) c.checked = !!d.linkFaction;
             }
             if (d.enemyFactionId) state.enemyFactionId = String(d.enemyFactionId);
+            if (Array.isArray(d.customIncentives) && d.customIncentives.length) {
+                state.customIncentives = d.customIncentives
+                    .filter(function (item) {
+                        return item && String(item.text || '').trim();
+                    })
+                    .map(function (item) {
+                        return {
+                            id: item.id || 'inc-' + Math.random().toString(36).slice(2, 8),
+                            text: String(item.text).trim()
+                        };
+                    });
+            }
+            if (Array.isArray(d.competitions) && d.competitions.length) {
+                state.competitions = d.competitions
+                    .filter(function (c) {
+                        return c && c.typeId && getCompetitionTypeDef(c.typeId);
+                    })
+                    .map(function (c) {
+                        const placeCount = Math.max(
+                            1,
+                            Math.min(COMPETITION_MAX_PLACES, Number(c.placeCount) || COMPETITION_DEFAULT_PLACES)
+                        );
+                        return {
+                            id: c.id || 'comp-' + Math.random().toString(36).slice(2, 8),
+                            typeId: c.typeId,
+                            placeCount: placeCount,
+                            prizes: normalizeCompetitionPrizes(placeCount, c.prizes)
+                        };
+                    });
+            }
         } catch (e) {
             /* ignore */
         }
@@ -2710,7 +2886,7 @@
     }
 
     /**
-     * Prefer upcoming war for newsletter; fall back to ongoing.
+     * Ranked war enemy for our faction (same as War Dashboard / Battle Stats: ongoing, else next upcoming).
      */
     async function resolveWar(apiKey, ourFactionId) {
         const data = await fetchJson(
@@ -2719,6 +2895,25 @@
         const raw = data.rankedwars || [];
         const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : [];
         const now = Math.floor(Date.now() / 1000);
+        const ourId = String(ourFactionId);
+
+        const ongoing = list.find(function (w) {
+            return w.start <= now && (!w.end || w.end >= now);
+        });
+        if (ongoing && ongoing.factions && ongoing.factions.length >= 2) {
+            const enemy = ongoing.factions.find(function (f) {
+                return rankedWarFactionId(f) !== ourId;
+            });
+            if (enemy) {
+                const eid = rankedWarFactionId(enemy);
+                return {
+                    war: ongoing,
+                    enemyFactionId: eid,
+                    enemyName: enemy.name || 'Faction ' + eid,
+                    kind: 'ongoing'
+                };
+            }
+        }
 
         const upcoming = list
             .filter(function (w) {
@@ -2730,7 +2925,7 @@
 
         if (upcoming) {
             const enemy = upcoming.factions.find(function (f) {
-                return rankedWarFactionId(f) !== String(ourFactionId);
+                return rankedWarFactionId(f) !== ourId;
             });
             if (enemy) {
                 const eid = rankedWarFactionId(enemy);
@@ -2739,24 +2934,6 @@
                     enemyFactionId: eid,
                     enemyName: enemy.name || 'Faction ' + eid,
                     kind: 'upcoming'
-                };
-            }
-        }
-
-        const ongoing = list.find(function (w) {
-            return w.start <= now && (!w.end || w.end >= now);
-        });
-        if (ongoing && ongoing.factions && ongoing.factions.length >= 2) {
-            const enemy = ongoing.factions.find(function (f) {
-                return rankedWarFactionId(f) !== String(ourFactionId);
-            });
-            if (enemy) {
-                const eid = rankedWarFactionId(enemy);
-                return {
-                    war: ongoing,
-                    enemyFactionId: eid,
-                    enemyName: enemy.name || 'Faction ' + eid,
-                    kind: 'ongoing'
                 };
             }
         }
@@ -2786,24 +2963,31 @@
             state.ourBasic = ourBasic;
             if (ourBasic.name) state.ourFactionName = ourBasic.name;
 
-            let enemyId = enemyOverrideId || state.enemyFactionId;
-            let warInfo = null;
-            if (!enemyId) {
-                warInfo = await resolveWar(apiKey, state.ourFactionId);
-                if (!warInfo) throw new Error('No upcoming or ongoing ranked war found. Enter an enemy faction ID.');
+            const warInfo = await resolveWar(apiKey, state.ourFactionId);
+            const overrideId =
+                enemyOverrideId != null && String(enemyOverrideId).trim() !== ''
+                    ? String(enemyOverrideId).trim()
+                    : null;
+
+            let enemyId;
+            if (overrideId) {
+                enemyId = overrideId;
+                if (warInfo && String(warInfo.enemyFactionId) === overrideId) {
+                    state.war = warInfo.war;
+                    state.warKind = warInfo.kind;
+                    state.enemyFactionName = warInfo.enemyName;
+                } else {
+                    state.war = null;
+                    state.warKind = null;
+                }
+            } else {
+                if (!warInfo) {
+                    throw new Error('No upcoming or ongoing ranked war found. Enter an enemy faction ID.');
+                }
                 enemyId = warInfo.enemyFactionId;
                 state.war = warInfo.war;
                 state.warKind = warInfo.kind;
                 state.enemyFactionName = warInfo.enemyName;
-            } else {
-                warInfo = await resolveWar(apiKey, state.ourFactionId);
-                if (warInfo && String(warInfo.enemyFactionId) === String(enemyId)) {
-                    state.war = warInfo.war;
-                    state.warKind = warInfo.kind;
-                } else {
-                    state.war = warInfo && warInfo.war ? warInfo.war : null;
-                    state.warKind = warInfo ? warInfo.kind : null;
-                }
             }
 
             state.enemyFactionId = String(enemyId);
@@ -3080,6 +3264,13 @@
                 e.preventDefault();
                 if (addCustomWarRule(e.target.value)) e.target.value = '';
             }, { signal: signal });
+            window.addEventListener(
+                'beforeunload',
+                function () {
+                    saveDraft();
+                },
+                { signal: signal }
+            );
         }
 
         document.getElementById('newsletter-load-war')?.addEventListener('click', function () {
@@ -3095,11 +3286,13 @@
         }, { signal: signal });
 
         document.getElementById('newsletter-copy-mail')?.addEventListener('click', function () {
+            syncSectionTextFromDom();
             renderPreview();
             const html = buildExportHtml();
             copyToClipboard(html, htmlToPlain(html), document.getElementById('newsletter-copy-mail'));
         }, { signal: signal });
         document.getElementById('newsletter-copy-source')?.addEventListener('click', function () {
+            syncSectionTextFromDom();
             renderPreview();
             const html = buildExportHtml();
             copyToClipboard(html, html, document.getElementById('newsletter-copy-source'));
@@ -3129,6 +3322,9 @@
         WAR_SECTIONS.forEach(function (s) {
             if (state.sectionEnabled[s.id] == null) state.sectionEnabled[s.id] = s.defaultOn;
         });
+        getEditableSectionIds().forEach(function (sectionId) {
+            if (state.sectionText[sectionId] == null) state.sectionText[sectionId] = '';
+        });
         renderPanelColorPicker();
         loadWarRulesPrefs();
         loadAllFlatSectionRulesPrefs();
@@ -3141,6 +3337,7 @@
         syncPanelColorPicker();
         renderSectionCheckboxes();
         renderNewsletterSectionEditors();
+        applySectionTextToDom();
         wireEvents();
         syncPreviewThemeShell();
         saveDraft();
