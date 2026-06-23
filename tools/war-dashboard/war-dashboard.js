@@ -1027,43 +1027,13 @@
         } catch (e) { /* ignore */ }
     }
 
-    /** Latest sample `t` across tracked factions in localStorage (persisted merge history). */
-    function getMaxActivitySampleTForFaction(factionId) {
-        const data = getActivityDataFromStorage(factionId);
-        let maxT = 0;
-        (data.samples || []).forEach(function (s) {
-            if (s && s.t > maxT) maxT = s.t;
-        });
-        return maxT;
-    }
-
-    function getMaxActivitySampleTForTrackedFactions() {
-        const cfg = getActivityConfig();
-        let maxT = 0;
-        cfg.tracked.forEach(function (t) {
-            const m = getMaxActivitySampleTForFaction(t.factionId);
-            if (m > maxT) maxT = m;
-        });
-        return maxT;
-    }
-
-    /** True when this faction has no usable persisted samples in the 7-day window. */
-    function factionNeedsActivityCloudBootstrap(factionId) {
-        const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
-        return getMaxActivitySampleTForFaction(factionId) < cutoff;
-    }
-
-    /** Full 7-day query when no cursor, cursor expired, or any tracked faction lacks local history. */
+    /** Full 7-day query only when no cursor, cursor expired, or explicit { full: true }. */
     function shouldFullBootstrapActivityCloud(options) {
         if (options && options.full) return true;
         const cursor = getActivityCloudCursorT();
         if (!cursor) return true;
         const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
-        if (cursor < cutoff) return true;
-        const cfg = getActivityConfig();
-        return cfg.tracked.some(function (t) {
-            return factionNeedsActivityCloudBootstrap(t.factionId);
-        });
+        return cursor < cutoff;
     }
 
     function maxSampleTFromSnapshot(snap) {
@@ -1188,20 +1158,7 @@
                 readError = (e && e.message) ? e.message : String(e);
                 console.warn('Activity Firestore read failed', e);
                 if (!fullBootstrap) {
-                    try {
-                        const snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
-                            .where('t', '>=', cutoff)
-                            .orderBy('t')
-                            .get();
-                        docCount = snap.docs.length;
-                        byFaction = parseActivitySamplesSnapshot(snap);
-                        const maxT = maxSampleTFromSnapshot(snap);
-                        if (maxT > 0) setActivityCloudCursorT(maxT);
-                        readError = null;
-                    } catch (e2) {
-                        readError = (e2 && e2.message) ? e2.message : String(e2);
-                        console.warn('Activity Firestore full bootstrap fallback failed', e2);
-                    }
+                    console.warn('Activity incremental sync failed; will retry incrementally next tick (no full bootstrap fallback).');
                 }
             }
 
@@ -4593,7 +4550,7 @@
             const reg = await syncTrackedFactionToFirestore(factionId, 'add');
             updateActivityCloudStatusUI(factionId);
             if (!reg.ok && reg.error) showError('Cloud activity (24/7): ' + reg.error + ' — this tab will still sample every 5 min while open.');
-            await refreshAllTrackedActivityFromCloud();
+            await refreshAllTrackedActivityFromCloud({ full: true });
             updateActivityCloudStatusUI(factionId);
             updateActivityTrackerUI();
         } catch (e) {
