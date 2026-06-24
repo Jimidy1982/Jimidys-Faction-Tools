@@ -1134,8 +1134,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         try {
-            // Get current VIP balance from Firebase (skip cache for updates)
-            let vipData = await getVipBalance(userData.playerId, false, vipMeta);
+            // Use cache when possible — Xanax credits come from Torn events, not balance re-reads
+            let vipData = await getVipBalance(userData.playerId, true, vipMeta);
             
             // If not found by ID, try to find by name (for backfilled data where playerId was 0)
             if (!vipData) {

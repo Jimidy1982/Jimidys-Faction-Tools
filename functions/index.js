@@ -464,6 +464,10 @@ exports.listMyActivityFactions = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) 
 
 // --- VIP service (migrated from Apps Script) ---
 const VIP_BALANCES_COLLECTION = 'vipBalances';
+/** All VIP rows in one doc for admin list + scheduled deductions (1 read instead of N). */
+const VIP_BALANCES_REGISTRY_ID = '_registry';
+/** Cached faction pool totals — 1 read per getVipBalance instead of where('factionId'). */
+const VIP_FACTION_POOLS_COLLECTION = 'vipFactionPools';
 const VIP_TRANSACTIONS_COLLECTION = 'vipTransactions';
 /** One doc per credited Torn event: doc id `${playerId}_${tornEventId}` — prevents double-count on VIP refresh. */
 const VIP_TORN_EVENT_CLAIMS_COLLECTION = 'vipTornEventClaims';
@@ -480,6 +484,145 @@ function vipLevelFromBalance(balance) {
   if (b >= 50) return 2;
   if (b >= 10) return 1;
   return 0;
+}
+
+function vipRegistryRef() {
+  return db.collection(VIP_BALANCES_COLLECTION).doc(VIP_BALANCES_REGISTRY_ID);
+}
+
+function vipPlayerRowFromData(data, playerId) {
+  const d = data || {};
+  return {
+    playerName: d.playerName != null ? String(d.playerName) : '',
+    factionName: d.factionName != null ? String(d.factionName) : '',
+    factionId: d.factionId != null && String(d.factionId).trim() !== '' ? String(d.factionId).trim() : '',
+    totalXanaxSent: Number(d.totalXanaxSent) || 0,
+    currentBalance: Number(d.currentBalance) || 0,
+    lastDeductionDate: d.lastDeductionDate ?? null,
+    vipLevel: Number(d.vipLevel) || vipLevelFromBalance(Number(d.currentBalance) || 0),
+    lastLoginDate: d.lastLoginDate ?? null,
+  };
+}
+
+function vipRegistryRowToAdminBalance(playerId, row) {
+  return {
+    playerId: String(playerId),
+    playerName: row.playerName ?? '',
+    factionName: row.factionName ?? '',
+    factionId: row.factionId ?? '',
+    totalXanaxSent: row.totalXanaxSent ?? 0,
+    currentBalance: row.currentBalance ?? 0,
+    lastDeductionDate: row.lastDeductionDate ?? null,
+    vipLevel: row.vipLevel ?? 0,
+    lastLoginDate: row.lastLoginDate ?? null,
+  };
+}
+
+async function writeVipBalancesRegistry(players) {
+  const ref = vipRegistryRef();
+  if (!players || !Object.keys(players).length) {
+    await ref.delete();
+    return;
+  }
+  await ref.set({ players, updatedAt: Date.now() });
+}
+
+/**
+ * Read consolidated VIP registry. One-time migrate from legacy per-player docs if missing.
+ * @returns {Promise<Record<string, object>>}
+ */
+async function readVipBalancesRegistry() {
+  const ref = vipRegistryRef();
+  const snap = await ref.get();
+  if (snap.exists && snap.data().players && typeof snap.data().players === 'object') {
+    return { ...snap.data().players };
+  }
+
+  const legacySnap = await db.collection(VIP_BALANCES_COLLECTION).get();
+  const players = {};
+  for (const doc of legacySnap.docs) {
+    if (doc.id === VIP_BALANCES_REGISTRY_ID) continue;
+    players[doc.id] = vipPlayerRowFromData(doc.data(), doc.id);
+  }
+  if (Object.keys(players).length) {
+    await writeVipBalancesRegistry(players);
+    await rebuildAllVipFactionPoolsFromRegistry(players);
+  }
+  return players;
+}
+
+async function syncVipRegistryPlayer(playerId, newData, prevData) {
+  const pid = String(playerId);
+  const ref = vipRegistryRef();
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const players = snap.exists && snap.data().players ? { ...snap.data().players } : {};
+    players[pid] = vipPlayerRowFromData(newData, pid);
+    tx.set(ref, { players, updatedAt: Date.now() });
+  });
+  await applyVipFactionPoolDelta(prevData, newData);
+}
+
+async function adjustVipFactionPool(factionId, deltaBalance, deltaCount) {
+  const fid = String(factionId || '').trim();
+  if (!fid || (deltaBalance === 0 && deltaCount === 0)) return;
+  const ref = db.collection(VIP_FACTION_POOLS_COLLECTION).doc(fid);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const cur = snap.exists ? snap.data() : { combinedBalance: 0, memberCount: 0 };
+    const sum = Math.max(0, (Number(cur.combinedBalance) || 0) + deltaBalance);
+    const count = Math.max(0, (Number(cur.memberCount) || 0) + deltaCount);
+    if (count <= 0) tx.delete(ref);
+    else tx.set(ref, { combinedBalance: sum, memberCount: count, updatedAt: Date.now() });
+  });
+}
+
+async function applyVipFactionPoolDelta(prevData, newData) {
+  const prev = prevData ? vipPlayerRowFromData(prevData) : null;
+  const next = newData ? vipPlayerRowFromData(newData) : null;
+  const prevFid = prev?.factionId || '';
+  const newFid = next?.factionId || '';
+  const prevBal = Number(prev?.currentBalance) || 0;
+  const newBal = Number(next?.currentBalance) || 0;
+  if (prevFid && prevFid !== newFid) {
+    await adjustVipFactionPool(prevFid, -prevBal, -1);
+  }
+  if (newFid) {
+    if (prevFid === newFid) await adjustVipFactionPool(newFid, newBal - prevBal, 0);
+    else await adjustVipFactionPool(newFid, newBal, 1);
+  }
+}
+
+async function rebuildAllVipFactionPoolsFromRegistry(players) {
+  const byFaction = {};
+  for (const row of Object.values(players || {})) {
+    const fid = row.factionId ? String(row.factionId).trim() : '';
+    if (!fid) continue;
+    if (!byFaction[fid]) byFaction[fid] = { sum: 0, count: 0 };
+    byFaction[fid].sum += Number(row.currentBalance) || 0;
+    byFaction[fid].count += 1;
+  }
+  const batch = db.batch();
+  for (const [fid, agg] of Object.entries(byFaction)) {
+    batch.set(db.collection(VIP_FACTION_POOLS_COLLECTION).doc(fid), {
+      combinedBalance: agg.sum,
+      memberCount: agg.count,
+      updatedAt: Date.now(),
+    });
+  }
+  if (Object.keys(byFaction).length) await batch.commit();
+}
+
+async function readVipFactionPoolTotals(factionId) {
+  const fid = String(factionId || '').trim();
+  if (!fid) return null;
+  const snap = await db.collection(VIP_FACTION_POOLS_COLLECTION).doc(fid).get();
+  if (!snap.exists) return null;
+  const d = snap.data();
+  return {
+    combinedBalance: Number(d.combinedBalance) || 0,
+    memberCount: Number(d.memberCount) || 0,
+  };
 }
 
 /** Milliseconds for sorting vipTransactions (timestamp may be ISO string or Firestore Timestamp). */
@@ -677,7 +820,14 @@ async function applyVipTornXanaxCreditsInternal(playerId, playerName, credits, o
         vipLevel,
         lastLoginDate: docUpdate.lastLoginDate,
       },
+      _registrySync: { prev: balSnap.exists ? d : null, next: { ...d, ...docUpdate } },
     };
+  }).then(async (result) => {
+    if (result._registrySync) {
+      await syncVipRegistryPlayer(playerId, result._registrySync.next, result._registrySync.prev);
+    }
+    const { _registrySync, ...out } = result;
+    return out;
   });
 }
 
@@ -749,15 +899,11 @@ async function buildVipBalanceResponseFromDocData(d, poolQueryFactionId = '') {
   let effectiveLevel = personalLevel;
 
   if (fid) {
-    const poolSnap = await db.collection(VIP_BALANCES_COLLECTION).where('factionId', '==', fid).get();
-    factionMemberCount = poolSnap.size;
-    let sum = 0;
-    poolSnap.forEach((doc) => {
-      sum += Number(doc.data().currentBalance) || 0;
-    });
-    if (factionMemberCount >= 1) {
-      factionCombinedBalance = sum;
-      effectiveLevel = vipLevelFromBalance(sum);
+    const pool = await readVipFactionPoolTotals(fid);
+    if (pool && pool.memberCount >= 1) {
+      factionMemberCount = pool.memberCount;
+      factionCombinedBalance = pool.combinedBalance;
+      effectiveLevel = vipLevelFromBalance(pool.combinedBalance);
     }
   }
 
@@ -801,7 +947,9 @@ async function mergeVipLoginTouchFromTorn(docRef, tornProf, existingData) {
   }
 
   await docRef.set(patch, { merge: true });
-  return { ...(existingData || {}), ...patch };
+  const merged = { ...(existingData || {}), ...patch };
+  await syncVipRegistryPlayer(docRef.id, merged, existingData);
+  return merged;
 }
 
 /** Record login + refresh faction from the player’s own verified API key (no admin key required). */
@@ -860,13 +1008,9 @@ exports.getVipBalance = onCall(
           return buildVipBalanceResponseFromDocData(merged, tornFid);
         }
         if (!tornFid) return null;
-        const poolSnap = await db.collection(VIP_BALANCES_COLLECTION).where('factionId', '==', tornFid).get();
-        if (poolSnap.empty) return null;
-        let sum = 0;
-        poolSnap.forEach((doc) => {
-          sum += Number(doc.data().currentBalance) || 0;
-        });
-        const effectiveLevel = vipLevelFromBalance(sum);
+        const pool = await readVipFactionPoolTotals(tornFid);
+        if (!pool || pool.memberCount < 1) return null;
+        const effectiveLevel = vipLevelFromBalance(pool.combinedBalance);
         const name = tornProf ? tornProf.playerName : `Player ${pid}`;
         const out = {
           playerId: pid,
@@ -877,8 +1021,8 @@ exports.getVipBalance = onCall(
           vipLevel: effectiveLevel,
           lastLoginDate: null,
           factionId: tornFid,
-          factionCombinedBalance: sum,
-          factionMemberCount: poolSnap.size,
+          factionCombinedBalance: pool.combinedBalance,
+          factionMemberCount: pool.memberCount,
         };
         if (tornProf && tornProf.factionName) out.factionName = tornProf.factionName;
         return out;
@@ -931,6 +1075,7 @@ exports.updateVipBalance = onCall(
     if (data.factionName != null && data.factionName !== '') doc.factionName = data.factionName;
     if (data.factionId != null && data.factionId !== '') doc.factionId = String(data.factionId);
     await ref.set(doc, { merge: true });
+    await syncVipRegistryPlayer(playerId, { ...prev, ...doc }, prev);
     const newBal = Number(doc.currentBalance) || 0;
     const newSent = Number(doc.totalXanaxSent) || 0;
     const dBal = newBal - oldBal;
@@ -1048,22 +1193,8 @@ exports.getVipBalancesForAdmin = onCall(
     const { apiKey } = request.data || {};
     const ok = await validateAdminApiKey(apiKey);
     if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
-    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
-    const list = [];
-    snap.docs.forEach((doc) => {
-      const d = doc.data();
-      list.push({
-        playerId: doc.id,
-        playerName: d.playerName ?? '',
-        factionName: d.factionName ?? '',
-        factionId: d.factionId ?? '',
-        totalXanaxSent: d.totalXanaxSent ?? 0,
-        currentBalance: d.currentBalance ?? 0,
-        lastDeductionDate: d.lastDeductionDate ?? null,
-        vipLevel: d.vipLevel ?? 0,
-        lastLoginDate: d.lastLoginDate ?? null,
-      });
-    });
+    const players = await readVipBalancesRegistry();
+    const list = Object.entries(players).map(([id, row]) => vipRegistryRowToAdminBalance(id, row));
     return { balances: list };
   }
 );
@@ -1209,6 +1340,7 @@ exports.adminAddVipPlayer = onCall(
       doc.factionId = factionId;
     }
     await db.collection(VIP_BALANCES_COLLECTION).doc(pid).set(doc, { merge: true });
+    await syncVipRegistryPlayer(pid, doc, null);
     await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
       timestamp: nowIso,
       playerId: pid,
@@ -1238,16 +1370,16 @@ exports.refreshVipProfilesFromTorn = onCall(
       throw new HttpsError('invalid-argument', 'Valid 16-character Torn API key required');
     }
 
-    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const players = await readVipBalancesRegistry();
     const failed = [];
     let updated = 0;
     const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
     let n = 0;
-    for (const doc of snap.docs) {
-      const pid = doc.id;
+    for (const pid of Object.keys(players)) {
       if (n++ > 0) await delay(150);
       try {
+        const prevRow = players[pid];
         const { playerName, factionName, factionId, factionPatch } =
           await fetchTornPlayerNameAndFactionForVip(keyClean, pid);
         const patch = {
@@ -1261,7 +1393,15 @@ exports.refreshVipProfilesFromTorn = onCall(
           patch.factionName = admin.firestore.FieldValue.delete();
           patch.factionId = admin.firestore.FieldValue.delete();
         }
-        await doc.ref.set(patch, { merge: true });
+        const ref = db.collection(VIP_BALANCES_COLLECTION).doc(pid);
+        await ref.set(patch, { merge: true });
+        const merged = { ...prevRow, ...patch };
+        if (factionPatch === 'clear') {
+          delete merged.factionName;
+          delete merged.factionId;
+        }
+        await syncVipRegistryPlayer(pid, merged, prevRow);
+        players[pid] = vipPlayerRowFromData(merged, pid);
         updated++;
       } catch (e) {
         const msg =
@@ -1277,7 +1417,7 @@ exports.refreshVipProfilesFromTorn = onCall(
     await db.collection('vipAdminMeta').doc('lastProfileRefresh').set(
       {
         at: admin.firestore.FieldValue.serverTimestamp(),
-        total: snap.size,
+        total: Object.keys(players).length,
         updated,
         failedCount: failed.length,
       },
@@ -1286,7 +1426,7 @@ exports.refreshVipProfilesFromTorn = onCall(
 
     return {
       success: true,
-      total: snap.size,
+      total: Object.keys(players).length,
       updated,
       failedCount: failed.length,
       failed: failed.slice(0, 40),
@@ -1366,6 +1506,15 @@ exports.importVipBalances = onCall(
         vipLevel,
         lastLoginDate: now,
       }, { merge: true });
+      await syncVipRegistryPlayer(playerId, {
+        playerId,
+        playerName,
+        totalXanaxSent: amount,
+        currentBalance: amount,
+        lastDeductionDate: now,
+        vipLevel,
+        lastLoginDate: now,
+      }, null);
       await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
         timestamp: now,
         playerId,
@@ -1437,16 +1586,14 @@ exports.applyVipDeductions = onSchedule(
   { schedule: 'every 6 hours', timeZone: 'UTC', timeoutSeconds: 300 },
   async () => {
     console.log('[applyVipDeductions] scheduled run start');
-    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const players = await readVipBalancesRegistry();
     const now = Date.now();
     const nowIso = new Date(now).toISOString();
     let updated = 0;
     let errors = 0;
 
-    for (const doc of snap.docs) {
+    for (const [playerId, d] of Object.entries(players)) {
       try {
-        const d = doc.data();
-        const playerId = doc.id;
         const lastDeductionDate = d.lastDeductionDate ?? null;
         if (!lastDeductionDate) continue;
 
@@ -1463,6 +1610,15 @@ exports.applyVipDeductions = onSchedule(
           vipLevel: newLevel,
         });
 
+        const nextRow = {
+          ...d,
+          currentBalance: newBalance,
+          lastDeductionDate: nowIso,
+          vipLevel: newLevel,
+        };
+        players[playerId] = vipPlayerRowFromData(nextRow, playerId);
+        await applyVipFactionPoolDelta(d, nextRow);
+
         await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
           timestamp: nowIso,
           playerId,
@@ -1474,9 +1630,10 @@ exports.applyVipDeductions = onSchedule(
         updated++;
       } catch (e) {
         errors++;
-        console.error('[applyVipDeductions] player doc error', doc.id, e && e.message);
+        console.error('[applyVipDeductions] player doc error', playerId, e && e.message);
       }
     }
+    await writeVipBalancesRegistry(players);
     console.log('[applyVipDeductions] done updated=', updated, 'errors=', errors);
   }
 );
@@ -1882,14 +2039,12 @@ exports.applyVipDeductionsNow = onCall(
     const ok = await validateAdminApiKey(apiKey);
     if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
 
-    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const players = await readVipBalancesRegistry();
     const now = Date.now();
     const nowIso = new Date(now).toISOString();
     let updated = 0;
 
-    for (const doc of snap.docs) {
-      const d = doc.data();
-      const playerId = doc.id;
+    for (const [playerId, d] of Object.entries(players)) {
       const lastDeductionDate = d.lastDeductionDate ?? null;
       if (!lastDeductionDate) continue;
 
@@ -1906,6 +2061,10 @@ exports.applyVipDeductionsNow = onCall(
         vipLevel: newLevel,
       });
 
+      const nextRow = { ...d, currentBalance: newBalance, lastDeductionDate: nowIso, vipLevel: newLevel };
+      players[playerId] = vipPlayerRowFromData(nextRow, playerId);
+      await applyVipFactionPoolDelta(d, nextRow);
+
       await db.collection(VIP_TRANSACTIONS_COLLECTION).add({
         timestamp: nowIso,
         playerId,
@@ -1916,6 +2075,7 @@ exports.applyVipDeductionsNow = onCall(
       });
       updated++;
     }
+    await writeVipBalancesRegistry(players);
     return { updated };
   }
 );
@@ -1929,13 +2089,15 @@ exports.resetVipDeductionClock = onCall(
     if (!ok) throw new HttpsError('permission-denied', 'Admin API key required');
 
     const nowIso = new Date().toISOString();
-    const snap = await db.collection(VIP_BALANCES_COLLECTION).get();
+    const players = await readVipBalancesRegistry();
     let reset = 0;
 
-    for (const doc of snap.docs) {
-      await doc.ref.update({ lastDeductionDate: nowIso });
+    for (const playerId of Object.keys(players)) {
+      await db.collection(VIP_BALANCES_COLLECTION).doc(playerId).update({ lastDeductionDate: nowIso });
+      players[playerId] = { ...players[playerId], lastDeductionDate: nowIso };
       reset++;
     }
+    await writeVipBalancesRegistry(players);
 
     return { reset };
   }
