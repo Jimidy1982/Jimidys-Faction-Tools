@@ -1786,7 +1786,34 @@ document.addEventListener('DOMContentLoaded', () => {
         // Group by date: unique users and unique users per tool per day
         const dailyData = {};
         const toolUsageData = {}; // { dateKey: { toolName: Set of users } }
+        const dayBreakdown = {}; // { dateKey: { all: { factions }, tools: { [tool]: { factions } } } }
         const allTools = new Set();
+
+        function getOrCreateFaction(bucket, factionName, factionId) {
+            if (!bucket.factions[factionName]) {
+                bucket.factions[factionName] = {
+                    factionName,
+                    factionId: factionId || null,
+                    members: {}
+                };
+            }
+            return bucket.factions[factionName];
+        }
+
+        function addLogToBucket(bucket, log) {
+            const factionName = log.factionName || 'No Faction';
+            const fac = getOrCreateFaction(bucket, factionName, log.factionId);
+            const memberKey = String(log.playerId || log.userName || 'unknown');
+            if (!fac.members[memberKey]) {
+                fac.members[memberKey] = {
+                    userName: log.userName || 'Unknown',
+                    playerId: log.playerId || null,
+                    profileUrl: log.profileUrl || null,
+                    uses: 0
+                };
+            }
+            fac.members[memberKey].uses++;
+        }
         
         filteredLogs.forEach(log => {
             const logDate = new Date(log.timestamp);
@@ -1807,6 +1834,15 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             toolUsageData[dateKey][log.tool].add(log.userName); // Add user to set (unique per day)
             allTools.add(log.tool);
+
+            if (!dayBreakdown[dateKey]) {
+                dayBreakdown[dateKey] = { all: { factions: {} }, tools: {} };
+            }
+            addLogToBucket(dayBreakdown[dateKey].all, log);
+            if (!dayBreakdown[dateKey].tools[log.tool]) {
+                dayBreakdown[dateKey].tools[log.tool] = { factions: {} };
+            }
+            addLogToBucket(dayBreakdown[dateKey].tools[log.tool], log);
         });
         
         // Convert to array format for chart
@@ -1835,7 +1871,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
         
-        return { dates, uniqueUsers, toolUsage, allTools: Array.from(allTools).sort() };
+        return { dates, uniqueUsers, toolUsage, allTools: Array.from(allTools).sort(), dayBreakdown };
     }
     
     // Color palette for tools (distinct colors)
@@ -1850,9 +1886,129 @@ document.addEventListener('DOMContentLoaded', () => {
         return toolColors[toolIndex % toolColors.length];
     }
     
+    function getToolDisplayName(tool) {
+        if (tool === 'War Report 2.0' || tool === 'war-report-2.0') {
+            return 'War Report 2.0 (Payout Calculator)';
+        }
+        return tool;
+    }
+
+    function escapeHtml(str) {
+        return String(str == null ? '' : str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function countUniqueMembersInBucket(bucket) {
+        if (!bucket || !bucket.factions) return 0;
+        const seen = new Set();
+        Object.values(bucket.factions).forEach(function (fac) {
+            Object.keys(fac.members || {}).forEach(function (k) { seen.add(k); });
+        });
+        return seen.size;
+    }
+
+    function sortFactionEntries(factionsObj) {
+        return Object.values(factionsObj || {}).sort(function (a, b) {
+            const aCount = Object.keys(a.members || {}).length;
+            const bCount = Object.keys(b.members || {}).length;
+            if (bCount !== aCount) return bCount - aCount;
+            return String(a.factionName).localeCompare(String(b.factionName));
+        });
+    }
+
+    function closeUsageDayDetailModal() {
+        const existing = document.getElementById('usage-day-detail-overlay');
+        if (existing) existing.remove();
+    }
+
+    function showUsageDayDetailModal(dateKey, seriesKey, seriesLabel, dayBreakdown) {
+        closeUsageDayDetailModal();
+        const day = dayBreakdown && dayBreakdown[dateKey];
+        const bucket = seriesKey === 'totalUsers' ? (day && day.all) : (day && day.tools && day.tools[seriesKey]);
+        const factions = sortFactionEntries(bucket && bucket.factions);
+        const uniqueUsers = countUniqueMembersInBucket(bucket);
+        const totalUses = factions.reduce(function (sum, fac) {
+            return sum + Object.values(fac.members || {}).reduce(function (s, m) { return s + (m.uses || 0); }, 0);
+        }, 0);
+
+        const overlay = document.createElement('div');
+        overlay.id = 'usage-day-detail-overlay';
+        overlay.className = 'app-modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-labelledby', 'usage-day-detail-title');
+
+        let factionHtml = '';
+        if (!factions.length) {
+            factionHtml = '<p class="usage-day-empty">No usage recorded for this day.</p>';
+        } else {
+            factionHtml = factions.map(function (fac) {
+                const members = Object.values(fac.members || {}).sort(function (a, b) {
+                    if ((b.uses || 0) !== (a.uses || 0)) return (b.uses || 0) - (a.uses || 0);
+                    return String(a.userName).localeCompare(String(b.userName));
+                });
+                const memberCount = members.length;
+                const factionUses = members.reduce(function (s, m) { return s + (m.uses || 0); }, 0);
+                const idSuffix = String(fac.factionId || fac.factionName).replace(/[^a-zA-Z0-9_-]/g, '_');
+                const membersHtml = members.map(function (m) {
+                    const name = escapeHtml(m.userName || 'Unknown');
+                    const usesLabel = (m.uses || 0) > 1 ? ' <span class="usage-day-member-uses">(' + m.uses + ' uses)</span>' : '';
+                    if (m.profileUrl && /^https?:\/\//i.test(m.profileUrl)) {
+                        return '<li><a href="' + escapeHtml(m.profileUrl) + '" target="_blank" rel="noopener noreferrer">' + name + '</a>' + usesLabel + '</li>';
+                    }
+                    return '<li>' + name + usesLabel + '</li>';
+                }).join('');
+                const factionIdLabel = fac.factionId ? ' <span class="usage-day-faction-id">[' + escapeHtml(fac.factionId) + ']</span>' : '';
+                return (
+                    '<details class="usage-day-faction">' +
+                    '<summary class="usage-day-faction-summary">' +
+                    '<span class="usage-day-faction-name">' + escapeHtml(fac.factionName) + factionIdLabel + '</span>' +
+                    '<span class="usage-day-faction-count">' + memberCount + ' user' + (memberCount === 1 ? '' : 's') +
+                    (factionUses > memberCount ? ', ' + factionUses + ' uses' : '') + '</span>' +
+                    '</summary>' +
+                    '<ul class="usage-day-member-list" id="usage-day-members-' + idSuffix + '">' + membersHtml + '</ul>' +
+                    '</details>'
+                );
+            }).join('');
+        }
+
+        overlay.innerHTML =
+            '<div class="app-modal app-modal-usage-day-detail">' +
+            '<div class="app-modal-header">' +
+            '<h2 id="usage-day-detail-title">' + escapeHtml(seriesLabel) + ' — ' + escapeHtml(dateKey) + '</h2>' +
+            '<button type="button" class="app-modal-close" id="usage-day-detail-close" aria-label="Close">&times;</button>' +
+            '</div>' +
+            '<div class="app-modal-body usage-day-detail-body">' +
+            '<p class="usage-day-summary">' +
+            '<strong>' + uniqueUsers + '</strong> unique user' + (uniqueUsers === 1 ? '' : 's') +
+            ' across <strong>' + factions.length + '</strong> faction' + (factions.length === 1 ? '' : 's') +
+            (totalUses > uniqueUsers ? ' · <strong>' + totalUses + '</strong> total uses' : '') +
+            '</p>' +
+            '<div class="usage-day-faction-list">' + factionHtml + '</div>' +
+            '</div>' +
+            '</div>';
+
+        document.body.appendChild(overlay);
+
+        function close() { closeUsageDayDetailModal(); }
+        overlay.querySelector('#usage-day-detail-close').addEventListener('click', close);
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) close();
+        });
+        document.addEventListener('keydown', function onKey(e) {
+            if (e.key === 'Escape') {
+                close();
+                document.removeEventListener('keydown', onKey);
+            }
+        });
+    }
+    
     // Function to render the users graph with tool usage
     function renderUsersGraph(logs, daysBack, visibilitySettings = {}) {
-        const { dates, uniqueUsers, toolUsage, allTools } = calculateUsagePerDay(logs, daysBack);
+        const { dates, uniqueUsers, toolUsage, allTools, dayBreakdown } = calculateUsagePerDay(logs, daysBack);
         
         const canvas = document.getElementById('usersGraph');
         if (!canvas) return;
@@ -1877,6 +2033,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (visibilitySettings.totalUsers !== false) {
             datasets.push({
                 label: 'Total Unique Users',
+                _seriesKey: 'totalUsers',
                 data: uniqueUsers,
                 borderColor: '#ffd700',
                 backgroundColor: 'rgba(255, 215, 0, 0.1)',
@@ -1884,7 +2041,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 fill: true,
                 tension: 0.4,
                 pointRadius: 3,
-                pointHoverRadius: 5,
+                pointHoverRadius: 6,
+                pointHitRadius: 12,
                 pointBackgroundColor: '#ffd700',
                 pointBorderColor: '#fff',
                 pointBorderWidth: 2,
@@ -1896,21 +2054,19 @@ document.addEventListener('DOMContentLoaded', () => {
         allTools.forEach((tool, index) => {
             if (visibilitySettings[tool] !== false) {
                 const color = getToolColor(index);
-                // Add display name with alias for War Report 2.0
-                let displayName = tool;
-                if (tool === 'War Report 2.0' || tool === 'war-report-2.0') {
-                    displayName = 'War Report 2.0 (Payout Calculator)';
-                }
+                const displayName = getToolDisplayName(tool);
                 datasets.push({
                     label: displayName,
+                    _seriesKey: tool,
                     data: toolUsage[tool],
                     borderColor: color,
                     backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
                     borderWidth: 2,
                     fill: false,
                     tension: 0.4,
-                    pointRadius: 2,
-                    pointHoverRadius: 4,
+                    pointRadius: 3,
+                    pointHoverRadius: 6,
+                    pointHitRadius: 12,
                     pointBackgroundColor: color,
                     pointBorderColor: '#fff',
                     pointBorderWidth: 1,
@@ -1928,6 +2084,22 @@ document.addEventListener('DOMContentLoaded', () => {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                onHover: function (event, elements) {
+                    if (event && event.native && event.native.target) {
+                        event.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+                    }
+                },
+                onClick: function (event, elements, chart) {
+                    if (!elements || !elements.length) return;
+                    const el = elements[0];
+                    const dataset = chart.data.datasets[el.datasetIndex];
+                    const seriesKey = dataset._seriesKey;
+                    const seriesLabel = dataset.label || seriesKey;
+                    const dateKey = dates[el.index];
+                    const value = dataset.data[el.index];
+                    if (value == null || value <= 0) return;
+                    showUsageDayDetailModal(dateKey, seriesKey, seriesLabel, dayBreakdown);
+                },
                 plugins: {
                     legend: {
                         display: true,
@@ -1957,9 +2129,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                 const label = context.dataset.label || '';
                                 const value = context.parsed.y;
                                 if (label === 'Total Unique Users') {
-                                    return `${label}: ${value}`;
+                                    return `${label}: ${value} (click for breakdown)`;
                                 } else {
-                                    return `${label}: ${value} uses`;
+                                    return `${label}: ${value} users (click for breakdown)`;
                                 }
                             }
                         }
@@ -2006,23 +2178,55 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         
         let logs = [];
-        
+        let usageLogsSource = '';
+        let usageLogsLoadWarning = '';
+
         // Try to fetch from Google Sheets first
         try {
-            const response = await fetch('https://script.google.com/macros/s/AKfycbx9dnveoMQYIAzjvsBrhzO1Fl9y29SAUsqLlQLG4YSiyIJ0FyAFpbj0idb854_7w87u/exec');
+            const response = await fetch(
+                'https://script.google.com/macros/s/AKfycbx9dnveoMQYIAzjvsBrhzO1Fl9y29SAUsqLlQLG4YSiyIJ0FyAFpbj0idb854_7w87u/exec',
+                { redirect: 'follow' }
+            );
             if (response.ok) {
-                logs = await response.json();
-                console.log('Loaded logs from Google Sheets:', logs.length);
+                const data = await response.json();
+                if (Array.isArray(data)) {
+                    logs = data;
+                    usageLogsSource = 'sheets';
+                    console.log('Loaded logs from Google Sheets:', logs.length);
+                } else {
+                    usageLogsLoadWarning = 'Google Sheets returned an unexpected format.';
+                    console.warn(usageLogsLoadWarning, data);
+                }
+            } else {
+                usageLogsLoadWarning = 'Google Sheets request failed (HTTP ' + response.status + ').';
+                console.warn(usageLogsLoadWarning);
             }
         } catch (error) {
-            console.error('Failed to fetch from Google Sheets, falling back to localStorage:', error);
-            // Fallback to localStorage if Google Sheets fails
-            logs = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+            usageLogsLoadWarning = 'Could not reach Google Sheets.';
+            console.error('Failed to fetch from Google Sheets:', error);
+        }
+
+        if (!logs.length) {
+            try {
+                const local = JSON.parse(localStorage.getItem('toolUsageLogs') || '[]');
+                if (Array.isArray(local) && local.length) {
+                    logs = local;
+                    usageLogsSource = 'localStorage';
+                    console.log('Loaded logs from localStorage:', logs.length);
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        if (!logs.length && !usageLogsLoadWarning) {
+            usageLogsLoadWarning = 'No usage logs found.';
+        } else if (logs.length && usageLogsSource === 'localStorage') {
+            usageLogsLoadWarning = 'Using cached local logs — Google Sheets was unavailable.';
         }
         
         // Filter out admin usage based on toggle setting
         const filteredLogs = showAdminData ? logs : logs.filter(log => !ADMIN_USER_NAMES.includes(log.userName));
         const allLogs = logs; // Keep original logs for complete view
+        const adminOnlyLogs = logs.length > 0 && filteredLogs.length === 0 && !showAdminData;
         
         // Calculate statistics (excluding admin by default)
         const stats = {};
@@ -2089,6 +2293,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 
                 <div id="admin-tab-overview" class="admin-tab-panel">
+                ${usageLogsLoadWarning ? (
+                    '<div class="admin-usage-load-warning" role="status">' + escapeHtml(usageLogsLoadWarning) +
+                    (usageLogsSource ? ' <span class="admin-usage-load-source">(' + escapeHtml(usageLogsSource) + ')</span>' : '') +
+                    '</div>'
+                ) : ''}
+                ${adminOnlyLogs ? (
+                    '<div class="admin-usage-load-warning admin-usage-load-hint">' +
+                    'All ' + allLogs.length + ' log entries are from admin accounts. ' +
+                    'Click <strong>Including Admin Usage</strong> below to view them on the graph.' +
+                    '</div>'
+                ) : ''}
                 <div style="margin-bottom: 20px; text-align: center;">
                     <button id="toggleAdminFilter" class="fetch-button" style="background-color: var(--accent-color);">
                         ${showAdminData ? '📊 Including Admin Usage' : '📊 Excluding Admin Usage'} (${filteredLogs.length} uses)
@@ -2132,15 +2347,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         <button class="time-period-btn" data-days="180">6 Months</button>
                         <button class="time-period-btn" data-days="365">1 Year</button>
                     </div>
-                    <div style="margin-bottom: 15px; background-color: var(--secondary-color); padding: 15px; border-radius: 8px;">
-                        <div style="margin-bottom: 10px; font-weight: bold; color: var(--accent-color);">Show on Graph:</div>
-                        <div id="graphVisibilityControls" style="display: flex; flex-wrap: wrap; gap: 15px;">
+                    <div class="graph-visibility-panel">
+                        <div class="graph-visibility-header">
+                            <span class="graph-visibility-title">Show on Graph:</span>
+                            <div class="graph-visibility-actions">
+                                <button type="button" class="graph-visibility-action-btn" id="graphVisibilityCheckAll">Check all</button>
+                                <button type="button" class="graph-visibility-action-btn" id="graphVisibilityCheckNone">Check none</button>
+                            </div>
+                        </div>
+                        <div id="graphVisibilityControls" class="graph-visibility-grid">
                             <!-- Checkboxes will be added here -->
                         </div>
                     </div>
                     <div style="position: relative; height: 400px; background-color: var(--primary-color); border-radius: 8px; padding: 20px;">
                         <canvas id="usersGraph"></canvas>
                     </div>
+                    <p class="usage-graph-hint">Click a data point to see factions and members for that day.</p>
                 </div>
                 </div>
                 
@@ -3384,29 +3606,21 @@ document.addEventListener('DOMContentLoaded', () => {
         // Generate checkboxes for graph visibility
         const visibilityControls = document.getElementById('graphVisibilityControls');
         if (visibilityControls) {
-            // Add "Total Unique Users" checkbox
             const totalCheckbox = document.createElement('label');
-            totalCheckbox.className = 'graph-checkbox-label';
-            totalCheckbox.innerHTML = `
-                <input type="checkbox" class="graph-visibility-checkbox" data-series="totalUsers" checked>
-                <span style="color: #ffd700; font-weight: bold;">Total Unique Users</span>
-            `;
+            totalCheckbox.className = 'graph-checkbox-label graph-checkbox-label-total';
+            totalCheckbox.innerHTML =
+                '<input type="checkbox" class="graph-visibility-checkbox" data-series="totalUsers" checked>' +
+                '<span class="graph-checkbox-text graph-checkbox-text-total">Total Unique Users</span>';
             visibilityControls.appendChild(totalCheckbox);
-            
-            // Add checkboxes for each tool
-            allTools.forEach((tool, index) => {
+
+            allTools.forEach(function (tool, index) {
                 const color = getToolColor(index);
-                // Add display name with alias for War Report 2.0
-                let displayName = tool;
-                if (tool === 'War Report 2.0' || tool === 'war-report-2.0') {
-                    displayName = 'War Report 2.0 (Payout Calculator)';
-                }
+                const displayName = getToolDisplayName(tool);
                 const checkbox = document.createElement('label');
                 checkbox.className = 'graph-checkbox-label';
-                checkbox.innerHTML = `
-                    <input type="checkbox" class="graph-visibility-checkbox" data-series="${tool}" checked>
-                    <span style="color: ${color}; font-weight: bold;">${displayName}</span>
-                `;
+                checkbox.innerHTML =
+                    '<input type="checkbox" class="graph-visibility-checkbox" data-series="' + escapeHtml(tool) + '" checked>' +
+                    '<span class="graph-checkbox-text" style="color: ' + color + ';">' + escapeHtml(displayName) + '</span>';
                 visibilityControls.appendChild(checkbox);
             });
         }
@@ -3448,6 +3662,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 visibilitySettings[series] = checkbox.checked;
                 updateGraph();
             });
+        });
+
+        function setAllGraphVisibility(checked) {
+            document.querySelectorAll('.graph-visibility-checkbox').forEach(function (checkbox) {
+                checkbox.checked = checked;
+                visibilitySettings[checkbox.dataset.series] = checked;
+            });
+            updateGraph();
+        }
+
+        document.getElementById('graphVisibilityCheckAll')?.addEventListener('click', function () {
+            setAllGraphVisibility(true);
+        });
+        document.getElementById('graphVisibilityCheckNone')?.addEventListener('click', function () {
+            setAllGraphVisibility(false);
         });
         
         // Add event listeners for the new buttons

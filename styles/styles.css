@@ -4780,13 +4780,88 @@ th small {
     align-items: center;
     gap: 8px;
     cursor: pointer;
-    padding: 5px 10px;
-    border-radius: 4px;
-    transition: background-color 0.2s ease;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+    min-width: 0;
 }
 
 .graph-checkbox-label:hover {
     background-color: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+.graph-checkbox-label-total {
+    grid-column: 1 / -1;
+    background: rgba(255, 215, 0, 0.08);
+    border-color: rgba(255, 215, 0, 0.22);
+}
+
+.graph-checkbox-label-total:hover {
+    background: rgba(255, 215, 0, 0.12);
+    border-color: rgba(255, 215, 0, 0.35);
+}
+
+.graph-checkbox-text {
+    font-weight: 600;
+    font-size: 0.9em;
+    line-height: 1.3;
+    word-break: break-word;
+}
+
+.graph-checkbox-text-total {
+    color: var(--accent-color, #ffd700);
+}
+
+.graph-visibility-panel {
+    margin-bottom: 15px;
+    background-color: var(--secondary-color);
+    padding: 15px;
+    border-radius: 8px;
+}
+
+.graph-visibility-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.graph-visibility-title {
+    font-weight: bold;
+    color: var(--accent-color);
+}
+
+.graph-visibility-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.graph-visibility-action-btn {
+    padding: 5px 12px;
+    font-size: 0.85em;
+    font-weight: 600;
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #555);
+    background: var(--primary-color, #1a1a1a);
+    color: var(--text-color, #e0e0e0);
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.graph-visibility-action-btn:hover {
+    border-color: var(--accent-color, #ffd700);
+    color: var(--accent-color, #ffd700);
+}
+
+.graph-visibility-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 8px;
 }
 
 .graph-visibility-checkbox {
@@ -4794,6 +4869,148 @@ th small {
     width: 18px;
     height: 18px;
     accent-color: var(--accent-color);
+}
+
+.usage-graph-hint {
+    margin: 10px 0 0;
+    font-size: 0.85em;
+    color: #9e9e9e;
+    text-align: center;
+}
+
+.admin-usage-load-warning {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border-radius: 6px;
+    border: 1px solid #ff8a80;
+    background: rgba(255, 138, 128, 0.12);
+    color: #ffccbc;
+    font-size: 0.92em;
+    line-height: 1.45;
+}
+
+.admin-usage-load-hint {
+    border-color: rgba(255, 215, 0, 0.45);
+    background: rgba(255, 215, 0, 0.1);
+    color: #ffe082;
+}
+
+.admin-usage-load-hint strong {
+    color: var(--accent-color, #ffd700);
+}
+
+.admin-usage-load-source {
+    color: #bbb;
+    font-size: 0.9em;
+}
+
+.app-modal.app-modal-usage-day-detail {
+    max-width: min(100%, 560px);
+    max-height: min(90vh, 720px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.usage-day-detail-body {
+    overflow-y: auto;
+    padding: 16px;
+}
+
+.usage-day-summary {
+    margin: 0 0 14px;
+    color: var(--text-color, #e0e0e0);
+    font-size: 0.95em;
+}
+
+.usage-day-summary strong {
+    color: var(--accent-color, #ffd700);
+}
+
+.usage-day-faction-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.usage-day-faction {
+    border: 1px solid var(--border-color, #444);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+}
+
+.usage-day-faction-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    cursor: pointer;
+    list-style: none;
+    font-weight: 600;
+    color: var(--text-color, #e0e0e0);
+}
+
+.usage-day-faction-summary::-webkit-details-marker {
+    display: none;
+}
+
+.usage-day-faction-summary::before {
+    content: '▸';
+    margin-right: 8px;
+    color: var(--accent-color, #ffd700);
+    transition: transform 0.15s ease;
+}
+
+.usage-day-faction[open] .usage-day-faction-summary::before {
+    transform: rotate(90deg);
+}
+
+.usage-day-faction-name {
+    flex: 1;
+    min-width: 0;
+}
+
+.usage-day-faction-id {
+    font-weight: normal;
+    color: #888;
+    font-size: 0.9em;
+}
+
+.usage-day-faction-count {
+    flex-shrink: 0;
+    font-size: 0.85em;
+    color: var(--accent-color, #ffd700);
+    font-weight: normal;
+}
+
+.usage-day-member-list {
+    margin: 0;
+    padding: 0 12px 10px 28px;
+    list-style: disc;
+    color: #ccc;
+    font-size: 0.9em;
+}
+
+.usage-day-member-list a {
+    color: #7eb8ff;
+    text-decoration: none;
+}
+
+.usage-day-member-list a:hover {
+    text-decoration: underline;
+}
+
+.usage-day-member-uses {
+    color: #888;
+    font-size: 0.9em;
+}
+
+.usage-day-empty {
+    margin: 0;
+    color: #888;
+    font-style: italic;
 }
 
 @media (max-width: 768px) {
