@@ -1,7 +1,7 @@
 /**
  * Activity tracker backend:
  * - HTTP: addTrackedFaction / removeTrackedFaction / listMyActivityFactions (optional apiKey reconciles legacy trackedFactionKeys).
- * - Scheduled: every 5 min, sampleActivity reads trackedFactionKeys, writes activitySamples.
+ * - Scheduled: every 5 min, sampleActivity reads trackedFactionKeys/_registry (1 doc), appends activitySampleWindows/{factionId}.
  */
 const { setGlobalOptions } = require('firebase-functions/v2');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
@@ -62,16 +62,144 @@ function httpsErrorToCallableJson(err) {
   };
 }
 
+/** Legacy tick docs (one per 5-min); superseded by activitySampleWindows — kept for rules only. */
 const ACTIVITY_SAMPLES_COLLECTION = 'activitySamples';
+/** Rolling 7-day samples per faction — shared by all users tracking that faction (1 read per faction). */
+const ACTIVITY_SAMPLE_WINDOWS_COLLECTION = 'activitySampleWindows';
 const TRACKED_FACTIONS_COLLECTION = 'trackedFactions';
 const TRACKED_FACTION_KEYS_COLLECTION = 'trackedFactionKeys';
+/** Single doc holding all faction API keys — one read per sampleActivity tick instead of N. */
+const TRACKED_FACTION_KEYS_REGISTRY_ID = '_registry';
 /** Factions a Torn player registered for 24/7 sampling (cross-browser / localhost vs prod). */
 const ACTIVITY_REGISTRATIONS_BY_PLAYER = 'activityRegistrationsByPlayer';
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICK_MS = 5 * 60 * 1000;
+/** Max samples retained per faction (~7 days at 5-min ticks). */
+const ACTIVITY_WINDOW_MAX_SAMPLES = Math.ceil(RETENTION_MS / TICK_MS) + 4;
+/** Drop a user's server registration if War Dashboard has not refreshed it in this long (matches client auto-disable). */
+const ACTIVITY_KEY_STALE_MS = 2 * 24 * 60 * 60 * 1000;
+
+function activityKeyLastActiveMs(entry) {
+  const n = entry && entry.lastActiveAt != null ? Number(entry.lastActiveAt) : 0;
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Keep keys touched within ACTIVITY_KEY_STALE_MS; legacy keys without lastActiveAt are treated as stale. */
+function filterActiveActivityKeys(keys, nowMs) {
+  const cutoff = nowMs - ACTIVITY_KEY_STALE_MS;
+  return (keys || []).filter((e) => activityKeyLastActiveMs(e) >= cutoff);
+}
+
+function trackedFactionKeysRegistryRef() {
+  return db.collection(TRACKED_FACTION_KEYS_COLLECTION).doc(TRACKED_FACTION_KEYS_REGISTRY_ID);
+}
+
+/** Normalize registry map: drop factions with no keys. */
+function normalizeRegistryFactions(factions) {
+  const out = {};
+  for (const [fid, entry] of Object.entries(factions || {})) {
+    const keys = entry && Array.isArray(entry.keys) ? entry.keys : [];
+    if (!keys.length) continue;
+    const row = { keys };
+    if (entry && entry.addedAt != null) row.addedAt = entry.addedAt;
+    out[fid] = row;
+  }
+  return out;
+}
+
+async function writeTrackedFactionRegistry(factions) {
+  const cleaned = normalizeRegistryFactions(factions);
+  const ref = trackedFactionKeysRegistryRef();
+  if (!Object.keys(cleaned).length) {
+    await ref.delete();
+    return;
+  }
+  await ref.set({ factions: cleaned, updatedAt: Date.now() });
+}
+
+/**
+ * Read the consolidated registry. If missing, one-time migrate legacy per-faction docs into _registry.
+ * @returns {Promise<Record<string, { keys: object[], addedAt?: number }>>}
+ */
+async function readTrackedFactionRegistry() {
+  const ref = trackedFactionKeysRegistryRef();
+  const snap = await ref.get();
+  if (snap.exists) {
+    const data = snap.data() || {};
+    return normalizeRegistryFactions(data.factions || {});
+  }
+
+  const legacySnap = await db.collection(TRACKED_FACTION_KEYS_COLLECTION).get();
+  if (legacySnap.empty) return {};
+
+  const factions = {};
+  for (const doc of legacySnap.docs) {
+    if (doc.id === TRACKED_FACTION_KEYS_REGISTRY_ID) continue;
+    const keys = (doc.data() && doc.data().keys) || [];
+    if (!keys.length) continue;
+    const tfSnap = await db.collection(TRACKED_FACTIONS_COLLECTION).doc(doc.id).get();
+    factions[doc.id] = {
+      keys,
+      addedAt: tfSnap.exists && tfSnap.data().addedAt != null ? tfSnap.data().addedAt : Date.now(),
+    };
+  }
+
+  if (Object.keys(factions).length) {
+    await writeTrackedFactionRegistry(factions);
+    const batch = db.batch();
+    legacySnap.docs.forEach((doc) => {
+      if (doc.id !== TRACKED_FACTION_KEYS_REGISTRY_ID) batch.delete(doc.ref);
+    });
+    await batch.commit();
+  }
+
+  return factions;
+}
+
+/** Transactional read-modify-write on the registry doc (avoids lost updates when multiple clients register). */
+async function updateTrackedFactionRegistry(mutator) {
+  const ref = trackedFactionKeysRegistryRef();
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const factions = snap.exists && snap.data().factions ? { ...snap.data().factions } : {};
+    const result = mutator(factions);
+    const cleaned = normalizeRegistryFactions(factions);
+    if (!Object.keys(cleaned).length) {
+      tx.delete(ref);
+    } else {
+      tx.set(ref, { factions: cleaned, updatedAt: Date.now() });
+    }
+    return result;
+  });
+}
 
 function getTickId(ms) {
   return String(Math.floor(ms / TICK_MS) * TICK_MS);
+}
+
+/** Append one sample to a faction's shared 7-day window (all users read this doc). */
+async function appendActivitySampleWindow(factionId, t, onlineIds) {
+  const fid = String(factionId);
+  const ref = db.collection(ACTIVITY_SAMPLE_WINDOWS_COLLECTION).doc(fid);
+  const cutoff = Date.now() - RETENTION_MS;
+  const tickId = getTickId(t);
+  const ids = (onlineIds || []).map(String);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    let samples = snap.exists && Array.isArray(snap.data().samples) ? snap.data().samples : [];
+    samples = samples.filter((s) => {
+      const st = Number(s.t);
+      if (!Number.isFinite(st) || st < cutoff) return false;
+      return getTickId(st) !== tickId;
+    });
+    samples.push({ t, onlineIds: ids });
+    samples.sort((a, b) => Number(a.t) - Number(b.t));
+    if (samples.length > ACTIVITY_WINDOW_MAX_SAMPLES) {
+      samples = samples.slice(-ACTIVITY_WINDOW_MAX_SAMPLES);
+    }
+    tx.set(ref, { samples, updatedAt: Date.now() });
+  });
 }
 
 async function fetchFactionMembers(apiKey, factionId) {
@@ -101,28 +229,37 @@ async function fetchTornPlayerIdFromApiKey(apiKey) {
  * @returns {Promise<string[]>} faction doc ids where this key was registered
  */
 async function reconcileActivityKeysForApiKey(apiKeyTrim, verifiedPlayerId) {
-  const snap = await db.collection(TRACKED_FACTION_KEYS_COLLECTION).get();
+  const factions = await readTrackedFactionRegistry();
   const matchedFactionIds = [];
-  for (const doc of snap.docs) {
-    const keysArr = doc.data().keys || [];
+  let changed = false;
+  const now = Date.now();
+  for (const [fid, entry] of Object.entries(factions)) {
+    const keysArr = entry.keys || [];
     const hasKey = keysArr.some((e) => String(e.key || '').trim() === apiKeyTrim);
     if (!hasKey) continue;
-    matchedFactionIds.push(doc.id);
+    matchedFactionIds.push(fid);
     const needsPatch = keysArr.some(
       (e) => String(e.key || '').trim() === apiKeyTrim && String(e.tornPlayerId || '') !== verifiedPlayerId
     );
     if (needsPatch) {
-      const newKeys = keysArr.map((e) => {
+      changed = true;
+      entry.keys = keysArr.map((e) => {
         if (String(e.key || '').trim() === apiKeyTrim) {
-          return { key: e.key, userId: e.userId, tornPlayerId: verifiedPlayerId };
+          return { key: e.key, userId: e.userId, tornPlayerId: verifiedPlayerId, lastActiveAt: now };
         }
-        const o = { key: e.key, userId: e.userId };
+        const o = { key: e.key, userId: e.userId, lastActiveAt: activityKeyLastActiveMs(e) || now };
         if (e.tornPlayerId) o.tornPlayerId = e.tornPlayerId;
         return o;
       });
-      await doc.ref.set({ keys: newKeys });
+    } else {
+      changed = true;
+      entry.keys = keysArr.map((e) => {
+        if (String(e.key || '').trim() !== apiKeyTrim) return e;
+        return { ...e, lastActiveAt: now };
+      });
     }
   }
+  if (changed) await writeTrackedFactionRegistry(factions);
   if (matchedFactionIds.length > 0) {
     const prefRef = db.collection(ACTIVITY_REGISTRATIONS_BY_PLAYER).doc(verifiedPlayerId);
     const pSnap = await prefRef.get();
@@ -166,15 +303,15 @@ exports.addTrackedFaction = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) => {
       );
       return;
     }
-    const ref = db.collection(TRACKED_FACTION_KEYS_COLLECTION).doc(fid);
-    const snap = await ref.get();
-    const keys = (snap.exists && snap.data().keys) || [];
-    const next = keys.filter((e) => e.userId !== uid);
-    const entry = { key: key, userId: uid };
-    if (tornPid) entry.tornPlayerId = tornPid;
-    next.push(entry);
-    await ref.set({ keys: next });
-    await db.collection(TRACKED_FACTIONS_COLLECTION).doc(fid).set({ addedAt: Date.now() }, { merge: true });
+    const now = Date.now();
+    await updateTrackedFactionRegistry((factions) => {
+      const prev = factions[fid] || {};
+      const keys = (prev.keys || []).filter((e) => e.userId !== uid);
+      const entry = { key: key, userId: uid, lastActiveAt: now };
+      if (tornPid) entry.tornPlayerId = tornPid;
+      keys.push(entry);
+      factions[fid] = { keys, addedAt: prev.addedAt != null ? prev.addedAt : now };
+    });
     if (tornPid) {
       await db
         .collection(ACTIVITY_REGISTRATIONS_BY_PLAYER)
@@ -218,28 +355,26 @@ exports.removeTrackedFaction = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) =>
       );
       return;
     }
-    const ref = db.collection(TRACKED_FACTION_KEYS_COLLECTION).doc(fid);
-    const snap = await ref.get();
-    if (!snap.exists) {
-      res.status(200).json({ result: { ok: true } });
-      return;
-    }
-    const keysBefore = snap.data().keys || [];
-    const keys = keysBefore.filter((e) => e.userId !== uid);
+    let keysAfter = [];
+    await updateTrackedFactionRegistry((factions) => {
+      const prev = factions[fid];
+      if (!prev) return;
+      const keysBefore = prev.keys || [];
+      keysAfter = keysBefore.filter((e) => e.userId !== uid);
+      if (keysAfter.length) {
+        factions[fid] = { keys: keysAfter, addedAt: prev.addedAt };
+      } else {
+        delete factions[fid];
+      }
+    });
     if (tornPid) {
-      const stillHasTorn = keys.some((e) => String(e.tornPlayerId || '') === tornPid);
+      const stillHasTorn = keysAfter.some((e) => String(e.tornPlayerId || '') === tornPid);
       if (!stillHasTorn) {
         await db
           .collection(ACTIVITY_REGISTRATIONS_BY_PLAYER)
           .doc(tornPid)
           .set({ factionIds: admin.firestore.FieldValue.arrayRemove(fid) }, { merge: true });
       }
-    }
-    if (keys.length === 0) {
-      await ref.delete();
-      await db.collection(TRACKED_FACTIONS_COLLECTION).doc(fid).delete();
-    } else {
-      await ref.set({ keys });
     }
     res.status(200).json({ result: { ok: true } });
   } catch (e) {
@@ -303,16 +438,16 @@ exports.listMyActivityFactions = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) 
         ids.forEach((id) => out.add(String(id)));
       }
     }
-    const allKeys = await db.collection(TRACKED_FACTION_KEYS_COLLECTION).get();
-    allKeys.forEach((doc) => {
-      const arr = doc.data().keys || [];
+    const registry = await readTrackedFactionRegistry();
+    for (const [fid, entry] of Object.entries(registry)) {
+      const arr = entry.keys || [];
       const match = arr.some((k) => {
         if (uid && k.userId === uid) return true;
         if (effectiveTornPid && String(k.tornPlayerId || '') === effectiveTornPid) return true;
         return false;
       });
-      if (match) out.add(doc.id);
-    });
+      if (match) out.add(fid);
+    }
     const factionIds = Array.from(out).sort((a, b) => Number(a) - Number(b));
     res.status(200).json({ result: { factionIds } });
   } catch (e) {
@@ -1245,22 +1380,28 @@ exports.importVipBalances = onCall(
   }
 );
 
-/** Every 5 minutes: for each tracked faction, use one stored key, call Torn API, write one batched doc. Delete samples older than 7 days. */
+/** Every 5 minutes: for each tracked faction, use one stored key, call Torn API, append shared window doc. */
 exports.sampleActivity = onSchedule(
   { schedule: 'every 5 minutes', timeZone: 'UTC' },
   async () => {
-    const keysSnap = await db.collection(TRACKED_FACTION_KEYS_COLLECTION).get();
-    if (keysSnap.empty) return;
+    const registry = await readTrackedFactionRegistry();
+    if (!Object.keys(registry).length) return;
 
     const now = Date.now();
-    const factions = {};
+    let registryChanged = false;
+    const prunedRegistry = {};
+    for (const [fid, entry] of Object.entries(registry)) {
+      const keysBefore = entry.keys || [];
+      const keys = filterActiveActivityKeys(keysBefore, now);
+      if (keys.length !== keysBefore.length) registryChanged = true;
+      if (!keys.length) continue;
+      prunedRegistry[fid] = { keys, addedAt: entry.addedAt };
+    }
+    if (registryChanged) await writeTrackedFactionRegistry(prunedRegistry);
 
-    for (const doc of keysSnap.docs) {
-      const fid = doc.id;
-      const data = doc.data();
-      const keys = data.keys || [];
-      if (keys.length === 0) continue;
-      const apiKey = keys[0].key;
+    const factions = {};
+    for (const [fid, entry] of Object.entries(prunedRegistry)) {
+      const apiKey = (entry.keys[0] && entry.keys[0].key) || '';
       if (!apiKey || !String(apiKey).trim()) continue;
       try {
         const members = await fetchFactionMembers(apiKey, fid);
@@ -1272,21 +1413,13 @@ exports.sampleActivity = onSchedule(
 
     if (Object.keys(factions).length === 0) return;
 
-    const tickId = getTickId(now);
-    await db.collection(ACTIVITY_SAMPLES_COLLECTION).doc(tickId).set({
-      t: now,
-      factions,
-    });
-
-    const cutoff = now - RETENTION_MS;
-    const oldSnap = await db
-      .collection(ACTIVITY_SAMPLES_COLLECTION)
-      .where('t', '<', cutoff)
-      .limit(500)
-      .get();
-    const batch = db.batch();
-    oldSnap.docs.forEach((d) => batch.delete(d.ref));
-    if (oldSnap.docs.length > 0) await batch.commit();
+    await Promise.all(
+      Object.entries(factions).map(([fid, data]) =>
+        appendActivitySampleWindow(fid, now, data.onlineIds || []).catch((e) => {
+          console.warn('activitySampleWindows write failed for faction', fid, e.message);
+        })
+      )
+    );
   }
 );
 

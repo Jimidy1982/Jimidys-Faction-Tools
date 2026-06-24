@@ -1,8 +1,13 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Activity tracker: batched samples (one doc per 5-min tick). Backend writes; clients read last 7 days.
+    // Activity tracker: legacy tick docs (deprecated). Backend no longer writes; clients use activitySampleWindows.
     match /activitySamples/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    // Rolling 7-day activity per faction — shared by all users tracking that faction (1 read per faction).
+    match /activitySampleWindows/{factionId} {
       allow read: if true;
       allow write: if false;
     }
@@ -11,8 +16,8 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
-    // API keys per faction (one doc per faction, keys array). Backend only; never expose to client.
-    match /trackedFactionKeys/{factionId} {
+    // API keys for activity sampling — single _registry doc; backend only; never expose to client.
+    match /trackedFactionKeys/{docId} {
       allow read, write: if false;
     }
     match /activityRegistrationsByPlayer/{playerId} {

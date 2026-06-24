@@ -28,29 +28,29 @@
     const ACTIVITY_DATA_PREFIX = 'war_dashboard_activity_data_';
     /** Per-faction timestamp (ms): ignore Firestore + local samples with t < this (user cleared cache; shared cloud docs cannot be deleted per user). */
     const ACTIVITY_CLOUD_IGNORE_BEFORE_PREFIX = 'war_dashboard_activity_cloud_ignore_before_';
-    /** Max `t` (ms) from Firestore activitySamples we've merged — enables incremental sync. */
+    /** Max `t` (ms) from Firestore activitySampleWindows we've merged — UI sync label only. */
     const ACTIVITY_CLOUD_CURSOR_KEY = 'war_dashboard_activity_cloud_cursor_v1';
     const ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
     const ACTIVITY_DATA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-    /** Firestore collection: one doc per 5-min tick; doc has { t, factions: { [factionId]: { onlineIds } } } — IDs are online only (not idle). 7-day retention. */
-    const ACTIVITY_SAMPLES_COLLECTION = 'activitySamples';
+    /** One doc per faction: { samples: [{ t, onlineIds }], updatedAt } — shared by all users tracking that faction. */
+    const ACTIVITY_SAMPLE_WINDOWS_COLLECTION = 'activitySampleWindows';
     /** Must match functions/chainWatch.js MAX_HOUR_SLOTS (50 days of hourly slots). */
     const CHAIN_WATCH_MAX_HOUR_SLOTS = 50 * 24;
-    /** Re-fetch cloud samples at most this often (matches 5-min server tick). One shared query for all factions. */
+    /** Re-fetch cloud samples at most this often (matches 5-min server tick). One doc read per tracked faction. */
     const ACTIVITY_FIRESTORE_REFRESH_MS = ACTIVITY_INTERVAL_MS;
     /** In-memory cache of merged Firestore + localStorage activity data per faction (so getActivityData stays sync). */
     let activityDataCache = {};
-    /** Last shared Firestore activitySamples query (ms) — not per-faction. */
+    /** Last Firestore activitySampleWindows fetch (ms). */
     let activitySamplesCloudFetchAt = 0;
-    /** Parsed cloud samples from last query: { byFaction, docCount, lastFetch, readError }. */
+    /** Parsed cloud samples from last fetch: { byFaction, docsRead, lastFetch, readError }. */
     let activitySamplesCloudCache = null;
     /** In-flight dedupe so parallel callers share one Firestore read. */
     let activitySamplesCloudFetchPromise = null;
     /** Cached max sample timestamp from Firestore (mirrors localStorage cursor). */
     let activityCloudCursorT = 0;
-    /** Per faction: { firestoreCount, lastFetch, readError } for UI. */
+    /** Per faction: { cloudDocsRead, cloudSampleCount, lastFetch, readError } for UI. */
     let activityDataCloudMeta = {};
     /** Per faction: { ok, error, at } after addTrackedFaction callable. */
     let activityCloudRegisterState = {};
@@ -1027,22 +1027,32 @@
         } catch (e) { /* ignore */ }
     }
 
-    /** Full 7-day query only when no cursor, cursor expired, or explicit { full: true }. */
-    function shouldFullBootstrapActivityCloud(options) {
-        if (options && options.full) return true;
-        const cursor = getActivityCloudCursorT();
-        if (!cursor) return true;
-        const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
-        return cursor < cutoff;
+    function getActivityCloudFactionIds(options) {
+        if (options && options.factionIds && options.factionIds.length) {
+            return options.factionIds.map(function (id) { return String(id); });
+        }
+        return getActivityConfig().tracked.map(function (t) {
+            return String(t.factionId);
+        }).filter(Boolean);
     }
 
-    function maxSampleTFromSnapshot(snap) {
+    function parseActivityWindowDoc(data) {
+        const out = [];
+        if (!data || !Array.isArray(data.samples)) return out;
+        data.samples.forEach(function (s) {
+            if (!s) return;
+            const tVal = s.t != null && typeof s.t.toMillis === 'function' ? s.t.toMillis() : Number(s.t);
+            const ids = s.onlineIds || s.o;
+            if (!Number.isFinite(tVal) || !Array.isArray(ids)) return;
+            out.push({ t: tVal, onlineIds: ids.map(String) });
+        });
+        return out;
+    }
+
+    function maxSampleTFromSamples(samples) {
         let maxT = 0;
-        if (!snap || !snap.docs) return maxT;
-        snap.docs.forEach(function (doc) {
-            const d = doc.data();
-            const tVal = d.t != null && typeof d.t.toMillis === 'function' ? d.t.toMillis() : Number(d.t);
-            if (Number.isFinite(tVal) && tVal > maxT) maxT = tVal;
+        (samples || []).forEach(function (s) {
+            if (s && Number.isFinite(s.t) && s.t > maxT) maxT = s.t;
         });
         return maxT;
     }
@@ -1069,28 +1079,9 @@
         return Math.floor(sec / 86400) + 'd ago';
     }
 
-    /** Parse activitySamples query into per-faction sample arrays. */
-    function parseActivitySamplesSnapshot(snap) {
-        const byFaction = {};
-        if (!snap || !snap.docs) return byFaction;
-        snap.docs.forEach(function (doc) {
-            const d = doc.data();
-            const factions = d.factions || {};
-            const tVal = d.t != null && typeof d.t.toMillis === 'function' ? d.t.toMillis() : Number(d.t);
-            if (!Number.isFinite(tVal)) return;
-            Object.keys(factions).forEach(function (fid) {
-                const factionData = factions[fid];
-                if (!factionData || !Array.isArray(factionData.onlineIds)) return;
-                if (!byFaction[fid]) byFaction[fid] = [];
-                byFaction[fid].push({ t: tVal, onlineIds: factionData.onlineIds });
-            });
-        });
-        return byFaction;
-    }
-
-    /** Firestore fetch: full 7-day bootstrap once, then incremental `t > cursor` (~1 doc per tick). */
+    /** Firestore fetch: one shared doc per tracked faction (1 read each, not ~2k tick docs). */
     async function fetchActivitySamplesCloud(options) {
-        const force = options && options.force;
+        const force = (options && options.force) || (options && options.full);
         const now = Date.now();
         if (
             !force &&
@@ -1112,14 +1103,13 @@
 
             const emptyResult = {
                 byFaction: {},
-                docCount: 0,
+                docsRead: 0,
                 lastFetch: now,
                 readError: !db
                     ? typeof firebase === 'undefined'
                         ? 'Firebase not loaded'
                         : 'Firestore unavailable'
-                    : null,
-                incremental: false
+                    : null
             };
 
             if (!db) {
@@ -1128,46 +1118,47 @@
                 return emptyResult;
             }
 
-            const cutoff = Date.now() - ACTIVITY_DATA_RETENTION_MS;
-            const fullBootstrap = shouldFullBootstrapActivityCloud(options);
+            const factionIds = getActivityCloudFactionIds(options);
+            const uniqueIds = factionIds.filter(function (id, i, arr) {
+                return id && arr.indexOf(id) === i;
+            });
+
+            if (!uniqueIds.length) {
+                activitySamplesCloudCache = emptyResult;
+                activitySamplesCloudFetchAt = now;
+                return emptyResult;
+            }
+
             var readError = null;
             var byFaction = {};
-            var docCount = 0;
+            var docsRead = 0;
             try {
-                let snap;
-                if (fullBootstrap) {
-                    snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
-                        .where('t', '>=', cutoff)
-                        .orderBy('t')
-                        .get();
-                } else {
-                    const cursor = getActivityCloudCursorT();
-                    snap = await db.collection(ACTIVITY_SAMPLES_COLLECTION)
-                        .where('t', '>', cursor)
-                        .orderBy('t')
-                        .get();
-                }
-                docCount = snap.docs.length;
-                byFaction = parseActivitySamplesSnapshot(snap);
-                const maxT = maxSampleTFromSnapshot(snap);
-                if (maxT > 0) {
-                    const prev = getActivityCloudCursorT();
-                    if (maxT > prev) setActivityCloudCursorT(maxT);
-                }
+                const snaps = await Promise.all(uniqueIds.map(function (fid) {
+                    return db.collection(ACTIVITY_SAMPLE_WINDOWS_COLLECTION).doc(fid).get();
+                }));
+                let maxT = 0;
+                snaps.forEach(function (snap, i) {
+                    const fid = uniqueIds[i];
+                    if (!snap.exists) return;
+                    docsRead += 1;
+                    const samples = parseActivityWindowDoc(snap.data());
+                    if (samples.length) {
+                        byFaction[fid] = samples;
+                        const localMax = maxSampleTFromSamples(samples);
+                        if (localMax > maxT) maxT = localMax;
+                    }
+                });
+                if (maxT > getActivityCloudCursorT()) setActivityCloudCursorT(maxT);
             } catch (e) {
                 readError = (e && e.message) ? e.message : String(e);
                 console.warn('Activity Firestore read failed', e);
-                if (!fullBootstrap) {
-                    console.warn('Activity incremental sync failed; will retry incrementally next tick (no full bootstrap fallback).');
-                }
             }
 
             const result = {
                 byFaction: byFaction,
-                docCount: docCount,
+                docsRead: docsRead,
                 lastFetch: now,
-                readError: readError,
-                incremental: !fullBootstrap
+                readError: readError
             };
             activitySamplesCloudCache = result;
             activitySamplesCloudFetchAt = now;
@@ -1205,14 +1196,14 @@
             setActivityData(fid, activityDataCache[fid]);
         } catch (e) { /* ignore */ }
         activityDataCloudMeta[fid] = {
-            firestoreCount: firestoreSamples.length,
+            cloudDocsRead: cloud.byFaction && cloud.byFaction[fid] ? 1 : 0,
+            cloudSampleCount: firestoreSamples.length,
             lastFetch: cloud.lastFetch,
-            readError: cloud.readError,
-            incremental: cloud.incremental === true
+            readError: cloud.readError
         };
     }
 
-    /** Local cache first, then Firestore (incremental when possible). Persists merged result to localStorage. */
+    /** Local cache first, then Firestore (one doc per tracked faction). Persists merged result to localStorage. */
     async function refreshAllTrackedActivityFromCloud(options) {
         hydrateActivityDataCacheFromLocalStorage();
         const cloud = await fetchActivitySamplesCloud(options);
@@ -1223,7 +1214,7 @@
         return cloud;
     }
 
-    /** Periodic cloud refresh: one Firestore read, update all enabled tracked factions. */
+    /** Periodic cloud refresh: one doc read per tracked faction, update all enabled charts. */
     function runActivityCloudRefreshTick() {
         const page = (window.location.hash || '').replace('#', '').split('/')[0];
         if (page !== 'war-dashboard') return;
@@ -1242,10 +1233,11 @@
         }).catch(function () {});
     }
 
-    /** Load activity samples from Firestore, merge with local, update cache. Uses one shared query. */
+    /** Load activity samples from Firestore, merge with local, update cache. One shared doc per faction. */
     async function ensureActivityDataLoaded(factionId, options) {
         hydrateActivityDataCacheFromLocalStorage([String(factionId)]);
-        const cloud = await fetchActivitySamplesCloud(options);
+        const opts = Object.assign({}, options || {}, { factionIds: [String(factionId)] });
+        const cloud = await fetchActivitySamplesCloud(opts);
         mergeActivityCloudForFaction(factionId, cloud);
     }
 
@@ -1264,10 +1256,25 @@
         const localCount = (getActivityData(fid).samples || []).length;
         if (meta) {
             if (meta.readError) {
-                bits.push('Could not read cloud history — ' + meta.readError + (meta.readError.indexOf('index') !== -1 ? ' (create the Firestore index if the console links one.)' : ''));
+                bits.push('Could not read cloud history — ' + meta.readError);
+            } else if (meta.cloudSampleCount > 0 || meta.cloudDocsRead > 0) {
+                bits.push(
+                    'Shared cloud history (' +
+                    meta.cloudSampleCount +
+                    ' sample' + (meta.cloudSampleCount === 1 ? '' : 's') +
+                    ', ' +
+                    meta.cloudDocsRead +
+                    ' Firestore doc' + (meta.cloudDocsRead === 1 ? '' : 's') +
+                    ', ' +
+                    localCount +
+                    ' cached). ' +
+                    formatActivityRelativeTime(meta.lastFetch) +
+                    '.'
+                );
+            } else if (localCount > 0) {
+                bits.push('Showing ' + localCount + ' cached samples (no cloud doc yet for this faction). ' + formatActivityRelativeTime(meta.lastFetch) + '.');
             } else {
-                const syncLabel = meta.incremental ? 'Synced new cloud data' : 'Loaded cloud history';
-                bits.push(syncLabel + ' (' + (meta.firestoreCount || 0) + ' doc' + ((meta.firestoreCount || 0) === 1 ? '' : 's') + ' this fetch, ' + localCount + ' cached). ' + formatActivityRelativeTime(meta.lastFetch) + '.');
+                bits.push('No cloud history yet — server builds a shared doc as users track this faction.');
             }
         } else if (localCount > 0) {
             bits.push('Showing ' + localCount + ' cached samples. Syncing new cloud data…');
@@ -1397,7 +1404,7 @@
         var cfg = getActivityConfig();
         if (!cfg.tracked.length) return;
         Promise.all(cfg.tracked.map(function (t) {
-            return syncTrackedFactionToFirestore(t.factionId, 'add');
+            return syncTrackedFactionToFirestore(t.factionId, t.enabled ? 'add' : 'remove');
         })).then(function () {
             updateAllActivityCloudStatusUI();
         }).catch(function (e) { console.warn('syncAllTrackedFactionsToFirestore', e); });
@@ -1432,6 +1439,7 @@
                 if (t.enabled) {
                     t.enabled = false;
                     t.disabledAt = now;
+                    syncTrackedFactionToFirestore(t.factionId, 'remove');
                 }
             });
             setActivityConfig(config);
@@ -4331,6 +4339,10 @@
                         updateActivityCloudStatusUI(fid);
                         if (!r.ok && r.error) showError('Cloud activity (24/7): ' + r.error);
                     });
+                } else {
+                    syncTrackedFactionToFirestore(fid, 'remove').then(function () {
+                        updateActivityCloudStatusUI(fid);
+                    });
                 }
             });
 
@@ -4483,6 +4495,7 @@
                         setActivityConfig(config);
                         updateActivityTrackerUI();
                     }
+                    syncTrackedFactionToFirestore(storedAutoId, 'remove');
                     try { localStorage.removeItem(STORAGE_KEYS.activityAutoWarEnemyFactionId); } catch (e) { /* ignore */ }
                 }
             }
@@ -4593,7 +4606,7 @@
 
         loadSettings();
         Promise.all(getActivityConfig().tracked.map(function (t) {
-            return syncTrackedFactionToFirestore(t.factionId, 'add');
+            return syncTrackedFactionToFirestore(t.factionId, t.enabled ? 'add' : 'remove');
         })).then(function () {
             updateAllActivityCloudStatusUI();
         });

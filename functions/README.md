@@ -23,7 +23,7 @@ firebase deploy --only firestore,functions
 
 3. **listMyActivityFactions** – Body `{"data":{ userId?, tornPlayerId?, apiKey? }}` (at least one required). Optional **`apiKey`**: verified with Torn; must match **`tornPlayerId`** if both sent. Migrates legacy key rows (same stored API key, no `tornPlayerId`) and updates **`activityRegistrationsByPlayer`**. Returns `{"result":{ factionIds: string[] }}`.
 
-4. **sampleActivity** (scheduled, every 5 minutes) – Reads `trackedFactionKeys` (one doc per faction, each with a `keys` array). For each faction, uses the first stored key, calls the Torn API for members, and writes one batched doc to `activitySamples` with `{ t, factions: { [factionId]: { onlineIds } } }`. **`onlineIds` includes only `last_action.status === "online"`** (idle is excluded). Deletes samples older than 7 days.
+4. **sampleActivity** (scheduled, every 5 minutes) – Reads **`trackedFactionKeys/_registry`** (single doc). For each tracked faction, uses the first stored key, calls the Torn API for members, and **appends** to **`activitySampleWindows/{factionId}`** — one shared rolling doc per faction (`{ samples: [{ t, onlineIds }], updatedAt }`, 7-day retention). All users tracking the same enemy read the same doc. **`onlineIds` includes only `last_action.status === "online"`** (idle is excluded). Prunes keys stale &gt; 2 days from the registry.
 
 ## Changing a function’s type (callable ↔ HTTP)
 
@@ -34,7 +34,7 @@ Firebase does not allow in-place conversion. Delete first, then deploy:
 ## Verify
 
 - In Firebase Console → **Functions**, you should see `addTrackedFaction`, `removeTrackedFaction`, `listMyActivityFactions`, and `sampleActivity`.
-- Add a faction in the War Dashboard (with your API key set in the sidebar). After a few minutes, check Firestore → `activitySamples` for new docs.
+- Add a faction in the War Dashboard (with your API key set in the sidebar). After a few minutes, check Firestore → `activitySampleWindows/{factionId}` for the rolling sample doc.
 
 ## Local dev (Vite, Live Server, etc.)
 
