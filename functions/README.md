@@ -23,7 +23,7 @@ firebase deploy --only firestore,functions
 
 3. **listMyActivityFactions** – Body `{"data":{ userId?, tornPlayerId?, apiKey? }}` (at least one required). Optional **`apiKey`**: verified with Torn; must match **`tornPlayerId`** if both sent. Migrates legacy key rows (same stored API key, no `tornPlayerId`) and updates **`activityRegistrationsByPlayer`**. Returns `{"result":{ factionIds: string[] }}`.
 
-4. **sampleActivity** (scheduled, every 5 minutes) – Reads **`trackedFactionKeys/_registry`** (single doc). For each tracked faction, uses the first stored key, calls the Torn API for members, and **appends** to **`activitySampleWindows/{factionId}`** — one shared rolling doc per faction (`{ samples: [{ t, onlineIds }], updatedAt }`, 7-day retention). All users tracking the same enemy read the same doc. **`onlineIds` includes only `last_action.status === "online"`** (idle is excluded). Prunes keys stale &gt; 2 days from the registry.
+4. **sampleActivity** (scheduled, every 10 minutes) – Reads **`trackedFactionKeys/_registry`** (single doc). For each tracked faction, uses the first stored key, calls the Torn API for members, and **appends** to **`activitySampleWindows/{factionId}`** — one shared rolling doc per faction (`{ samples: [{ t, onlineIds }], updatedAt }`, 7-day retention). All users tracking the same enemy read the same doc. **`onlineIds` includes only `last_action.status === "online"`** (idle is excluded). Prunes keys stale &gt; 2 days from the registry.
 
 ## Changing a function’s type (callable ↔ HTTP)
 

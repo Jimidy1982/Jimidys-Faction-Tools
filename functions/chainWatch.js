@@ -1182,9 +1182,9 @@ exports.chainWatchSyncChain = onCall(callableOpts({ maxInstances: 30 }), async (
   const cd = Math.max(0, Math.floor(Number(cooldown) || 0));
 
   const ref = getDb().collection(COLLECTION).doc(fid);
-  await getDb().runTransaction(async (tx) => {
+  const wrote = await getDb().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    if (!snap.exists) return;
+    if (!snap.exists) return false;
     const base = normalizeDoc(snap.data());
     const prev = base.chainState.lastCurrent || 0;
     let brokeAtHit = base.chainState.brokeAtHit;
@@ -1194,6 +1194,14 @@ exports.chainWatchSyncChain = onCall(callableOpts({ maxInstances: 30 }), async (
       brokeAtHit = prev;
       brokeAtUnix = Math.floor(Date.now() / 1000);
     }
+
+    const prevBrokeHit = base.chainState.brokeAtHit;
+    const prevBrokeUnix = base.chainState.brokeAtUnix;
+    const same =
+      prev === cur &&
+      (brokeAtHit == null ? prevBrokeHit == null : Number(brokeAtHit) === Number(prevBrokeHit)) &&
+      (brokeAtUnix == null ? prevBrokeUnix == null : Number(brokeAtUnix) === Number(prevBrokeUnix));
+    if (same) return false;
 
     base.chainState = {
       lastCurrent: cur,
@@ -1209,7 +1217,8 @@ exports.chainWatchSyncChain = onCall(callableOpts({ maxInstances: 30 }), async (
       },
       { merge: true }
     );
+    return true;
   });
 
-  return { success: true };
+  return { success: true, wrote: wrote === true };
 });

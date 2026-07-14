@@ -1,7 +1,7 @@
 /**
  * Activity tracker backend:
  * - HTTP: addTrackedFaction / removeTrackedFaction / listMyActivityFactions (optional apiKey reconciles legacy trackedFactionKeys).
- * - Scheduled: every 5 min, sampleActivity reads trackedFactionKeys/_registry (1 doc), appends activitySampleWindows/{factionId}.
+ * - Scheduled: every 10 min, sampleActivity reads trackedFactionKeys/_registry (1 doc), appends activitySampleWindows/{factionId}.
  */
 const { setGlobalOptions } = require('firebase-functions/v2');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
@@ -62,7 +62,7 @@ function httpsErrorToCallableJson(err) {
   };
 }
 
-/** Legacy tick docs (one per 5-min); superseded by activitySampleWindows — kept for rules only. */
+/** Legacy tick docs (one per 5-min historically); superseded by activitySampleWindows — kept for rules only. */
 const ACTIVITY_SAMPLES_COLLECTION = 'activitySamples';
 /** Rolling 7-day samples per faction — shared by all users tracking that faction (1 read per faction). */
 const ACTIVITY_SAMPLE_WINDOWS_COLLECTION = 'activitySampleWindows';
@@ -73,9 +73,12 @@ const TRACKED_FACTION_KEYS_REGISTRY_ID = '_registry';
 /** Factions a Torn player registered for 24/7 sampling (cross-browser / localhost vs prod). */
 const ACTIVITY_REGISTRATIONS_BY_PLAYER = 'activityRegistrationsByPlayer';
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const TICK_MS = 5 * 60 * 1000;
-/** Max samples retained per faction (~7 days at 5-min ticks). */
+/** Server sample interval (must match sampleActivity schedule). */
+const TICK_MS = 10 * 60 * 1000;
+/** Max samples retained per faction (~7 days at TICK_MS). */
 const ACTIVITY_WINDOW_MAX_SAMPLES = Math.ceil(RETENTION_MS / TICK_MS) + 4;
+/** Don't rewrite vipBalances lastLogin unless profile/faction changed or login older than this. */
+const VIP_LOGIN_WRITE_MIN_MS = 12 * 60 * 60 * 1000;
 /** Drop a user's server registration if War Dashboard has not refreshed it in this long (matches client auto-disable). */
 const ACTIVITY_KEY_STALE_MS = 2 * 24 * 60 * 60 * 1000;
 
@@ -961,18 +964,46 @@ async function buildVipBalanceResponseFromDocData(d, poolQueryFactionId = '') {
 /**
  * Merge last login + current Torn faction/name when the player’s own API key is verified.
  * Creates a zero-balance row if missing so faction pooling and admin “last login” stay accurate.
+ * Skips writes when login is recent and name/faction are unchanged (cuts VIP write churn).
  */
 async function mergeVipLoginTouchFromTorn(docRef, tornProf, existingData) {
   if (!tornProf) return existingData || null;
-  const nowIso = new Date().toISOString();
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
   const pid = docRef.id;
+  const nextName = tornProf.playerName || existingData?.playerName || `Player ${pid}`;
+  const nextFid = tornProf.factionId
+    ? String(tornProf.factionId).trim()
+    : existingData?.factionId != null
+      ? String(existingData.factionId).trim()
+      : '';
+  const nextFName = tornProf.factionName
+    ? String(tornProf.factionName)
+    : existingData?.factionName != null
+      ? String(existingData.factionName)
+      : '';
+
+  if (existingData) {
+    const lastLoginMs = existingData.lastLoginDate ? new Date(existingData.lastLoginDate).getTime() : 0;
+    const recent =
+      Number.isFinite(lastLoginMs) && lastLoginMs > 0 && nowMs - lastLoginMs < VIP_LOGIN_WRITE_MIN_MS;
+    const prevFid = existingData.factionId != null ? String(existingData.factionId).trim() : '';
+    const sameMeta =
+      String(existingData.playerName || '') === String(nextName) &&
+      prevFid === nextFid &&
+      String(existingData.factionName || '') === nextFName;
+    if (recent && sameMeta) {
+      return { ...existingData, playerId: pid };
+    }
+  }
+
   const patch = {
     playerId: pid,
-    playerName: tornProf.playerName || existingData?.playerName || `Player ${pid}`,
+    playerName: nextName,
     lastLoginDate: nowIso,
   };
-  if (tornProf.factionId) patch.factionId = String(tornProf.factionId).trim();
-  if (tornProf.factionName) patch.factionName = tornProf.factionName;
+  if (nextFid) patch.factionId = nextFid;
+  if (nextFName) patch.factionName = nextFName;
 
   if (!existingData) {
     patch.totalXanaxSent = 0;
@@ -1564,9 +1595,9 @@ exports.importVipBalances = onCall(
   }
 );
 
-/** Every 5 minutes: for each tracked faction, use one stored key, call Torn API, append shared window doc. */
+/** Every 10 minutes: for each tracked faction, use one stored key, call Torn API, append shared window doc. */
 exports.sampleActivity = onSchedule(
-  { schedule: 'every 5 minutes', timeZone: 'UTC' },
+  { schedule: 'every 10 minutes', timeZone: 'UTC' },
   async () => {
     const registry = await readTrackedFactionRegistry();
     if (!Object.keys(registry).length) return;
@@ -1897,22 +1928,25 @@ async function runVipIncomingXanaxPollCore(source, opts) {
     const senderPid = String(parsed.playerId);
     const tornEventId = String(eventId);
 
-    await db
-      .collection(VIP_INCOMING_XANAX_LOG_COLLECTION)
-      .doc(tornEventId)
-      .set(
-        {
-          tornEventId,
-          tornEventTimestamp: ts,
-          recipientPlayerId: recipientPid,
-          senderPlayerId: senderPid,
-          senderName: parsed.playerName,
-          amount: parsed.amount,
-          rawEventSnippet: html.length > 500 ? html.slice(0, 500) : html,
-          seenAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+    const logRef = db.collection(VIP_INCOMING_XANAX_LOG_COLLECTION).doc(tornEventId);
+    try {
+      await logRef.create({
+        tornEventId,
+        tornEventTimestamp: ts,
+        recipientPlayerId: recipientPid,
+        senderPlayerId: senderPid,
+        senderName: parsed.playerName,
+        amount: parsed.amount,
+        rawEventSnippet: html.length > 500 ? html.slice(0, 500) : html,
+        seenAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      // Already logged (ALREADY_EXISTS) — skip rewrite to avoid billed no-op writes.
+      const code = e && (e.code || e.status);
+      if (code !== 6 && code !== 'already-exists' && String(e && e.message || '').indexOf('ALREADY_EXISTS') === -1) {
+        console.warn('[runVipIncomingXanaxPollCore] xanax log write', tornEventId, e && e.message);
+      }
+    }
 
     if (!bySender.has(senderPid)) bySender.set(senderPid, []);
     bySender.get(senderPid).push({

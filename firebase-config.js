@@ -129,7 +129,7 @@
     }
 
     /** Bump with version.json when shipping client updates. Stale tabs poll version.json and show a refresh banner. */
-    var APP_BUILD_VERSION = '20260714a';
+    var APP_BUILD_VERSION = '20260714b';
     window.APP_BUILD_VERSION = APP_BUILD_VERSION;
 
     function showAppUpdateBanner() {

@@ -1894,7 +1894,7 @@
         html += '</tbody></table></div></div>';
 
         html +=
-            '<p class="war-dashboard-cw-attendance-footnote" style="color:#9e9e9e;font-size:12px;margin:12px 0 0 0;line-height:1.45;">Watch attendance uses <strong>Faction activity tracker</strong> samples (~5 min, online only). Add your faction there for 24/7 history. <strong>Xm</strong> = estimated online minutes in that hour; <strong>✓</strong> seen online at least once; <strong>✗</strong> samples ran but player was not online; <strong>?</strong> no samples that hour; <strong>…</strong> hour still in progress.</p>';
+            '<p class="war-dashboard-cw-attendance-footnote" style="color:#9e9e9e;font-size:12px;margin:12px 0 0 0;line-height:1.45;">Watch attendance uses <strong>Faction activity tracker</strong> samples (~10 min, online only). Add your faction there for 24/7 history. <strong>Xm</strong> = estimated online minutes in that hour; <strong>✓</strong> seen online at least once; <strong>✗</strong> samples ran but player was not online; <strong>?</strong> no samples that hour; <strong>…</strong> hour still in progress.</p>';
 
         if (canEdit && factionId) {
             const issues = collectChainWatchAttendanceIssues(factionId, p);

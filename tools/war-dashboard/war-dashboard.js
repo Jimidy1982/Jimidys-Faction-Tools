@@ -5,7 +5,7 @@
 (function () {
     'use strict';
 
-    window.__WAR_DASHBOARD_BUILD = '20260714a';
+    window.__WAR_DASHBOARD_BUILD = '20260714b';
 
     const STORAGE_KEYS = {
         enemyFactionId: 'war_dashboard_enemy_faction_id',
@@ -32,7 +32,8 @@
     const ACTIVITY_CLOUD_IGNORE_BEFORE_PREFIX = 'war_dashboard_activity_cloud_ignore_before_';
     /** Max `t` (ms) from Firestore activitySampleWindows we've merged — UI sync label only. */
     const ACTIVITY_CLOUD_CURSOR_KEY = 'war_dashboard_activity_cloud_cursor_v1';
-    const ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
+    /** Matches server sampleActivity schedule (TICK_MS). */
+    const ACTIVITY_INTERVAL_MS = 10 * 60 * 1000;
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
     const ACTIVITY_DATA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -181,12 +182,12 @@
         return '?';
     }
 
-    /** Display label for minutes; bucket width matches ACTIVITY_INTERVAL_MS (5 min). */
+    /** Display label for minutes; bucket width matches ACTIVITY_INTERVAL_MS. */
     const CHAIN_WATCH_ACTIVITY_SAMPLE_MIN = 5;
 
     /**
      * Merged Faction activity tracker samples (online only). Slot window [slotStartSec, slotEndSec) unix.
-     * Raw samples are deduped by floor(t / ACTIVITY_INTERVAL_MS): multiple ticks in the same 5-min bucket count once
+     * Raw samples are deduped by floor(t / ACTIVITY_INTERVAL_MS): multiple ticks in the same bucket count once
      * (fixes inflated minutes when local + cloud merges duplicate nearby samples).
      * Past + had samples + never online => fail (exclude reward). Past + zero samples => no_data (do not exclude).
      */
@@ -2717,7 +2718,7 @@
         html += '</tbody></table></div></div>';
 
         html +=
-            '<p class="war-dashboard-cw-attendance-footnote" style="color:#9e9e9e;font-size:12px;margin:12px 0 0 0;line-height:1.45;">Watch attendance uses <strong>Faction activity tracker</strong> samples (~5 min, online only). Add your faction there for 24/7 history. <strong>Xm</strong> = estimated online minutes in that hour; <strong>✓</strong> seen online at least once; <strong>✗</strong> samples ran but player was not online; <strong>?</strong> no samples that hour; <strong>…</strong> hour still in progress.</p>';
+            '<p class="war-dashboard-cw-attendance-footnote" style="color:#9e9e9e;font-size:12px;margin:12px 0 0 0;line-height:1.45;">Watch attendance uses <strong>Faction activity tracker</strong> samples (~10 min, online only). Add your faction there for 24/7 history. <strong>Xm</strong> = estimated online minutes in that hour; <strong>✓</strong> seen online at least once; <strong>✗</strong> samples ran but player was not online; <strong>?</strong> no samples that hour; <strong>…</strong> hour still in progress.</p>';
 
         if (canEdit && lastOurFactionId) {
             const issues = collectChainWatchAttendanceIssues(lastOurFactionId, p);
@@ -4582,7 +4583,7 @@
             }
             const reg = await syncTrackedFactionToFirestore(factionId, 'add');
             updateActivityCloudStatusUI(factionId);
-            if (!reg.ok && reg.error) showError('Cloud activity (24/7): ' + reg.error + ' — this tab will still sample every 5 min while open.');
+            if (!reg.ok && reg.error) showError('Cloud activity (24/7): ' + reg.error + ' — this tab will still sample every 10 min while open.');
             await refreshAllTrackedActivityFromCloud({ full: true });
             updateActivityCloudStatusUI(factionId);
             updateActivityTrackerUI();
