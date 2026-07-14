@@ -1293,7 +1293,7 @@
         }
         const CHAIN_WATCH_FETCH_MS = 45000;
         try {
-            const payload = { apiKey: apiKey, factionId: String(fid) };
+            const payload = { apiKey: apiKey, factionId: String(fid), includeArchives: false };
             const call = fn.httpsCallable('chainWatchGet')(payload);
             var chainWatchTimeoutId;
             const timeoutPromise = new Promise(function (_, reject) {
@@ -2214,7 +2214,26 @@
             }
         });
 
-        document.getElementById('chain-watch-past-open')?.addEventListener('click', function () {
+        document.getElementById('chain-watch-past-open')?.addEventListener('click', async function () {
+            const apiKey = getApiKey();
+            const fn = getChainWatchFunctions();
+            const archivesBody = document.getElementById('chain-watch-archives-body');
+            if (archivesBody) archivesBody.innerHTML = '<p style="color:#888;">Loading archives…</p>';
+            openChainWatchModal('chain-watch-archives-modal');
+            if (apiKey && fn && factionId) {
+                try {
+                    const res = await fn.httpsCallable('chainWatchListArchives')({
+                        apiKey: apiKey,
+                        factionId: String(factionId),
+                    });
+                    if (res && res.data && Array.isArray(res.data.archives)) {
+                        lastArchivesList = res.data.archives;
+                        if (chainWatchPayload) chainWatchPayload.archives = lastArchivesList;
+                    }
+                } catch (e) {
+                    console.warn('chainWatchListArchives', e);
+                }
+            }
             if (chainWatchPayload) {
                 const v = chainWatchPayload.viewer || {};
                 refreshChainWatchModals(
@@ -2224,8 +2243,9 @@
                     chainWatchOwnerLabel(chainWatchPayload),
                     v.canManageOrganizers === true
                 );
+            } else if (archivesBody) {
+                archivesBody.innerHTML = renderArchivesModalHtml(lastArchivesList, viewingArchiveId, false);
             }
-            openChainWatchModal('chain-watch-archives-modal');
         });
         document.getElementById('chain-watch-archives-close')?.addEventListener('click', function () {
             closeChainWatchModal('chain-watch-archives-modal');
@@ -2280,7 +2300,7 @@
                 fetchChainWatchData(false).then(function () {
                     if (chainWatchPayload) renderChainWatchPage().catch(function () {});
                 }).catch(function () {});
-            }, 60000);
+            }, CHAIN_WATCH_POLL_MS);
         }
     };
 })();

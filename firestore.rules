@@ -1,10 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Activity tracker: legacy tick docs (deprecated). Backend no longer writes; clients use activitySampleWindows.
+    // Legacy tick docs — deprecated; clients use activitySampleWindows. Deny reads so stale cached JS cannot bill 1k+ reads/poll.
     match /activitySamples/{docId} {
-      allow read: if true;
-      allow write: if false;
+      allow read, write: if false;
     }
     // Rolling 7-day activity per faction — shared by all users tracking that faction (1 read per faction).
     match /activitySampleWindows/{factionId} {

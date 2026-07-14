@@ -518,36 +518,65 @@ function vipRegistryRowToAdminBalance(playerId, row) {
   };
 }
 
-async function writeVipBalancesRegistry(players) {
+async function writeVipBalancesRegistry(players, extra = {}) {
   const ref = vipRegistryRef();
   if (!players || !Object.keys(players).length) {
     await ref.delete();
     return;
   }
-  await ref.set({ players, updatedAt: Date.now() });
+  const snap = await ref.get();
+  const prevData = snap.exists ? snap.data() : {};
+  await ref.set({
+    ...prevData,
+    players,
+    updatedAt: Date.now(),
+    playerCount: Object.keys(players).length,
+    ...extra,
+  });
 }
 
 /**
- * Read consolidated VIP registry. One-time migrate from legacy per-player docs if missing.
+ * Merge any per-player vipBalances docs missing from the registry (registry may have been
+ * bootstrapped incrementally via touchVipLogin before a full backfill ran).
+ */
+async function backfillVipRegistryFromLegacyDocs(players, markComplete) {
+  const legacySnap = await db.collection(VIP_BALANCES_COLLECTION).get();
+  const merged = { ...players };
+  let changed = false;
+  for (const doc of legacySnap.docs) {
+    if (doc.id === VIP_BALANCES_REGISTRY_ID) continue;
+    if (merged[doc.id]) continue;
+    merged[doc.id] = vipPlayerRowFromData(doc.data(), doc.id);
+    changed = true;
+  }
+  const extra = {};
+  if (markComplete) extra.backfillComplete = true;
+  if (changed || markComplete) {
+    await writeVipBalancesRegistry(merged, extra);
+    if (changed) await rebuildAllVipFactionPoolsFromRegistry(merged);
+  }
+  return merged;
+}
+
+/**
+ * Read consolidated VIP registry. Backfills once from all legacy per-player docs if needed.
  * @returns {Promise<Record<string, object>>}
  */
 async function readVipBalancesRegistry() {
   const ref = vipRegistryRef();
   const snap = await ref.get();
-  if (snap.exists && snap.data().players && typeof snap.data().players === 'object') {
-    return { ...snap.data().players };
+  if (!snap.exists) {
+    return backfillVipRegistryFromLegacyDocs({}, true);
   }
 
-  const legacySnap = await db.collection(VIP_BALANCES_COLLECTION).get();
-  const players = {};
-  for (const doc of legacySnap.docs) {
-    if (doc.id === VIP_BALANCES_REGISTRY_ID) continue;
-    players[doc.id] = vipPlayerRowFromData(doc.data(), doc.id);
+  const data = snap.data() || {};
+  const players =
+    data.players && typeof data.players === 'object' ? { ...data.players } : {};
+
+  if (data.backfillComplete !== true) {
+    return backfillVipRegistryFromLegacyDocs(players, true);
   }
-  if (Object.keys(players).length) {
-    await writeVipBalancesRegistry(players);
-    await rebuildAllVipFactionPoolsFromRegistry(players);
-  }
+
   return players;
 }
 
@@ -556,9 +585,15 @@ async function syncVipRegistryPlayer(playerId, newData, prevData) {
   const ref = vipRegistryRef();
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    const players = snap.exists && snap.data().players ? { ...snap.data().players } : {};
+    const data = snap.exists ? snap.data() : {};
+    const players = data.players && typeof data.players === 'object' ? { ...data.players } : {};
     players[pid] = vipPlayerRowFromData(newData, pid);
-    tx.set(ref, { players, updatedAt: Date.now() });
+    tx.set(ref, {
+      players,
+      updatedAt: Date.now(),
+      playerCount: Object.keys(players).length,
+      backfillComplete: data.backfillComplete === true,
+    });
   });
   await applyVipFactionPoolDelta(prevData, newData);
 }

@@ -60,11 +60,27 @@ function getDb() {
   return admin.firestore();
 }
 
+/** Short in-memory Torn profile cache — polls hit Torn less often (cold starts reset this). */
+const TORN_USER_CACHE_TTL_MS = 3 * 60 * 1000;
+const tornUserCache = new Map();
+
+function pruneTornUserCache(now) {
+  if (tornUserCache.size < 80) return;
+  for (const [k, v] of tornUserCache) {
+    if (!v || v.expiresAt <= now) tornUserCache.delete(k);
+  }
+}
+
 async function fetchUserFromApiKey(apiKey) {
   const key = String(apiKey || '')
     .trim()
     .replace(/[^A-Za-z0-9]/g, '');
   if (key.length !== 16) throw new HttpsError('invalid-argument', 'Invalid API key');
+  const now = Date.now();
+  const cached = tornUserCache.get(key);
+  if (cached && cached.expiresAt > now && cached.user) {
+    return { ...cached.user, apiKey: key };
+  }
   const url = `https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(key)}`;
   const res = await fetch(url);
   const data = await res.json();
@@ -86,7 +102,10 @@ async function fetchUserFromApiKey(apiKey) {
           ? fac.id
           : null;
   const factionId = rawFactionId != null ? String(rawFactionId) : null;
-  return { playerId, name, factionId, apiKey: key };
+  const user = { playerId, name, factionId };
+  tornUserCache.set(key, { user, expiresAt: now + TORN_USER_CACHE_TTL_MS });
+  pruneTornUserCache(now);
+  return { ...user, apiKey: key };
 }
 
 function assertSameFaction(userFactionId, docFactionId) {
@@ -387,14 +406,23 @@ function buildArchivedGetResponse(snap, user) {
   };
 }
 
-async function buildGetResponse(snap, user, factionId) {
+/**
+ * @param {FirebaseFirestore.DocumentSnapshot} snap
+ * @param {{ playerId: string, name: string, factionId: string|null }} user
+ * @param {string} factionId
+ * @param {{ includeArchives?: boolean }} [opts] — default false (archives via chainWatchListArchives)
+ */
+async function buildGetResponse(snap, user, factionId, opts) {
   const raw = snap.exists ? snap.data() : null;
   const perms = viewerPermissions(raw, user.playerId);
+  const includeArchives = opts && opts.includeArchives === true;
   let archives = [];
-  try {
-    archives = await listArchiveSummaries(factionId);
-  } catch (e) {
-    /* non-fatal if index missing on first deploy */
+  if (includeArchives) {
+    try {
+      archives = await listArchiveSummaries(factionId);
+    } catch (e) {
+      /* non-fatal if index missing on first deploy */
+    }
   }
   const viewer = {
     playerId: user.playerId,
@@ -437,9 +465,9 @@ async function buildGetResponse(snap, user, factionId) {
   };
 }
 
-/** Public read for faction members */
+/** Public read for faction members. Pass includeArchives: true only when opening Past archives. */
 exports.chainWatchGet = onCall(callableOpts({ maxInstances: 20 }), async (request) => {
-  const { apiKey, factionId } = request.data || {};
+  const { apiKey, factionId, includeArchives } = request.data || {};
   const fid = String(factionId || '').trim();
   if (!fid) throw new HttpsError('invalid-argument', 'factionId required');
 
@@ -452,7 +480,7 @@ exports.chainWatchGet = onCall(callableOpts({ maxInstances: 20 }), async (reques
     const auto = await maybeAutoArchiveStale(ref, snap.data());
     if (auto) snap = await ref.get();
   }
-  return buildGetResponse(snap, user, fid);
+  return buildGetResponse(snap, user, fid, { includeArchives: includeArchives === true });
 });
 
 /** Owner/organiser: freeze current schedule to history and clear active slot for a new chain watch. */

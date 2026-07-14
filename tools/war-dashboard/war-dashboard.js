@@ -5,6 +5,8 @@
 (function () {
     'use strict';
 
+    window.__WAR_DASHBOARD_BUILD = '20260714a';
+
     const STORAGE_KEYS = {
         enemyFactionId: 'war_dashboard_enemy_faction_id',
         refreshInterval: 'war_dashboard_refresh_interval',
@@ -1151,6 +1153,24 @@
                 if (maxT > getActivityCloudCursorT()) setActivityCloudCursorT(maxT);
             } catch (e) {
                 readError = (e && e.message) ? e.message : String(e);
+                const code = e && (e.code || e.message || '');
+                if (/permission|insufficient|denied/i.test(String(code))) {
+                    readError =
+                        'This tab is using an outdated War Dashboard build. Hard-refresh the page (Ctrl+F5) to restore cloud activity sync.';
+                    if (typeof window.showAppUpdateBanner === 'function') {
+                        window.showAppUpdateBanner();
+                    } else if (!document.getElementById('app-update-banner')) {
+                        var staleBar = document.createElement('div');
+                        staleBar.id = 'app-update-banner';
+                        staleBar.setAttribute('role', 'alert');
+                        staleBar.style.cssText =
+                            'position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 14px;background:#b45309;color:#fff;text-align:center;font-size:14px;';
+                        staleBar.innerHTML =
+                            'War Dashboard update available — <button type="button" style="margin-left:8px;padding:4px 12px;font-weight:600;">Refresh (Ctrl+F5)</button>';
+                        staleBar.querySelector('button').onclick = function () { location.reload(); };
+                        if (document.body) document.body.prepend(staleBar);
+                    }
+                }
                 console.warn('Activity Firestore read failed', e);
             }
 
@@ -2065,7 +2085,7 @@
         }
         const CHAIN_WATCH_FETCH_MS = 45000;
         try {
-            const payload = { apiKey: apiKey, factionId: String(fid) };
+            const payload = { apiKey: apiKey, factionId: String(fid), includeArchives: false };
             const call = fn.httpsCallable('chainWatchGet')(payload);
             var chainWatchTimeoutId;
             const timeoutPromise = new Promise(function (_, reject) {
@@ -4666,6 +4686,7 @@
                 const existing = await fn.httpsCallable('chainWatchGet')({
                     apiKey: apiKey,
                     factionId: String(fid),
+                    includeArchives: false,
                 });
                 if (existing && existing.data && existing.data.exists) {
                     const ex = existing.data;
@@ -4952,7 +4973,7 @@
                         const p = (window.location.hash || '').replace('#', '').split('/')[0];
                         if (p !== 'war-dashboard' || !lastOurFactionId) return;
                         fetchChainWatchData(false).catch(function () {});
-                    }, 60 * 1000);
+                    }, CHAIN_WATCH_POLL_MS);
                 }
             }
         }

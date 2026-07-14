@@ -127,4 +127,49 @@
             };
         }
     }
+
+    /** Bump with version.json when shipping client updates. Stale tabs poll version.json and show a refresh banner. */
+    var APP_BUILD_VERSION = '20260714a';
+    window.APP_BUILD_VERSION = APP_BUILD_VERSION;
+
+    function showAppUpdateBanner() {
+        if (document.getElementById('app-update-banner')) return;
+        var bar = document.createElement('div');
+        bar.id = 'app-update-banner';
+        bar.setAttribute('role', 'alert');
+        bar.style.cssText =
+            'position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 14px;background:#b45309;color:#fff;text-align:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.35);';
+        bar.innerHTML =
+            'A new version of Faction Tools is available. ' +
+            '<button type="button" style="margin-left:10px;padding:4px 12px;cursor:pointer;font-weight:600;border:none;border-radius:4px;">Refresh now</button>';
+        bar.querySelector('button').onclick = function () {
+            location.reload();
+        };
+        if (document.body) document.body.prepend(bar);
+        else document.addEventListener('DOMContentLoaded', function () {
+            document.body.prepend(bar);
+        });
+    }
+    window.showAppUpdateBanner = showAppUpdateBanner;
+
+    function pollAppBuildVersion() {
+        try {
+            fetch('version.json?nocache=' + Date.now(), { cache: 'no-store' })
+                .then(function (res) {
+                    if (!res.ok) return null;
+                    return res.json();
+                })
+                .then(function (data) {
+                    var remote = data && data.build;
+                    if (remote && remote !== APP_BUILD_VERSION) showAppUpdateBanner();
+                })
+                .catch(function () { /* ignore */ });
+        } catch (e) { /* ignore */ }
+    }
+
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') pollAppBuildVersion();
+    });
+    pollAppBuildVersion();
+    setInterval(pollAppBuildVersion, 30 * 60 * 1000);
 })();
