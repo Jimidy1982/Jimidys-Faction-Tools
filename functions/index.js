@@ -1,6 +1,7 @@
 /**
  * Activity tracker backend:
  * - HTTP: addTrackedFaction / removeTrackedFaction / listMyActivityFactions (optional apiKey reconciles legacy trackedFactionKeys).
+ *   addTrackedFaction caps each player at 3 target factions.
  * - Scheduled: every 10 min, sampleActivity reads trackedFactionKeys/_registry (1 doc), appends activitySampleWindows/{factionId}.
  */
 const { setGlobalOptions } = require('firebase-functions/v2');
@@ -81,6 +82,8 @@ const ACTIVITY_WINDOW_MAX_SAMPLES = Math.ceil(RETENTION_MS / TICK_MS) + 4;
 const VIP_LOGIN_WRITE_MIN_MS = 12 * 60 * 60 * 1000;
 /** Drop a user's server registration if War Dashboard has not refreshed it in this long (matches client auto-disable). */
 const ACTIVITY_KEY_STALE_MS = 2 * 24 * 60 * 60 * 1000;
+/** Max enemy factions one player may register for 24/7 activity sampling. */
+const MAX_ACTIVITY_TRACKED_FACTIONS_PER_PLAYER = 3;
 
 function activityKeyLastActiveMs(entry) {
   const n = entry && entry.lastActiveAt != null ? Number(entry.lastActiveAt) : 0;
@@ -174,6 +177,22 @@ async function updateTrackedFactionRegistry(mutator) {
     }
     return result;
   });
+}
+
+function activityKeyBelongsToPlayer(entry, uid, tornPid) {
+  if (uid && String(entry.userId || '') === String(uid)) return true;
+  if (tornPid && String(entry.tornPlayerId || '') === String(tornPid)) return true;
+  return false;
+}
+
+/** How many target factions this player already has a key on in the registry. */
+function countFactionsTrackedByPlayer(factions, uid, tornPid) {
+  let n = 0;
+  for (const entry of Object.values(factions || {})) {
+    const keys = entry.keys || [];
+    if (keys.some((e) => activityKeyBelongsToPlayer(e, uid, tornPid))) n += 1;
+  }
+  return n;
 }
 
 function getTickId(ms) {
@@ -309,7 +328,17 @@ exports.addTrackedFaction = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) => {
     const now = Date.now();
     await updateTrackedFactionRegistry((factions) => {
       const prev = factions[fid] || {};
-      const keys = (prev.keys || []).filter((e) => e.userId !== uid);
+      const already = (prev.keys || []).some((e) => activityKeyBelongsToPlayer(e, uid, tornPid));
+      if (!already) {
+        const count = countFactionsTrackedByPlayer(factions, uid, tornPid);
+        if (count >= MAX_ACTIVITY_TRACKED_FACTIONS_PER_PLAYER) {
+          throw new HttpsError(
+            'resource-exhausted',
+            `You can track at most ${MAX_ACTIVITY_TRACKED_FACTIONS_PER_PLAYER} factions for activity. Remove one before adding another.`
+          );
+        }
+      }
+      const keys = (prev.keys || []).filter((e) => !activityKeyBelongsToPlayer(e, uid, tornPid));
       const entry = { key: key, userId: uid, lastActiveAt: now };
       if (tornPid) entry.tornPlayerId = tornPid;
       keys.push(entry);

@@ -5,7 +5,7 @@
 (function () {
     'use strict';
 
-    window.__WAR_DASHBOARD_BUILD = '20260714b';
+    window.__WAR_DASHBOARD_BUILD = '20260715a';
 
     const STORAGE_KEYS = {
         enemyFactionId: 'war_dashboard_enemy_faction_id',
@@ -34,6 +34,8 @@
     const ACTIVITY_CLOUD_CURSOR_KEY = 'war_dashboard_activity_cloud_cursor_v1';
     /** Matches server sampleActivity schedule (TICK_MS). */
     const ACTIVITY_INTERVAL_MS = 10 * 60 * 1000;
+    /** Max factions one player may track (matches server MAX_ACTIVITY_TRACKED_FACTIONS_PER_PLAYER). */
+    const MAX_ACTIVITY_TRACKED_FACTIONS = 3;
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
     const ACTIVITY_DATA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -943,6 +945,42 @@
         } catch (e) { /* ignore */ }
     }
 
+    /** True if factionId is already tracked, or under the per-player cap. */
+    function canAddActivityTrackedFaction(factionId) {
+        const fid = String(factionId || '').trim();
+        const tracked = getActivityConfig().tracked || [];
+        if (fid && tracked.some(function (t) { return String(t.factionId) === fid; })) return true;
+        return tracked.length < MAX_ACTIVITY_TRACKED_FACTIONS;
+    }
+
+    function activityTrackedLimitMessage() {
+        return (
+            'You can track at most ' +
+            MAX_ACTIVITY_TRACKED_FACTIONS +
+            ' factions for activity. Remove one before adding another.'
+        );
+    }
+
+    /**
+     * If local list exceeds the cap (legacy), keep earliest startedAt and unregister extras on the server.
+     * @returns {boolean} true if list was trimmed
+     */
+    function enforceActivityTrackedLimitLocal() {
+        const config = getActivityConfig();
+        if (!config.tracked || config.tracked.length <= MAX_ACTIVITY_TRACKED_FACTIONS) return false;
+        const sorted = config.tracked.slice().sort(function (a, b) {
+            return (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0);
+        });
+        const keep = sorted.slice(0, MAX_ACTIVITY_TRACKED_FACTIONS);
+        const drop = sorted.slice(MAX_ACTIVITY_TRACKED_FACTIONS);
+        config.tracked = keep;
+        setActivityConfig(config);
+        drop.forEach(function (t) {
+            syncTrackedFactionToFirestore(t.factionId, 'remove');
+        });
+        return true;
+    }
+
     function getActivityLastVisit() {
         const raw = localStorage.getItem(STORAGE_KEYS.activityTrackerLastVisit);
         return raw ? parseInt(raw, 10) : 0;
@@ -1406,6 +1444,7 @@
             ids.forEach(function (fid) {
                 var s = String(fid);
                 if (seen.has(s)) return;
+                if (cfg.tracked.length >= MAX_ACTIVITY_TRACKED_FACTIONS) return;
                 seen.add(s);
                 cfg.tracked.push({
                     factionId: s,
@@ -1476,6 +1515,7 @@
             return true;
         });
         if (changed) setActivityConfig(config);
+        enforceActivityTrackedLimitLocal();
     }
 
     function getSortValue(m, column, ffMap, bsMap, nowSec) {
@@ -4488,6 +4528,11 @@
                 const enemyName = current.enemyName || 'Faction ' + enemyId;
                 const existing = config.tracked.find(t => t.factionId === enemyId);
                 if (!existing) {
+                    if (!canAddActivityTrackedFaction(enemyId)) {
+                        console.warn('Activity tracker: at ' + MAX_ACTIVITY_TRACKED_FACTIONS + ' faction limit; skip auto-track of war enemy ' + enemyId);
+                        try { localStorage.setItem(STORAGE_KEYS.activityAutoWarEnemyFactionId, enemyId); } catch (e) { /* ignore */ }
+                        return;
+                    }
                     config.tracked.push({
                         factionId: enemyId,
                         factionName: enemyName,
@@ -4525,7 +4570,7 @@
         }
     }
 
-    /** Ensure faction is in tracked list; add with default name if missing. Updates factionName when provided. Returns config. */
+    /** Ensure faction is in tracked list; add with default name if missing. Updates factionName when provided. Returns config or null if at cap. */
     function ensureActivityTrackerFactionInConfig(factionId, factionName) {
         const config = getActivityConfig();
         const existing = config.tracked.find(t => t.factionId === factionId);
@@ -4536,6 +4581,7 @@
             }
             return config;
         }
+        if (!canAddActivityTrackedFaction(factionId)) return null;
         config.tracked.push({
             factionId: factionId,
             factionName: factionName || 'Faction ' + factionId,
@@ -4556,6 +4602,10 @@
             showError('Please enter your API key in the sidebar.');
             return;
         }
+        if (!canAddActivityTrackedFaction(factionId)) {
+            showError(activityTrackedLimitMessage());
+            return;
+        }
         showError('');
         try {
             const [members, factionName] = await Promise.all([
@@ -4569,7 +4619,10 @@
                     return a === 'online';
                 })
                 .map(m => String(m.id));
-            ensureActivityTrackerFactionInConfig(factionId, factionName || undefined);
+            if (!ensureActivityTrackerFactionInConfig(factionId, factionName || undefined)) {
+                showError(activityTrackedLimitMessage());
+                return;
+            }
             appendActivitySample(factionId, onlineIds, members);
             // Auto-fetch and cache battle stats (same as war dashboard) so table can show Est. stats
             const memberIds = members.map(m => String(m.id));

@@ -4530,7 +4530,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const oldScript = document.getElementById('war-dashboard-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
-                const buildV = (window.APP_BUILD_VERSION || '20260714b');
+                const buildV = (window.APP_BUILD_VERSION || '20260715a');
                 script.src = 'tools/war-dashboard/war-dashboard.js?v=' + encodeURIComponent(buildV);
                 script.id = 'war-dashboard-script';
                 script.onload = () => {
@@ -4542,7 +4542,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const oldScript = document.getElementById('chain-watch-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
-                script.src = 'tools/chain-watch/chain-watch.js?v=' + encodeURIComponent(window.APP_BUILD_VERSION || '20260714b');
+                script.src = 'tools/chain-watch/chain-watch.js?v=' + encodeURIComponent(window.APP_BUILD_VERSION || '20260715a');
                 script.id = 'chain-watch-script';
                 script.onload = () => {
                     if (typeof initChainWatchPage === 'function') initChainWatchPage();
