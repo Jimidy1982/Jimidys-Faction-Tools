@@ -590,19 +590,33 @@ async function loadCacheSwapRecentWars() {
     container.style.display = 'block';
 
     try {
-        const profileRes = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+        const profileUrl = `https://api.torn.com/user/?selections=profile&key=${apiKey}`;
+        const profileRes = await fetch(
+            typeof window.getTornApiFetchUrl === 'function'
+                ? window.getTornApiFetchUrl(profileUrl)
+                : profileUrl
+        );
         const profile = await profileRes.json();
         if (profile.error) {
             listEl.innerHTML = '<div style="color: #b0b0b0;">Could not load profile.</div>';
             return;
         }
-        const factionId = profile.faction_id || profile.faction?.faction_id;
+        const parsed =
+            typeof window.parseTornProfileIdentity === 'function'
+                ? window.parseTornProfileIdentity(profile)
+                : null;
+        const factionId = parsed
+            ? parsed.factionId
+            : profile.faction_id || profile.faction?.faction_id || profile.faction?.id;
         if (!factionId) {
             listEl.innerHTML = '<div style="color: #b0b0b0;">You are not in a faction.</div>';
             return;
         }
 
-        const warsRes = await fetch(`https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`);
+        const warsUrl = `https://api.torn.com/v2/faction/${factionId}/rankedwars?key=${apiKey}`;
+        const warsRes = await fetch(
+            typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(warsUrl) : warsUrl
+        );
         const warsData = await warsRes.json();
         if (warsData.error) {
             listEl.innerHTML = '<div style="color: #f44336;">Error loading wars.</div>';

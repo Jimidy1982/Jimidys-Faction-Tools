@@ -18,6 +18,39 @@
     };
 })();
 
+/**
+ * Normalize Torn user profile (v1) identity fields. Handles legacy faction_id and newer faction.id,
+ * and coerces player_id to a number so ADMIN_USER_IDS.includes(...) works.
+ */
+window.parseTornProfileIdentity = function (data) {
+    if (!data || typeof data !== 'object' || data.error) return null;
+    const playerIdRaw = data.player_id != null ? data.player_id : data.id;
+    const playerIdNum = playerIdRaw != null && playerIdRaw !== '' ? Number(playerIdRaw) : NaN;
+    const fac = data.faction && typeof data.faction === 'object' ? data.faction : null;
+    let factionIdRaw = null;
+    if (data.faction_id != null && String(data.faction_id).trim() !== '') {
+        factionIdRaw = data.faction_id;
+    } else if (fac && fac.faction_id != null && String(fac.faction_id).trim() !== '') {
+        factionIdRaw = fac.faction_id;
+    } else if (fac && fac.id != null && String(fac.id).trim() !== '') {
+        factionIdRaw = fac.id;
+    }
+    const factionId =
+        factionIdRaw != null && String(factionIdRaw).trim() !== '' && Number(factionIdRaw) !== 0
+            ? String(factionIdRaw).trim()
+            : null;
+    const factionName =
+        (data.faction_name && String(data.faction_name)) ||
+        (fac && (fac.faction_name || fac.name) && String(fac.faction_name || fac.name)) ||
+        '';
+    return {
+        name: data.name || data.player_name || '',
+        playerId: Number.isFinite(playerIdNum) ? playerIdNum : null,
+        factionId: factionId,
+        factionName: factionName || (factionId ? 'Faction ' + factionId : 'Unknown Faction'),
+    };
+};
+
 /** Shared "Name [ID]" toggle for member/player columns across tools (localStorage). */
 (function initToolsMemberDisplay() {
     const STORAGE_KEY = 'war_report_payout_show_member_id';
@@ -591,7 +624,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         try {
-            const response = await fetch(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+            const url = `https://api.torn.com/user/?selections=profile&key=${apiKey}`;
+            const fetchUrl =
+                typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
+            const response = await fetch(fetchUrl);
             const data = await response.json();
             
             
@@ -599,13 +635,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error('API Error:', data.error);
                 return null;
             }
-            
+
+            const parsed =
+                typeof window.parseTornProfileIdentity === 'function'
+                    ? window.parseTornProfileIdentity(data)
+                    : null;
+            if (!parsed || parsed.playerId == null) return null;
+
             const userData = {
-                name: data.name,
-                playerId: data.player_id,
-                profileUrl: `https://www.torn.com/profiles.php?XID=${data.player_id}`,
-                factionName: data.faction_name || data.faction?.faction_name || 'Unknown Faction',
-                factionId: data.faction_id || data.faction?.faction_id || null
+                name: parsed.name,
+                playerId: parsed.playerId,
+                profileUrl: `https://www.torn.com/profiles.php?XID=${parsed.playerId}`,
+                factionName: parsed.factionName,
+                factionId: parsed.factionId
             };
             
             // Cache the result
@@ -1741,7 +1783,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             const userData = await getUserData(apiKey);
-            return userData && ADMIN_USER_IDS.includes(userData.playerId);
+            const pid = userData && userData.playerId != null ? Number(userData.playerId) : NaN;
+            return Number.isFinite(pid) && ADMIN_USER_IDS.includes(pid);
         } catch (error) {
             if (error?.message !== 'Failed to fetch' && error?.name !== 'TypeError') {
                 console.error('Error checking admin status:', error);
@@ -4530,7 +4573,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const oldScript = document.getElementById('war-dashboard-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
-                const buildV = (window.APP_BUILD_VERSION || '20260715a');
+                const buildV = (window.APP_BUILD_VERSION || '20260715b');
                 script.src = 'tools/war-dashboard/war-dashboard.js?v=' + encodeURIComponent(buildV);
                 script.id = 'war-dashboard-script';
                 script.onload = () => {
@@ -4542,7 +4585,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const oldScript = document.getElementById('chain-watch-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
-                script.src = 'tools/chain-watch/chain-watch.js?v=' + encodeURIComponent(window.APP_BUILD_VERSION || '20260715a');
+                script.src = 'tools/chain-watch/chain-watch.js?v=' + encodeURIComponent(window.APP_BUILD_VERSION || '20260715b');
                 script.id = 'chain-watch-script';
                 script.onload = () => {
                     if (typeof initChainWatchPage === 'function') initChainWatchPage();

@@ -5,7 +5,7 @@
 (function () {
     'use strict';
 
-    window.__WAR_DASHBOARD_BUILD = '20260715a';
+    window.__WAR_DASHBOARD_BUILD = '20260715b';
 
     const STORAGE_KEYS = {
         enemyFactionId: 'war_dashboard_enemy_faction_id',
@@ -698,18 +698,31 @@
     }
 
     async function fetchJson(url) {
-        const res = await fetch(url);
+        const fetchUrl =
+            typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
+        const res = await fetch(fetchUrl);
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        if (data.error) throw new Error(typeof data.error === 'object' ? (data.error.error || JSON.stringify(data.error)) : data.error);
         return data;
     }
 
     async function getUserProfile(apiKey) {
         const data = await fetchJson(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+        const parsed =
+            typeof window.parseTornProfileIdentity === 'function'
+                ? window.parseTornProfileIdentity(data)
+                : null;
+        if (parsed) {
+            return {
+                factionId: parsed.factionId,
+                factionName: parsed.factionName,
+                playerId: parsed.playerId
+            };
+        }
         return {
-            factionId: data.faction_id || data.faction?.faction_id || null,
-            factionName: data.faction_name || data.faction?.faction_name || '',
-            playerId: data.player_id
+            factionId: data.faction_id || data.faction?.faction_id || data.faction?.id || null,
+            factionName: data.faction_name || data.faction?.faction_name || data.faction?.name || '',
+            playerId: data.player_id != null ? Number(data.player_id) : null
         };
     }
 

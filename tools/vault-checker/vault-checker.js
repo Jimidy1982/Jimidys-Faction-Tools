@@ -31,7 +31,9 @@
     }
 
     async function fetchJson(url) {
-        const res = await fetch(url);
+        const fetchUrl =
+            typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
+        const res = await fetch(fetchUrl);
         const data = await res.json();
         if (data.error) throw new Error(tornApiErrorToMessage(data.error));
         return data;
@@ -39,14 +41,25 @@
 
     async function getUserProfile(apiKey) {
         const data = await fetchJson(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+        const parsed =
+            typeof window.parseTornProfileIdentity === 'function'
+                ? window.parseTornProfileIdentity(data)
+                : null;
+        if (parsed) {
+            return {
+                factionId: parsed.factionId,
+                factionName: parsed.factionName,
+                playerId: parsed.playerId != null ? String(parsed.playerId) : null
+            };
+        }
         let playerId = null;
         try {
             const b = await fetchJson(`https://api.torn.com/user/?selections=basic&key=${apiKey}`);
             playerId = b.player_id != null ? String(b.player_id) : (b.id != null ? String(b.id) : null);
         } catch (e) { /* key may lack basic */ }
         return {
-            factionId: data.faction_id || data.faction?.faction_id || null,
-            factionName: data.faction_name || data.faction?.faction_name || '',
+            factionId: data.faction_id || data.faction?.faction_id || data.faction?.id || null,
+            factionName: data.faction_name || data.faction?.faction_name || data.faction?.name || '',
             playerId
         };
     }
