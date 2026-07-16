@@ -392,7 +392,7 @@ exports.removeTrackedFaction = onRequest(ACTIVITY_HTTP_OPTS, async (req, res) =>
       const prev = factions[fid];
       if (!prev) return;
       const keysBefore = prev.keys || [];
-      keysAfter = keysBefore.filter((e) => e.userId !== uid);
+      keysAfter = keysBefore.filter((e) => !activityKeyBelongsToPlayer(e, uid, tornPid));
       if (keysAfter.length) {
         factions[fid] = { keys: keysAfter, addedAt: prev.addedAt };
       } else {

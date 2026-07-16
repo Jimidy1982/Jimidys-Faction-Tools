@@ -8,10 +8,10 @@
             <!-- FFScouter API Registration Notice -->
             <div style="padding: 15px; background-color: #2a2a2a; border-left: 4px solid #FFD700; border-radius: 4px; margin-bottom: 15px;">
                 <p style="margin: 0; color: #e0e0e0; font-size: 14px;">
-                    <strong>⚠️ Important:</strong> This tool requires your API key to be registered with <a href="https://ffscouter.com" target="_blank" style="color: #FFD700; text-decoration: underline;">FFScouter</a>.
+                    <strong>Important:</strong> This tool uses FFScouter estimates. Add a FFScouter key in <a href="#" class="api-settings-open-link" style="color: #FFD700; text-decoration: underline;">API Settings</a>, or register your Torn key with <a href="https://ffscouter.com" target="_blank" style="color: #FFD700; text-decoration: underline;">FFScouter</a>.
                 </p>
                 <p style="margin: 5px 0 0 0; color: #b0b0b0; font-size: 13px;">
-                    Please visit <a href="https://ffscouter.com" target="_blank" style="color: #FFD700; text-decoration: underline;">ffscouter.com</a> to register your API key before using this tool.
+                    If no FFScouter key is saved, the tool falls back to your main Torn key.
                 </p>
             </div>
             
@@ -22,9 +22,10 @@
                     <button type="button" id="myFactionBtn" class="btn" style="white-space: nowrap;">My Faction</button>
                     <button type="button" id="currentWarFactionBtn" class="btn" style="white-space: nowrap;" title="Uses your faction from the API key: fills the enemy faction ID for your ongoing ranked war, or the next upcoming war if none is live (same idea as War Payout ranked war list).">Current war</button>
                 </div>
-                <label for="battleStatsTornStatsApiKey" style="margin-top: 10px;">TornStats API Key (optional)</label>
-                <input type="text" id="battleStatsTornStatsApiKey" placeholder="For importing recent spy stats" autocomplete="off" style="max-width: 360px;">
-                <p style="margin: 6px 0 0 0; color: #b0b0b0; font-size: 12px;">Used only for TornStats import. FF Scouter estimates remain the fallback.</p>
+                <p style="margin: 10px 0 0 0; color: #b0b0b0; font-size: 12px;">
+                    TornStats and FFScouter keys are managed in <a href="#" class="api-settings-open-link" style="color: #FFD700; text-decoration: underline;">API Settings</a>.
+                    <span id="battleStatsApiSettingsSummary"></span>
+                </p>
                 <button id="fetchBattleStatsBtn" class="btn" style="margin-top: 10px;">Fetch Data</button>
             </div>
         </div>

@@ -22,16 +22,70 @@ function detectChainBonus(totalRespect) {
         20480: '50000th Chain',
         40960: '100000th Chain'
     };
+    const n = Number(totalRespect);
+    const key = Number.isFinite(n) && Math.abs(n - Math.round(n)) < 1e-9 ? Math.round(n) : null;
     
-    if (chainMilestones[totalRespect]) {
+    if (key != null && chainMilestones[key]) {
         return {
-            milestone: chainMilestones[totalRespect],
-            points: totalRespect,
-            deduction: totalRespect - 10 // Base respect is always 10, so deduction is total - 10
+            milestone: chainMilestones[key],
+            points: key,
+            deduction: key - 10 // Base respect is always 10, so deduction is total - 10
         };
     }
     
     return null;
+}
+
+/** Enemy faction id from ranked war info, or null if unknown. */
+function warReportEnemyFactionId(warInfo, ownFactionId) {
+    if (!warInfo || ownFactionId == null || ownFactionId === '') return null;
+    const factions = warInfo.factions;
+    if (!Array.isArray(factions)) return null;
+    const own = String(ownFactionId);
+    const enemy = factions.find((f) => f && String(f.id) !== own);
+    return enemy && enemy.id != null && enemy.id !== '' ? String(enemy.id) : null;
+}
+
+function warReportAttackWarModifier(attack) {
+    const w = attack && attack.modifiers != null ? Number(attack.modifiers.war) : NaN;
+    return Number.isFinite(w) ? w : 0;
+}
+
+function warReportDefenderFactionId(attack) {
+    const id = attack && attack.defender && attack.defender.faction && attack.defender.faction.id;
+    return id != null && id !== '' ? String(id) : null;
+}
+
+/**
+ * Inside (war) hit: API war modifier 2, and when enemy faction is known the defender must be that faction.
+ * Chain milestone / “war bonus” hits wasted on non-enemy targets must not count as war respect
+ * (Torn war score does not include them either).
+ */
+function warReportIsInsideWarAttack(attack, enemyFactionId) {
+    if (warReportAttackWarModifier(attack) !== 2) return false;
+    if (enemyFactionId == null || enemyFactionId === '') return true;
+    const defFac = warReportDefenderFactionId(attack);
+    // No defender faction (or wrong faction) → not a scored war hit when we know the enemy
+    if (defFac == null) return false;
+    return defFac === String(enemyFactionId);
+}
+
+/**
+ * Outside-style hit for respect/payout: war modifier 1 with respect, or war=2 vs a non-enemy when we know the enemy.
+ * @param {number} [respectAmount] - when set (e.g. base respect), used instead of respect_gain for the >0 gate
+ */
+function warReportIsOutsideStyleAttack(attack, enemyFactionId, respectAmount) {
+    if (!attack) return false;
+    if (warReportIsInsideWarAttack(attack, enemyFactionId)) return false;
+    const amt = respectAmount != null ? Number(respectAmount) : Number(attack.respect_gain);
+    if (!(Number.isFinite(amt) && amt > 0)) return false;
+    const war = warReportAttackWarModifier(attack);
+    if (war === 1) return true;
+    if (war === 2 && enemyFactionId) {
+        const defFac = warReportDefenderFactionId(attack);
+        if (defFac == null || defFac !== String(enemyFactionId)) return true;
+    }
+    return false;
 }
 
 // Helper to calculate base respect from attack data
@@ -43,7 +97,10 @@ function calculateBaseRespect(attack, removeModifiers = false, shouldRound = tru
     // Check if this is a chain attack (respect_gain is 10, 20, 40, 80, 160, etc.)
     // Chain attacks follow the pattern: 10 * 2^n where n >= 0
     const chainValues = [10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960];
-    if (chainValues.includes(totalRespect)) {
+    const totalKey = Number(totalRespect);
+    const totalForChain =
+        Number.isFinite(totalKey) && Math.abs(totalKey - Math.round(totalKey)) < 1e-9 ? Math.round(totalKey) : totalRespect;
+    if (chainValues.includes(totalForChain)) {
         return shouldRound ? 10 : 10; // Chain attacks are worth exactly 10 base respect points
     }
     
@@ -504,7 +561,7 @@ function warReportParseSurrenderTimeUtc(inputValue) {
     return Math.floor(asUtc / 1000);
 }
 
-function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix) {
+function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix, enemyFactionId) {
     const map = new Map();
     if (!Array.isArray(allAttacks) || !factionIdStr || !Number.isFinite(surrenderUnix)) return map;
     allAttacks.forEach((attack) => {
@@ -512,7 +569,7 @@ function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix) {
         if (String(attack.attacker.faction.id) !== String(factionIdStr)) return;
         if (attack._warScoreCapWarPayEligible === false) return;
         if (attack.is_interrupted) return;
-        if (!(attack.modifiers && attack.modifiers.war === 2)) return;
+        if (!warReportIsInsideWarAttack(attack, enemyFactionId)) return;
         if (!(attack.started > surrenderUnix)) return;
         const pid = String(attack.attacker.id || '');
         if (!pid) return;
@@ -521,9 +578,9 @@ function warReportBuildTermedHitsMap(allAttacks, factionIdStr, surrenderUnix) {
     return map;
 }
 
-/** Outside-style hits (war modifier 1 + respect): never consume the faction war score cap; always pay via outside rules. */
-function warReportOutsideRespectExemptFromWarCap(attack) {
-    return !!(attack && attack.modifiers?.war === 1 && (attack.respect_gain || 0) > 0);
+/** Outside-style hits (war modifier 1 + respect, or war=2 vs non-enemy): never consume the faction war score cap. */
+function warReportOutsideRespectExemptFromWarCap(attack, enemyFactionId) {
+    return warReportIsOutsideStyleAttack(attack, enemyFactionId);
 }
 
 /**
@@ -541,12 +598,12 @@ function warReportWarScoreCapRespectGainCents(attack) {
  * The running total uses each line’s full respect_gain (bonuses / chain totals included), not pool “base” respect.
  * Excludes outside-only hits. Includes war modifier 2 (including interrupted), assists, and retals (same buckets as payout).
  */
-function warReportAttackUsesFactionWarScoreCap(attack) {
+function warReportAttackUsesFactionWarScoreCap(attack, enemyFactionId) {
     if (!attack) return false;
-    if (warReportOutsideRespectExemptFromWarCap(attack)) return false;
-    const isWarHit = attack.modifiers?.war === 2;
+    if (warReportOutsideRespectExemptFromWarCap(attack, enemyFactionId)) return false;
+    const isWarHit = warReportIsInsideWarAttack(attack, enemyFactionId);
     const isAssist =
-        attack.modifiers?.war &&
+        warReportAttackWarModifier(attack) > 0 &&
         !attack.is_interrupted &&
         attack.result &&
         String(attack.result).toLowerCase() === 'assist';
@@ -570,7 +627,7 @@ function warReportClearWarScoreCapAttackTags(allAttacks) {
  * Cumulative cap sums each line’s respect_gain rounded to 2 dp (hundredths), compared to the same for your target.
  * The hit that first pushes running over the threshold is still marked eligible, then later war-context lines are ineligible.
  */
-function warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStr, capThreshold) {
+function warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStr, capThreshold, enemyFactionId) {
     warReportClearWarScoreCapAttackTags(allAttacks);
     if (!Array.isArray(allAttacks) || !factionIdStr || !Number.isFinite(capThreshold) || capThreshold <= 0) return;
     const fid = String(factionIdStr);
@@ -586,11 +643,11 @@ function warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStr, capThresh
     sorted.forEach((attack) => {
         if (!attack?.attacker?.faction || String(attack.attacker.faction.id) !== fid) return;
 
-        if (warReportOutsideRespectExemptFromWarCap(attack)) {
+        if (warReportOutsideRespectExemptFromWarCap(attack, enemyFactionId)) {
             attack._warScoreCapWarPayEligible = true;
             return;
         }
-        if (!warReportAttackUsesFactionWarScoreCap(attack)) {
+        if (!warReportAttackUsesFactionWarScoreCap(attack, enemyFactionId)) {
             attack._warScoreCapWarPayEligible = true;
             return;
         }
@@ -609,7 +666,7 @@ function warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStr, capThresh
 }
 
 /** Rebuild per-player hit buckets from attacks when war score cap is on (must run after tags). */
-function warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStr) {
+function warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStr, enemyFactionId) {
     const out = {};
     const fid = String(factionIdStr);
     (Array.isArray(allAttacks) ? allAttacks : []).forEach((attack) => {
@@ -632,9 +689,9 @@ function warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStr) {
         p.totalAttacks++;
         const warZero = attack._warScoreCapWarPayEligible === false;
 
-        const isWarHit = !attack.is_interrupted && attack.modifiers?.war === 2;
+        const isWarHit = !attack.is_interrupted && warReportIsInsideWarAttack(attack, enemyFactionId);
         const isAssist =
-            attack.modifiers?.war &&
+            warReportAttackWarModifier(attack) > 0 &&
             !attack.is_interrupted &&
             attack.result &&
             String(attack.result).toLowerCase() === 'assist';
@@ -659,11 +716,11 @@ function warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStr) {
         } else {
             if (attack.is_interrupted) {
                 p.otherAttacksInterrupted++;
-            } else if (attack.modifiers?.war) {
+            } else if (warReportAttackWarModifier(attack) > 0) {
                 const rg = attack.respect_gain || 0;
                 if (warReportResultIsLostOrEscape(attack) || rg <= 0) {
                     p.otherAttacksLostEscape++;
-                } else if (attack.modifiers.war === 1) {
+                } else if (warReportIsOutsideStyleAttack(attack, enemyFactionId)) {
                     p.otherAttacksOutside++;
                 } else {
                     p.otherAttacksLostEscape++;
@@ -773,12 +830,16 @@ function warReportAggregateWarScoreCapDisallowed(allAttacks, factionIdStr) {
  * Low-FF war hits (war modifier 2, not interrupted). Non-termed = on/before surrender (same pool as warHitsForPayout);
  * post-surrender war hits are termed for payout and must not be double-counted as low-FF modifier weight.
  */
-function warReportLowFfWarHitData(playerId, allAttacks, surrenderUnix, minFFRating) {
+function warReportLowFfWarHitData(playerId, allAttacks, surrenderUnix, minFFRating, enemyFactionId) {
     const pid = String(playerId);
+    const enemyId =
+        enemyFactionId != null
+            ? enemyFactionId
+            : warReportEnemyFactionId(warData.warInfo, document.getElementById('factionId')?.value);
     const base = (attack) =>
         attack &&
         String(attack.attacker?.id) === pid &&
-        attack.modifiers?.war === 2 &&
+        warReportIsInsideWarAttack(attack, enemyId) &&
         !attack.is_interrupted;
     const isLowFf = (attack) =>
         attack.modifiers?.fair_fight !== undefined &&
@@ -2289,6 +2350,7 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
         // Step 3: Process attacks and create player report
         const playerStats = {};
         const factionIdStr = String(factionId);
+        const enemyFactionId = warReportEnemyFactionId(targetWar, factionId);
 
         let processedCount = 0;
         allAttacks.forEach((attack) => {
@@ -2330,18 +2392,16 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
             
             const playerName = attack.attacker.name;
             
-            // Check for war hits - only count attacks with war modifier = 2 (actual war hits)
+            // War hits: modifier 2 and (when known) defender is the enemy faction
             const isWarHit = (
-                !attack.is_interrupted && 
-                attack.modifiers && 
-                attack.modifiers.war === 2
+                !attack.is_interrupted &&
+                warReportIsInsideWarAttack(attack, enemyFactionId)
             );
             
 
             
             const isAssist =
-                attack.modifiers &&
-                attack.modifiers.war &&
+                warReportAttackWarModifier(attack) > 0 &&
                 !attack.is_interrupted &&
                 attack.result &&
                 attack.result.toLowerCase() === 'assist';
@@ -2354,11 +2414,11 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
             } else {
                 if (attack.is_interrupted) {
                     playerStats[attackerId].otherAttacksInterrupted++;
-                } else if (attack.modifiers && attack.modifiers.war) {
+                } else if (warReportAttackWarModifier(attack) > 0) {
                     const rg = attack.respect_gain || 0;
                     if (warReportResultIsLostOrEscape(attack) || rg <= 0) {
                         playerStats[attackerId].otherAttacksLostEscape++;
-                    } else if (attack.modifiers.war === 1) {
+                    } else if (warReportIsOutsideStyleAttack(attack, enemyFactionId)) {
                         playerStats[attackerId].otherAttacksOutside++;
                     } else {
                         playerStats[attackerId].otherAttacksLostEscape++;
@@ -3756,13 +3816,14 @@ function renderPayoutTable() {
     const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
     const realWarFactor = warReportRealWarFactorForPayout(hitSurrenderUnix, 'hitApplyRealWarFactor', 'hitRealWarFactor');
     const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
+    const enemyFactionIdForSplit = warReportEnemyFactionId(warData.warInfo, factionIdForSplit);
     const warScoreCapTh = warReportReadWarScoreCapThreshold();
     warReportClearWarScoreCapAttackTags(allAttacks);
     if (warScoreCapTh > 0) {
-        warReportApplyWarScoreCapAttackTags(allAttacks, factionIdForSplit, warScoreCapTh);
+        warReportApplyWarScoreCapAttackTags(allAttacks, factionIdForSplit, warScoreCapTh, enemyFactionIdForSplit);
     }
-    const warCapEffMap = warScoreCapTh > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdForSplit) : null;
-    const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, factionIdForSplit, hitSurrenderUnix);
+    const warCapEffMap = warScoreCapTh > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdForSplit, enemyFactionIdForSplit) : null;
+    const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, factionIdForSplit, hitSurrenderUnix, enemyFactionIdForSplit);
 
     // If in Faction Cut mode, calculate payPerHit from percentage
     if (calculationMode === 'factionCut') {
@@ -4481,14 +4542,15 @@ function exportPayoutToCSV() {
     const hitSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('hitSurrenderTimeTct')?.value);
     const realWarFactor = warReportRealWarFactorForPayout(hitSurrenderUnix, 'hitApplyRealWarFactor', 'hitRealWarFactor');
     const factionIdForSplit = String(document.getElementById('factionId')?.value || '');
+    const enemyFactionIdCsv = warReportEnemyFactionId(warData.warInfo, factionIdForSplit);
     const allAttacksCsv = warData.allAttacks || [];
     const warScoreCapCsv = warReportReadWarScoreCapThreshold();
     warReportClearWarScoreCapAttackTags(allAttacksCsv);
     if (warScoreCapCsv > 0) {
-        warReportApplyWarScoreCapAttackTags(allAttacksCsv, factionIdForSplit, warScoreCapCsv);
+        warReportApplyWarScoreCapAttackTags(allAttacksCsv, factionIdForSplit, warScoreCapCsv, enemyFactionIdCsv);
     }
-    const warCapEffCsv = warScoreCapCsv > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacksCsv, factionIdForSplit) : null;
-    const termedHitsMap = warReportBuildTermedHitsMap(allAttacksCsv, factionIdForSplit, hitSurrenderUnix);
+    const warCapEffCsv = warScoreCapCsv > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacksCsv, factionIdForSplit, enemyFactionIdCsv) : null;
+    const termedHitsMap = warReportBuildTermedHitsMap(allAttacksCsv, factionIdForSplit, hitSurrenderUnix, enemyFactionIdCsv);
     const playersWithPayouts = Object.values(playerStats).map((origPl) => {
         const player = warReportPlayerWithWarCapMerged(origPl, warCapEffCsv);
         // Count low FF hits for this player
@@ -4684,12 +4746,13 @@ function renderRespectPayoutTable() {
     // OPTIMIZATION: Process all attacks ONCE and cache player respect data
     const factionId = parseInt(document.getElementById('factionId').value);
     const factionIdStrRes = String(factionId);
+    const enemyFactionIdRes = warReportEnemyFactionId(warData.warInfo, factionId);
     const warScoreCapThR = warReportReadWarScoreCapThreshold();
     warReportClearWarScoreCapAttackTags(allAttacks);
     if (warScoreCapThR > 0) {
-        warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStrRes, warScoreCapThR);
+        warReportApplyWarScoreCapAttackTags(allAttacks, factionIdStrRes, warScoreCapThR, enemyFactionIdRes);
     }
-    const warCapEffMapRes = warScoreCapThR > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStrRes) : null;
+    const warCapEffMapRes = warScoreCapThR > 0 ? warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStrRes, enemyFactionIdRes) : null;
 
     const respectSurrenderUnix = warReportParseSurrenderTimeUtc(document.getElementById('respectSurrenderTimeTct')?.value);
     const respectRealWarFactor = warReportRealWarFactorForPayout(respectSurrenderUnix, 'respectApplyRealWarFactor', 'respectRealWarFactor');
@@ -4734,8 +4797,10 @@ function renderRespectPayoutTable() {
                 debugRespectHits++;
             }
             
-            // Check war modifier to determine if this is a war hit or outside hit
-            const warModifier = attack.modifiers?.war;
+            // Check war modifier + defender faction (chain bonuses on non-enemy targets are outside)
+            const warModifier = warReportAttackWarModifier(attack);
+            const isInsideWar = warReportIsInsideWarAttack(attack, enemyFactionIdRes);
+            const isOutsideHit = warReportIsOutsideStyleAttack(attack, enemyFactionIdRes, baseRespect);
             
             // Check for chain bonus regardless of war modifier (chain hits can be war or outside)
             const chainBonus = detectChainBonus(attack.respect_gain);
@@ -4747,13 +4812,13 @@ function renderRespectPayoutTable() {
                     respect_gain: attack.respect_gain,
                     timestamp: attack.timestamp || 0,
                     warModifier: warModifier,
-                    hitType: warModifier === 2 ? 'War Hit' : warModifier === 1 ? 'Outside Hit' : 'Other Hit'
+                    hitType: isInsideWar ? 'War Hit' : isOutsideHit ? 'Outside Hit' : 'Other Hit'
                 });
             }
             
-            if (warModifier === 2) {
+            if (isInsideWar) {
                 if (attack._warScoreCapWarPayEligible !== false) {
-                    // War hit (modifier 2) — skipped entirely after faction war score cap (outside hits unaffected)
+                    // War hit — skipped entirely after faction war score cap (outside hits unaffected)
                     totalWarHits++;
                     totalBaseRespect += baseRespect;
 
@@ -4781,8 +4846,8 @@ function renderRespectPayoutTable() {
                         }
                     }
                 }
-            } else if (warModifier === 1 && baseRespect > 0) {
-                // This is an outside hit (war modifier = 1 and gains respect)
+            } else if (isOutsideHit) {
+                // Outside hit (including chain bonus wasted on a non-war target)
                 totalOutsideHits++;
                 totalOutsideRespect += baseRespect;
                 
@@ -4890,7 +4955,7 @@ function renderRespectPayoutTable() {
     const filterLowFF = document.getElementById('respectFilterLowFF')?.checked;
     const minFFRating = parseFloat(document.getElementById('respectMinFFRating')?.value || '2.0');
 
-    const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, String(factionId), respectSurrenderUnix);
+    const termedHitsMap = warReportBuildTermedHitsMap(allAttacks, String(factionId), respectSurrenderUnix, enemyFactionIdRes);
 
     // Phase 1: respect / combined / counts per player (no $ yet).
     // Outside respect is excluded from pool split when Pay Outside Hits is on (those hits are paid via multiplier only).

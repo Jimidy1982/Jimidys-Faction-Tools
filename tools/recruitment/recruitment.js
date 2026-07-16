@@ -91,7 +91,7 @@
                 if (result && result.bs) Object.assign(bs, result.bs);
                 setBattleStatsCache(result?.ff || {}, result?.bs || {});
             } catch (e) {
-                setError(e.message || 'FF Scouter failed.');
+                setError((e.message || 'FF Scouter failed.') + ' Open API Settings from the Welcome panel to add a FFScouter key.');
             }
             setProgress(false);
         }
@@ -531,7 +531,15 @@
     function setError(text) {
         const el = document.getElementById('recruitment-error');
         if (el) {
-            el.textContent = text || '';
+            const msg = text || '';
+            if (msg && String(msg).indexOf('API Settings') !== -1) {
+                el.innerHTML = escapeHtml(String(msg)).replace(
+                    'API Settings',
+                    '<a href="#" class="api-settings-open-link" style="color:#FFD700;text-decoration:underline;">API Settings</a>'
+                );
+            } else {
+                el.textContent = msg;
+            }
             el.style.display = text ? 'block' : 'none';
         }
     }

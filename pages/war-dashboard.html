@@ -1,77 +1,33 @@
 <div class="container">
     <div class="war-dashboard-header-wrap" style="display: flex; align-items: center; justify-content: center; gap: 12px; position: relative; flex-wrap: wrap;">
         <h1 style="margin: 0;">War Dashboard</h1>
-        <button type="button" id="war-dashboard-settings-cog" class="war-dashboard-settings-cog" aria-label="Settings" title="Settings">⚙</button>
     </div>
-    <p class="war-dashboard-beta-notice" style="margin: -0.5rem 0 1rem 0; font-size: 13px; color: #b0b0b0; text-align: center;">This tool is currently in <strong>Beta</strong> and free to try until the <strong>end of June</strong>. It will revert to <strong>VIP 2</strong> status from <strong>1 July</strong>.</p>
-
     <div id="war-dashboard-tool-container">
         <!-- FFScouter notice (dismissible) -->
         <div id="war-dashboard-ff-notice" class="war-dashboard-notice" style="padding: 15px; background-color: #2a2a2a; border-left: 4px solid #FFD700; border-radius: 4px; margin-bottom: 15px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;">
             <p style="margin: 0; color: #e0e0e0; font-size: 14px; flex: 1;">
-                <strong>FF / battle stats:</strong> Register your API key at <a href="https://ffscouter.com" target="_blank" rel="noopener" style="color: #FFD700;">FFScouter</a> to see enemy FF and colour coding.
+                <strong>FF / battle stats:</strong> Add a FFScouter key in <a href="#" class="api-settings-open-link" style="color: #FFD700;">API Settings</a>, or register your Torn key at <a href="https://ffscouter.com" target="_blank" rel="noopener" style="color: #FFD700;">FFScouter</a>, to see enemy FF and colour coding.
             </p>
             <button type="button" id="war-dashboard-hide-ff-notice" class="btn" style="flex-shrink: 0; padding: 4px 10px; font-size: 12px;">Hide</button>
         </div>
 
-        <!-- Enemy faction picker (minimisable) -->
-        <div id="war-dashboard-enemy-picker" class="war-dashboard-picker" style="margin-bottom: 12px; border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden;">
-            <button type="button" id="war-dashboard-enemy-picker-toggle" class="war-dashboard-picker-header" style="width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--secondary-color); border: none; color: var(--accent-color); font-weight: bold; cursor: pointer; text-align: left;">
-                <span><span id="war-dashboard-enemy-picker-title">Enemy faction</span><span id="war-dashboard-enemy-picker-summary" style="color: #888; font-weight: normal; margin-left: 6px;"></span></span>
-                <span id="war-dashboard-enemy-picker-arrow" aria-hidden="true">▼</span>
+        <div class="war-dashboard-command-ribbon" aria-label="War Dashboard commands">
+            <button type="button" id="war-dashboard-enemy-command" class="btn war-dashboard-command-btn">
+                <span id="war-dashboard-enemy-command-title" class="war-dashboard-command-title">Enemies</span>
+                <span id="war-dashboard-enemy-picker-summary" class="war-dashboard-command-summary">Choose up to 3</span>
             </button>
-            <div id="war-dashboard-enemy-picker-body" class="war-dashboard-picker-body" style="padding: 12px;">
-                <label for="war-dashboard-enemy-faction-id">Enemy faction ID</label>
-                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px;">
-                    <input type="text" id="war-dashboard-enemy-faction-id" placeholder="Enter faction ID" style="flex: 0 1 140px;">
-                    <button type="button" id="war-dashboard-apply-enemy" class="btn">Apply</button>
-                    <button type="button" id="war-dashboard-use-current-war" class="btn" style="white-space: nowrap;">Use current ranked war</button>
-                    <button type="button" id="war-dashboard-clear-enemy" class="btn">Clear</button>
-                </div>
-                <p id="war-dashboard-enemy-label" style="margin-top: 8px; color: #b0b0b0; font-size: 13px;"></p>
-            </div>
-        </div>
-
-        <!-- Auto-refresh (minimisable) -->
-        <div id="war-dashboard-refresh-picker" class="war-dashboard-picker" style="margin-bottom: 12px; border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden;">
-            <button type="button" id="war-dashboard-refresh-picker-toggle" class="war-dashboard-picker-header" style="width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--secondary-color); border: none; color: var(--accent-color); font-weight: bold; cursor: pointer; text-align: left;">
-                <span style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                    <span>Auto-refresh</span>
-                    <label id="war-dashboard-auto-refresh-slider-wrap" class="war-dashboard-refresh-slider-wrap" title="Turn dashboard auto-refresh on or off (independent of Activity Tracker)">
-                        <input type="checkbox" id="war-dashboard-auto-refresh-enabled" class="war-dashboard-chain-track-input" checked aria-label="Auto-refresh on or off">
-                        <span class="war-dashboard-chain-track-slider"></span>
-                    </label>
-                    <span id="war-dashboard-auto-refresh-hint" class="war-dashboard-refresh-hint" style="color: #888; font-weight: normal; font-size: 12px;">Off = fewer API calls; on = check enemy status.</span>
-                </span>
-                <span id="war-dashboard-refresh-picker-arrow" aria-hidden="true">▼</span>
+            <button type="button" id="war-dashboard-activity-tracker-command" class="btn war-dashboard-command-btn" data-war-dashboard-vip2-command>
+                <span class="war-dashboard-command-title">Activity Tracker</span>
+                <span id="war-dashboard-activity-tracker-summary" class="war-dashboard-command-summary">Manage tracked factions</span>
             </button>
-            <div id="war-dashboard-refresh-picker-body" class="war-dashboard-picker-body" style="padding: 12px;">
-                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
-                    <span id="war-dashboard-refresh-countdown" style="font-size: 12px; color: #888; min-width: 120px;">Next refresh in —s</span>
-                    <button type="button" id="war-dashboard-refresh-now" class="btn">Refresh now</button>
-                    <button type="button" id="war-dashboard-refresh-battle-stats" class="btn" title="Re-fetch FF and estimated battle stats from FF Scouter (same as Faction Battle Stats)">Refresh battle stats</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Faction activity tracker (expandable): local cache, 5-min samples, graph + player active times (TCT) -->
-        <div id="war-dashboard-activity-tracker" class="war-dashboard-picker" style="display: none; margin-bottom: 12px; border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden;">
-            <button type="button" id="war-dashboard-activity-tracker-toggle" class="war-dashboard-picker-header" aria-expanded="false" style="width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--secondary-color); border: none; color: var(--accent-color); font-weight: bold; cursor: pointer; text-align: left;">
-                <span>Faction activity tracker</span>
-                <span id="war-dashboard-activity-tracker-arrow" class="war-dashboard-activity-tracker-arrow" aria-hidden="true">▶</span>
+            <button type="button" id="war-dashboard-settings-cog" class="btn war-dashboard-command-btn" aria-label="Settings" title="Settings">
+                <span class="war-dashboard-command-title">Settings</span>
+                <span class="war-dashboard-command-summary">Refresh, chains, respect</span>
             </button>
-            <div id="war-dashboard-activity-tracker-body" class="war-dashboard-picker-body" style="display: none; padding: 12px;">
-                <p class="war-dashboard-activity-tracker-desc" style="color: #b0b0b0; font-size: 13px; margin-bottom: 10px;"><strong>24/7 (Firebase):</strong> With your API key set, each tracked faction is registered for server-side samples about every 10 minutes — no need to keep this tab open. You can track up to <strong>3 factions</strong> at a time. <strong>This browser:</strong> Also samples every 10 minutes while this page is open and merges with cloud data. The status line under each faction shows server registration and cloud history. Tracking turns off after 2 days without visiting; local cache clears 3 days after you turn tracking off.</p>
-                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px;">
-                    <label style="display: flex; align-items: center; gap: 6px;">
-                        <span style="color: var(--accent-color); font-weight: bold;">Faction ID:</span>
-                        <input type="text" id="war-dashboard-activity-tracker-faction-id" placeholder="Enter faction ID" style="width: 120px;">
-                    </label>
-                    <button type="button" id="war-dashboard-activity-tracker-load" class="btn">Load</button>
-                </div>
-                <div id="war-dashboard-activity-tracker-factions"></div>
-                <p id="war-dashboard-activity-tracker-empty" style="color: #888; font-size: 13px; margin: 0;">Add a faction by entering a Faction ID and clicking Load. Current ranked war enemy is auto-tracked while the war is active.</p>
-            </div>
+            <button type="button" id="war-dashboard-chain-watch-command" class="btn war-dashboard-command-btn" data-war-dashboard-vip2-command>
+                <span class="war-dashboard-command-title">Chain Watch</span>
+                <span id="war-dashboard-chain-watch-summary" class="war-dashboard-command-summary">Schedule tools</span>
+            </button>
         </div>
 
         <div id="war-dashboard-loading" class="loading-bar" style="display: none;">
@@ -81,57 +37,60 @@
 
         <div id="war-dashboard-error" style="display: none; color: #f44336; margin-bottom: 16px;"></div>
 
-        <!-- Our Chain + Chain watch (same column); Enemy Chain is second column when at war -->
+        <!-- Our Chain + Chain watch (same column); enemy chain boxes are added for selected enemies. -->
         <div id="war-dashboard-chains-row" class="war-dashboard-chains-row" style="display: none; margin-top: 12px; margin-bottom: 0;">
             <div id="war-dashboard-chain-column-our" class="war-dashboard-chain-column war-dashboard-chain-column--our">
                 <div id="war-dashboard-our-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
-                <div id="war-dashboard-chain-watch-bar" class="war-dashboard-chain-watch-bar" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
-                    <button type="button" id="war-dashboard-chain-watch-new" class="btn">Add new chain watch</button>
-                    <button type="button" id="war-dashboard-chain-watch-open" class="btn">Open chain watch</button>
-                    <span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint" style="color: #888; font-size: 12px;"></span>
-                </div>
             </div>
             <div id="war-dashboard-enemy-chain-box" class="war-dashboard-chain-box" style="display: none;" aria-hidden="true"></div>
         </div>
 
-        <!-- Enemy -->
+        <!-- Enemies -->
         <section id="war-dashboard-enemy-section" style="display: none; margin-top: 12px; margin-bottom: 24px;">
-            <h2 style="color: var(--accent-color); margin: 0 0 12px 0;">Enemy</h2>
-            <div style="margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center;">
-                <span style="color: var(--accent-color); font-weight: bold;">Activity:</span>
-                <label><input type="checkbox" id="war-dashboard-filter-online" checked> Online</label>
-                <label><input type="checkbox" id="war-dashboard-filter-offline" checked> Offline</label>
-                <label><input type="checkbox" id="war-dashboard-filter-idle" checked> Idle</label>
-                <span style="color: var(--accent-color); font-weight: bold;">Status:</span>
-                <label><input type="checkbox" id="war-dashboard-filter-okay"> Okay</label>
-                <label><input type="checkbox" id="war-dashboard-filter-hospital"> Hospital</label>
-                <label><input type="checkbox" id="war-dashboard-filter-abroad"> Abroad</label>
-                <span style="color: #888; font-size: 12px;">(Leave all unchecked to show all)</span>
-                <span class="war-dashboard-recommended-wrap">
-                    <input type="checkbox" id="war-dashboard-filter-recommended" class="war-dashboard-recommended-checkbox" aria-hidden="true" tabindex="-1">
-                    <button type="button" id="war-dashboard-recommended-btn" class="war-dashboard-recommended-btn" aria-pressed="false" aria-describedby="war-dashboard-recommended-desc">Recommended</button>
-                    <span id="war-dashboard-recommended-desc" class="war-dashboard-recommended-desc">Top 5 (Okay, <span id="war-dashboard-recommended-ff-range">FF 2.5 – 3.5</span>)</span>
-                </span>
+            <div class="war-dashboard-enemy-heading-row">
+                <h2 id="war-dashboard-enemy-title">Enemies</h2>
+                <span class="war-dashboard-enemy-refresh-countdown" data-war-dashboard-refresh-countdown>Next refresh in —s</span>
             </div>
-            <div class="table-scroll-wrapper" style="overflow-x: auto;">
-                <table id="war-dashboard-enemy-table" class="war-dashboard-table">
-                    <colgroup>
-                        <col style="width: 18%"><col style="width: 6%"><col style="width: 6%"><col style="width: 10%"><col style="width: 8%"><col style="width: 28%"><col style="width: 14%">
-                    </colgroup>
-                    <thead>
-                        <tr>
-                            <th data-column="member" class="war-dashboard-th-sort">Member <span class="war-dashboard-sort"></span></th>
-                            <th data-column="level" class="war-dashboard-th-sort">Level <span class="war-dashboard-sort"></span></th>
-                            <th data-column="ff" class="war-dashboard-th-sort">FF <span class="war-dashboard-sort"></span></th>
-                            <th data-column="eststats" class="war-dashboard-th-sort">Est. stats <span class="war-dashboard-sort"></span></th>
-                            <th data-column="status" class="war-dashboard-th-sort">Status <span class="war-dashboard-sort"></span></th>
-                            <th data-column="location" class="war-dashboard-th-sort">Location / state <span class="war-dashboard-sort"></span></th>
-                            <th>Notes</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
+            <div class="war-dashboard-filter-strip" aria-label="Enemy table filters">
+                <div class="war-dashboard-filter-group">
+                    <p class="war-dashboard-command-section-title">Activity</p>
+                    <div class="war-dashboard-filter-options">
+                        <label><input type="checkbox" id="war-dashboard-filter-online" checked> Online</label>
+                        <label><input type="checkbox" id="war-dashboard-filter-offline" checked> Offline</label>
+                        <label><input type="checkbox" id="war-dashboard-filter-idle" checked> Idle</label>
+                    </div>
+                </div>
+                <div class="war-dashboard-filter-group">
+                    <p class="war-dashboard-command-section-title">Status</p>
+                    <div class="war-dashboard-filter-options">
+                        <label><input type="checkbox" id="war-dashboard-filter-okay"> Okay</label>
+                        <label><input type="checkbox" id="war-dashboard-filter-hospital"> Hospital</label>
+                        <label><input type="checkbox" id="war-dashboard-filter-abroad"> Abroad</label>
+                    </div>
+                    <p class="war-dashboard-command-help">(Leave all unchecked to show all)</p>
+                </div>
+                <div class="war-dashboard-filter-group">
+                    <p class="war-dashboard-command-section-title">Recommended</p>
+                    <span class="war-dashboard-recommended-wrap">
+                        <input type="checkbox" id="war-dashboard-filter-recommended" class="war-dashboard-recommended-checkbox" aria-hidden="true" tabindex="-1">
+                        <button type="button" id="war-dashboard-recommended-btn" class="war-dashboard-recommended-btn" aria-pressed="false" aria-describedby="war-dashboard-recommended-desc">Recommended</button>
+                        <span id="war-dashboard-recommended-desc" class="war-dashboard-recommended-desc">Top 5 (Okay, <span id="war-dashboard-recommended-ff-range">FF 2.5 – 3.5</span>)</span>
+                    </span>
+                </div>
+                <div class="war-dashboard-filter-group">
+                    <p class="war-dashboard-command-section-title">Respect</p>
+                    <div class="war-dashboard-filter-options">
+                        <label title="Include your Warlord weapon bonus in the estimated Respect column.">
+                            <input type="checkbox" id="war-dashboard-respect-warlord-enabled"> Warlord
+                        </label>
+                        <label title="Warlord bonus percentage to apply to estimated respect." class="war-dashboard-command-inline-field">
+                            <input type="number" id="war-dashboard-respect-warlord-percent" min="0" max="100" step="1" value="15">%
+                        </label>
+                    </div>
+                    <p class="war-dashboard-command-help">Mug applies ×0.75 in Torn.</p>
+                </div>
             </div>
+            <div id="war-dashboard-enemies-list" class="war-dashboard-enemies-list"></div>
         </section>
 
         <!-- Our team (collapsible, below Enemy; when collapsed we skip fetching it on auto-refresh) -->
@@ -177,10 +136,69 @@
                     <button type="button" id="war-dashboard-activity-tracker-load" class="btn">Load</button>
                 </div>
                 <div id="war-dashboard-activity-tracker-factions"></div>
-                <p id="war-dashboard-activity-tracker-empty" style="color: #888; font-size: 13px; margin: 0;">Add a faction by entering a Faction ID and clicking Load. Current ranked war enemy is auto-tracked while the war is active.</p>
+                <p id="war-dashboard-activity-tracker-empty" style="color: #888; font-size: 13px; margin: 0;">Add a faction by entering a Faction ID and clicking Load. The current war enemy is not tracked automatically.</p>
             </div>
         </section>
         -->
+    </div>
+
+    <div id="war-dashboard-enemy-modal" class="war-dashboard-settings-overlay" aria-hidden="true" style="display: none;">
+        <div class="war-dashboard-settings-modal war-dashboard-command-modal" role="dialog" aria-labelledby="war-dashboard-enemy-modal-title">
+            <div class="war-dashboard-settings-modal-header">
+                <h2 id="war-dashboard-enemy-modal-title">Enemies</h2>
+                <button type="button" id="war-dashboard-enemy-modal-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+            </div>
+            <div id="war-dashboard-enemy-picker-body" class="war-dashboard-settings-modal-body war-dashboard-command-modal-body">
+                <label for="war-dashboard-enemy-faction-id" class="war-dashboard-command-field-label">Enemy faction ID</label>
+                <div class="war-dashboard-command-row">
+                    <input type="text" id="war-dashboard-enemy-faction-id" placeholder="Enter faction ID">
+                    <button type="button" id="war-dashboard-apply-enemy" class="btn">Add enemy</button>
+                    <button type="button" id="war-dashboard-use-current-war" class="btn">Add current ranked war</button>
+                    <button type="button" id="war-dashboard-clear-enemy" class="btn">Clear all</button>
+                </div>
+                <div id="war-dashboard-enemy-list" class="war-dashboard-enemy-list"></div>
+                <p id="war-dashboard-enemy-label" class="war-dashboard-command-help"></p>
+            </div>
+        </div>
+    </div>
+
+    <div id="war-dashboard-activity-tracker-modal" class="war-dashboard-settings-overlay war-dashboard-command-overlay" aria-hidden="true" style="display: none;">
+        <div class="war-dashboard-settings-modal war-dashboard-command-modal war-dashboard-activity-tracker-modal" role="dialog" aria-labelledby="war-dashboard-activity-tracker-modal-title">
+            <div class="war-dashboard-settings-modal-header">
+                <h2 id="war-dashboard-activity-tracker-modal-title">Faction activity tracker</h2>
+                <button type="button" id="war-dashboard-activity-tracker-modal-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+            </div>
+            <div id="war-dashboard-activity-tracker" class="war-dashboard-settings-modal-body war-dashboard-command-modal-body">
+                <div id="war-dashboard-activity-tracker-body">
+                    <p class="war-dashboard-activity-tracker-desc"><strong>24/7 (Firebase):</strong> With your API key set, each tracked faction is registered for server-side samples about every 10 minutes — no need to keep this tab open. You can track up to <strong>3 factions</strong> at a time. <strong>This browser:</strong> Also samples every 10 minutes while this page is open and merges with cloud data. The status line under each faction shows server registration and cloud history. Tracking turns off after 2 days without visiting; local cache clears 3 days after you turn tracking off.</p>
+                    <div class="war-dashboard-command-row">
+                        <label class="war-dashboard-command-inline-field">
+                            <span>Faction ID:</span>
+                            <input type="text" id="war-dashboard-activity-tracker-faction-id" placeholder="Enter faction ID">
+                        </label>
+                        <button type="button" id="war-dashboard-activity-tracker-load" class="btn">Load</button>
+                    </div>
+                    <div id="war-dashboard-activity-tracker-factions"></div>
+                    <p id="war-dashboard-activity-tracker-empty" class="war-dashboard-command-help">Add a faction by entering a Faction ID and clicking Load. The current war enemy is not tracked automatically.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="war-dashboard-chain-watch-command-modal" class="war-dashboard-settings-overlay" aria-hidden="true" style="display: none;">
+        <div class="war-dashboard-settings-modal war-dashboard-command-modal war-dashboard-chain-watch-command-modal" role="dialog" aria-labelledby="war-dashboard-chain-watch-command-modal-title">
+            <div class="war-dashboard-settings-modal-header">
+                <h2 id="war-dashboard-chain-watch-command-modal-title">Chain Watch</h2>
+                <button type="button" id="war-dashboard-chain-watch-command-modal-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+            </div>
+            <div class="war-dashboard-settings-modal-body war-dashboard-command-modal-body">
+                <div id="war-dashboard-chain-watch-bar" class="war-dashboard-chain-watch-bar war-dashboard-chain-watch-command-actions">
+                    <button type="button" id="war-dashboard-chain-watch-new" class="btn">Add new chain watch</button>
+                    <button type="button" id="war-dashboard-chain-watch-open" class="btn">Open chain watch</button>
+                    <span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint war-dashboard-command-summary"></span>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- War Dashboard settings modal -->
@@ -201,17 +219,29 @@
                 </div>
                 <hr class="war-dashboard-settings-divider">
                 <p style="color: var(--accent-color); font-weight: bold; margin: 0 0 8px 0;">Auto-refresh</p>
-                <p style="color: #b0b0b0; font-size: 13px; margin: 0 0 12px 0;">How often to refresh enemy status (when auto-refresh is on).</p>
+                <p style="color: #b0b0b0; font-size: 13px; margin: 0 0 12px 0;">How often to refresh faction status (when auto-refresh is on). Minimum 30s to avoid Torn rate limits.</p>
+                <div class="war-dashboard-settings-ff-row">
+                    <label id="war-dashboard-auto-refresh-slider-wrap" class="war-dashboard-refresh-slider-wrap war-dashboard-command-toggle" title="Turn dashboard auto-refresh on or off (independent of Activity Tracker)">
+                        <span>Auto-refresh</span>
+                        <input type="checkbox" id="war-dashboard-auto-refresh-enabled" class="war-dashboard-chain-track-input" checked aria-label="Auto-refresh on or off">
+                        <span class="war-dashboard-chain-track-slider"></span>
+                    </label>
+                </div>
+                <p id="war-dashboard-auto-refresh-hint" class="war-dashboard-command-help" style="margin: 0 0 12px 0;">Off = fewer API calls; on = check faction status.</p>
                 <div class="war-dashboard-settings-ff-row">
                     <label for="war-dashboard-refresh-interval" class="war-dashboard-settings-ff-label">Interval (seconds)</label>
-                    <input type="number" id="war-dashboard-refresh-interval" min="5" max="300" value="15" class="war-dashboard-settings-interval-input">
+                    <input type="number" id="war-dashboard-refresh-interval" min="30" max="300" value="30" class="war-dashboard-settings-interval-input">
+                </div>
+                <div class="war-dashboard-settings-ff-row">
+                    <button type="button" id="war-dashboard-refresh-now" class="btn">Refresh now</button>
+                    <button type="button" id="war-dashboard-refresh-battle-stats" class="btn" title="Re-fetch FF and estimated battle stats from FF Scouter (same as Faction Battle Stats)">Refresh battle stats</button>
                 </div>
                 <hr class="war-dashboard-settings-divider">
                 <p style="color: var(--accent-color); font-weight: bold; margin: 0 0 8px 0;">Chain refresh</p>
-                <p style="color: #b0b0b0; font-size: 13px; margin: 0 0 12px 0;">How often to refresh Our Chain / Enemy Chain when their track switch is on (default 30s).</p>
+                <p style="color: #b0b0b0; font-size: 13px; margin: 0 0 12px 0;">How often to refresh Our Chain / Enemy Chains when their track switch is on (minimum 30s).</p>
                 <div class="war-dashboard-settings-ff-row">
                     <label for="war-dashboard-chain-refresh-interval" class="war-dashboard-settings-ff-label">Interval (seconds)</label>
-                    <input type="number" id="war-dashboard-chain-refresh-interval" min="10" max="300" value="30" class="war-dashboard-settings-interval-input">
+                    <input type="number" id="war-dashboard-chain-refresh-interval" min="30" max="300" value="30" class="war-dashboard-settings-interval-input">
                 </div>
             </div>
         </div>

@@ -2807,7 +2807,20 @@
     function setWarStatus(msg, isError) {
         const el = document.getElementById('newsletter-war-status');
         if (!el) return;
-        el.textContent = msg;
+        el.textContent = '';
+        const text = String(msg || '');
+        const idx = text.indexOf('API Settings');
+        if (idx !== -1) {
+            el.appendChild(document.createTextNode(text.slice(0, idx)));
+            const link = document.createElement('a');
+            link.href = '#';
+            link.className = 'api-settings-open-link';
+            link.textContent = 'API Settings';
+            el.appendChild(link);
+            el.appendChild(document.createTextNode(text.slice(idx + 'API Settings'.length)));
+        } else {
+            el.textContent = text;
+        }
         el.style.color = isError ? '#f44336' : '#9ccc9c';
     }
 
@@ -3028,7 +3041,7 @@
                     const msg = ffErr && ffErr.message ? ffErr.message : String(ffErr);
                     setWarStatus(
                         /not registered|ffscouter/i.test(msg)
-                            ? 'War data loaded, but FF Scouter estimates failed. Register your API key at ffscouter.com (same as Faction Battle Stats).'
+                            ? 'War data loaded, but FF Scouter estimates failed. Open API Settings from the Welcome panel to add a FFScouter key, or register your Torn key at ffscouter.com.'
                             : 'War data loaded, but battle stat estimates could not be fetched.',
                         true
                     );

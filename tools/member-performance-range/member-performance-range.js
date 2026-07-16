@@ -917,6 +917,9 @@
     }
 
     function mprFfScouterLinkHtml() {
+        if (typeof window.apiSettingsLinkHtml === 'function') {
+            return window.apiSettingsLinkHtml('API Settings');
+        }
         return `<a href="${MPR_FF_SCOUTER_URL}" target="_blank" rel="noopener noreferrer" style="color:#ffd700;text-decoration:underline;">FFScouter</a>`;
     }
 
@@ -935,7 +938,7 @@
         if (!state || !state.type) return '';
         const link = mprFfScouterLinkHtml();
         if (state.type === 'unregistered') {
-            return `<strong>Estimated stats:</strong> Register your Torn API key at ${link} (same key as here).`;
+            return `<strong>Estimated stats:</strong> Open ${link} to add a FFScouter key, or register your Torn key at FFScouter.`;
         }
         if (state.type === 'no_helper') {
             return `<strong>Estimated stats:</strong> Reload the page or open this tool from the main app, then register at ${link} if needed.`;

@@ -167,17 +167,56 @@ document.addEventListener('DOMContentLoaded', () => {
         return h + ':' + String(m).padStart(2, '0');
     }
 
-    // API key help tooltip: show on hover (CSS) and toggle on click/tap for mobile
+    // API key help tooltip: fixed placement so nav overflow doesn't clip it (VIP welcome or not)
     const apiKeyHelp = document.getElementById('apiKeyHelp');
     if (apiKeyHelp) {
+        const tip = apiKeyHelp.querySelector('.api-key-help-tooltip');
+        function placeApiKeyHelpTooltip() {
+            if (!tip) return;
+            const r = apiKeyHelp.getBoundingClientRect();
+            const tipW = Math.min(280, window.innerWidth - 16);
+            let left = r.left;
+            if (left + tipW > window.innerWidth - 8) left = window.innerWidth - tipW - 8;
+            if (left < 8) left = 8;
+            let top = r.bottom + 8;
+            const tipH = tip.offsetHeight || 120;
+            if (top + tipH > window.innerHeight - 8) {
+                top = Math.max(8, r.top - tipH - 8);
+            }
+            tip.style.left = left + 'px';
+            tip.style.top = top + 'px';
+            tip.style.width = tipW + 'px';
+            tip.classList.add('is-placed');
+        }
+        function hideApiKeyHelpTooltip() {
+            if (!tip) return;
+            if (!apiKeyHelp.classList.contains('is-visible')) {
+                tip.classList.remove('is-placed');
+            }
+        }
+        apiKeyHelp.addEventListener('mouseenter', placeApiKeyHelpTooltip);
+        apiKeyHelp.addEventListener('focus', placeApiKeyHelpTooltip);
+        apiKeyHelp.addEventListener('mouseleave', hideApiKeyHelpTooltip);
+        apiKeyHelp.addEventListener('blur', hideApiKeyHelpTooltip);
         apiKeyHelp.addEventListener('click', (e) => {
             e.preventDefault();
             apiKeyHelp.classList.toggle('is-visible');
+            if (apiKeyHelp.classList.contains('is-visible')) placeApiKeyHelpTooltip();
+            else if (tip) tip.classList.remove('is-placed');
         });
         document.addEventListener('click', (e) => {
             if (apiKeyHelp.classList.contains('is-visible') && !apiKeyHelp.contains(e.target)) {
                 apiKeyHelp.classList.remove('is-visible');
+                if (tip) tip.classList.remove('is-placed');
             }
+        });
+        window.addEventListener('scroll', function () {
+            if (apiKeyHelp.classList.contains('is-visible') || apiKeyHelp.matches(':hover')) {
+                placeApiKeyHelpTooltip();
+            }
+        }, true);
+        window.addEventListener('resize', function () {
+            if (tip && tip.classList.contains('is-placed')) placeApiKeyHelpTooltip();
         });
     }
 
@@ -185,7 +224,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const ADMIN_USER_IDS = [2935825, 2093859]; // Admin user IDs (Jimidy, Havean)
     const ADMIN_USER_NAMES = ['Jimidy', 'Havean']; // Admin usernames to exclude from results
     const ADMIN_USER_NAME = 'Jimidy'; // Your username to exclude from results (keeping for backward compatibility)
+    const API_SETTINGS_STORAGE_KEYS = {
+        tornApiKey: 'tornApiKey',
+        rateLimit: 'tornApiRateLimit',
+        ffScouterApiKey: 'api_settings_ffscouter_api_key',
+        tornStatsApiKey: 'battle_stats_tornstats_api_key'
+    };
     let userCache = {}; // Cache for API key -> user data
+    let userCachePending = {}; // In-flight API key -> Promise, prevents duplicate profile calls
     let showAdminData = false; // Global toggle for showing admin data
     
     // Dynamic rate limiting: Track API call timestamps in rolling 60-second window
@@ -193,18 +239,67 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // User-configurable rate limit (stored in localStorage, default 90)
     const getRateLimit = () => {
-        const stored = localStorage.getItem('tornApiRateLimit');
+        const stored = localStorage.getItem(API_SETTINGS_STORAGE_KEYS.rateLimit);
         return stored ? parseInt(stored, 10) : 90; // Default to 90 (safety margin)
     };
     
     const setRateLimit = (limit) => {
-        localStorage.setItem('tornApiRateLimit', limit.toString());
+        localStorage.setItem(API_SETTINGS_STORAGE_KEYS.rateLimit, limit.toString());
         // Update the interval calculation
         window.CALL_INTERVAL_MS = (60 * 1000) / limit; // Dynamic interval based on rate limit
     };
     
     // Initialize rate limit from storage or default
     setRateLimit(getRateLimit()); // This also sets CALL_INTERVAL_MS
+
+    function normalizeTornApiKey(value) {
+        return String(value || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+    }
+
+    function getStoredTornApiKey() {
+        return normalizeTornApiKey(localStorage.getItem(API_SETTINGS_STORAGE_KEYS.tornApiKey));
+    }
+
+    function setStoredTornApiKey(value) {
+        const key = normalizeTornApiKey(value);
+        localStorage.setItem(API_SETTINGS_STORAGE_KEYS.tornApiKey, key);
+        return key;
+    }
+
+    function getLocalOnlyApiKey(storageKey) {
+        return String(localStorage.getItem(storageKey) || '').trim();
+    }
+
+    function setLocalOnlyApiKey(storageKey, value) {
+        const key = String(value || '').trim();
+        if (key) localStorage.setItem(storageKey, key);
+        else localStorage.removeItem(storageKey);
+        return key;
+    }
+
+    function getFfScouterApiKey(fallbackApiKey) {
+        return getLocalOnlyApiKey(API_SETTINGS_STORAGE_KEYS.ffScouterApiKey) || normalizeTornApiKey(fallbackApiKey) || getStoredTornApiKey();
+    }
+
+    function getTornStatsApiKey() {
+        return getLocalOnlyApiKey(API_SETTINGS_STORAGE_KEYS.tornStatsApiKey);
+    }
+
+    function apiSettingsLinkHtml(label) {
+        const text = String(label || 'API Settings')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+        return '<a href="#" class="api-settings-open-link">' + text + '</a>';
+    }
+
+    window.getApiSettingsTornApiKey = getStoredTornApiKey;
+    window.getApiSettingsFfScouterApiKey = getFfScouterApiKey;
+    window.getApiSettingsTornStatsApiKey = getTornStatsApiKey;
+    window.apiSettingsLinkHtml = apiSettingsLinkHtml;
+    window.openApiSettingsModal = openApiSettingsModal;
+    window.closeApiSettingsModal = closeApiSettingsModal;
     
     // Function to clean old timestamps (older than 60 seconds)
     const cleanOldCalls = () => {
@@ -622,17 +717,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (userCache[apiKey]) {
             return userCache[apiKey];
         }
+        if (userCachePending[apiKey]) {
+            return userCachePending[apiKey];
+        }
         
-        try {
+        userCachePending[apiKey] = (async function () {
             const url = `https://api.torn.com/user/?selections=profile&key=${apiKey}`;
-            const fetchUrl =
-                typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
-            const response = await fetch(fetchUrl);
-            const data = await response.json();
+            let data;
+            if (typeof window.fetchWithRateLimit === 'function') {
+                data = await window.fetchWithRateLimit(url, { retryOnRateLimit: true, retryDelay: 30000 });
+            } else {
+                const fetchUrl =
+                    typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
+                const response = await fetch(fetchUrl);
+                data = await response.json();
+            }
             
             
             if (data.error) {
                 console.error('API Error:', data.error);
+                window.__lastTornUserDataError = data.error;
                 return null;
             }
 
@@ -651,15 +755,23 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             
             // Cache the result
+            window.__lastTornUserDataError = null;
             userCache[apiKey] = userData;
             return userData;
+        })();
+
+        try {
+            return await userCachePending[apiKey];
         } catch (error) {
             if (error?.message !== 'Failed to fetch' && error?.name !== 'TypeError') {
                 console.error('Error fetching user data:', error);
             }
             return null;
+        } finally {
+            delete userCachePending[apiKey];
         }
     }
+    window.getUserData = getUserData;
 
     // ==================== VIP TRACKING SYSTEM ====================
     
@@ -1591,9 +1703,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     ` + factionPoolNote + `<div style="font-size: 0.75em; color: #7f8c8d; margin-top: 6px; font-style: italic;">💡 Send Xanax to <a href="https://www.torn.com/profiles.php?XID=2935825" target="_blank" style="color: var(--accent-color) !important; text-decoration: underline !important; font-weight: normal !important; padding: 0 !important; display: inline !important;">Jimidy</a> to increase your VIP status</div></div>`;
         }
         
-        // Append VIP status and rate limit settings to welcome message (don't replace)
-        const rateLimitHtml = getRateLimitSettingsHtml();
-        welcomeMessage.innerHTML = welcomeText + vipHtml + rateLimitHtml;
+        // Append VIP status to welcome message (don't replace)
+        welcomeMessage.innerHTML = welcomeText + vipHtml;
         applyWelcomeVipPulse();
     }
 
@@ -1637,7 +1748,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '</ul>' +
             '<h4>VIP 2</h4>' +
             '<ul>' +
-            '<li><strong>War Dashboard</strong> — free to try until the <strong>end of June</strong> (currently in beta); becomes <strong>VIP 2</strong> from <strong>1 July</strong>.</li>' +
+            '<li><strong>War Dashboard</strong> — free to use; some advanced options may be gated later.</li>' +
             '<li><strong>Chain watch</strong> (in War Dashboard) — <strong>VIP 2+</strong> can create or edit the faction schedule and use editor-only tools (extra backup watcher columns, extend visible days, watch attendance review). Anyone in the faction can still <strong>view</strong> the grid and <strong>sign up</strong> for slots once a schedule exists.</li>' +
             '</ul>' +
             '<h4>VIP 3</h4>' +
@@ -1671,64 +1782,110 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     window.openVipProgramInfoModal = openVipProgramInfoModal;
-    
-    // Function to generate rate limit settings HTML
-    function getRateLimitSettingsHtml() {
-        const currentRateLimit = getRateLimit();
-        return `
-            <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 215, 0, 0.2);">
-                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                    <input 
-                        type="number" 
-                        id="rateLimitInput" 
-                        min="50" 
-                        max="100" 
-                        value="${currentRateLimit}" 
-                        style="width: 60px; padding: 3px 6px; background: var(--primary-color); border: 1px solid var(--border-color); color: var(--text-color); border-radius: 4px; font-size: 0.85em;"
-                    >
-                    <span style="font-size: 0.85em; color: #95a5a6;">API calls/minute</span>
-                </div>
-                <div style="font-size: 0.75em; color: #7f8c8d; margin-top: 4px;">
-                    ${(window.CALL_INTERVAL_MS).toFixed(0)}ms between calls
-                </div>
-            </div>
-        `;
+
+    function setApiSettingsStatus(message, isError) {
+        const status = document.getElementById('apiSettingsStatus');
+        if (!status) return;
+        status.textContent = message || '';
+        status.classList.toggle('is-error', !!isError);
     }
-    
-    // Function to initialize rate limit settings event listeners
-    let rateLimitSaveTimeout = null;
-    function initRateLimitSettings() {
-        // Use event delegation for input changes (auto-save after user stops typing)
-        document.addEventListener('input', (e) => {
-            if (e.target && e.target.id === 'rateLimitInput') {
-                const input = e.target;
-                const newLimit = parseInt(input.value, 10);
-                
-                // Clear existing timeout
-                if (rateLimitSaveTimeout) {
-                    clearTimeout(rateLimitSaveTimeout);
-                }
-                
-                // Validate and auto-save after 1 second of no typing
-                rateLimitSaveTimeout = setTimeout(() => {
-                    if (newLimit >= 50 && newLimit <= 100) {
-                        setRateLimit(newLimit);
-                        // Update the interval display
-                        const intervalDisplay = input.parentElement.nextElementSibling;
-                        if (intervalDisplay) {
-                            intervalDisplay.textContent = `${(window.CALL_INTERVAL_MS).toFixed(0)}ms between calls`;
-                        }
-                    } else if (input.value !== '') {
-                        // Invalid value, reset to current rate limit
-                        input.value = getRateLimit();
-                    }
-                }, 1000); // Wait 1 second after user stops typing
+
+    function updateApiSettingsRateLimitHint() {
+        const hint = document.getElementById('apiSettingsRateLimitHint');
+        if (hint) hint.textContent = `${(window.CALL_INTERVAL_MS || 0).toFixed(0)}ms between Torn API calls.`;
+    }
+
+    function syncSidebarApiKeyInput(apiKey) {
+        const input = document.getElementById('globalApiKey');
+        if (input) input.value = normalizeTornApiKey(apiKey);
+    }
+
+    function syncApiSettingsFields() {
+        const tornInput = document.getElementById('apiSettingsTornKey');
+        const rateInput = document.getElementById('apiSettingsRateLimit');
+        const ffInput = document.getElementById('apiSettingsFfScouterKey');
+        const tsInput = document.getElementById('apiSettingsTornStatsKey');
+        if (tornInput) tornInput.value = getStoredTornApiKey();
+        if (rateInput) rateInput.value = String(getRateLimit());
+        if (ffInput) ffInput.value = getLocalOnlyApiKey(API_SETTINGS_STORAGE_KEYS.ffScouterApiKey);
+        if (tsInput) tsInput.value = getTornStatsApiKey();
+        updateApiSettingsRateLimitHint();
+        setApiSettingsStatus('', false);
+    }
+
+    function openApiSettingsModal() {
+        const overlay = document.getElementById('apiSettingsModal');
+        if (!overlay) return;
+        syncApiSettingsFields();
+        overlay.style.display = 'flex';
+        overlay.setAttribute('aria-hidden', 'false');
+        const firstInput = document.getElementById('apiSettingsTornKey');
+        if (firstInput) firstInput.focus();
+    }
+
+    function closeApiSettingsModal() {
+        const overlay = document.getElementById('apiSettingsModal');
+        if (!overlay) return;
+        overlay.style.display = 'none';
+        overlay.setAttribute('aria-hidden', 'true');
+    }
+
+    function saveApiSettingsFromModal() {
+        const tornInput = document.getElementById('apiSettingsTornKey');
+        const rateInput = document.getElementById('apiSettingsRateLimit');
+        const ffInput = document.getElementById('apiSettingsFfScouterKey');
+        const tsInput = document.getElementById('apiSettingsTornStatsKey');
+
+        const tornKey = setStoredTornApiKey(tornInput ? tornInput.value : '');
+        syncSidebarApiKeyInput(tornKey);
+
+        const rawLimit = rateInput ? parseInt(rateInput.value, 10) : getRateLimit();
+        if (Number.isFinite(rawLimit) && rawLimit >= 50 && rawLimit <= 100) {
+            setRateLimit(rawLimit);
+        } else if (rateInput) {
+            rateInput.value = String(getRateLimit());
+        }
+        updateApiSettingsRateLimitHint();
+
+        setLocalOnlyApiKey(API_SETTINGS_STORAGE_KEYS.ffScouterApiKey, ffInput ? ffInput.value : '');
+        setLocalOnlyApiKey(API_SETTINGS_STORAGE_KEYS.tornStatsApiKey, tsInput ? tsInput.value : '');
+
+        updateBattleStatsApiSettingsSummary();
+
+        if (tornKey.length === 16) {
+            updateWelcomeMessage();
+            window.dispatchEvent(new CustomEvent('apiKeyUpdated', { detail: { apiKey: tornKey } }));
+        }
+
+        setApiSettingsStatus('Saved locally in this browser.', false);
+    }
+
+    function initApiSettingsModal() {
+        document.addEventListener('click', function (e) {
+            const link = e.target && e.target.closest ? e.target.closest('.api-settings-open-link') : null;
+            if (!link) return;
+            e.preventDefault();
+            openApiSettingsModal();
+        });
+        document.getElementById('apiSettingsBtn')?.addEventListener('click', openApiSettingsModal);
+        document.getElementById('apiSettingsClose')?.addEventListener('click', closeApiSettingsModal);
+        document.getElementById('apiSettingsCancel')?.addEventListener('click', closeApiSettingsModal);
+        document.getElementById('apiSettingsSave')?.addEventListener('click', saveApiSettingsFromModal);
+        document.getElementById('apiSettingsModal')?.addEventListener('click', function (e) {
+            if (e.target && e.target.id === 'apiSettingsModal') closeApiSettingsModal();
+        });
+        document.getElementById('apiSettingsTornKey')?.addEventListener('input', function () {
+            this.value = normalizeTornApiKey(this.value);
+        });
+        document.getElementById('apiSettingsRateLimit')?.addEventListener('input', function () {
+            const limit = parseInt(this.value, 10);
+            if (Number.isFinite(limit) && limit >= 50 && limit <= 100) {
+                window.CALL_INTERVAL_MS = (60 * 1000) / limit;
+                updateApiSettingsRateLimitHint();
             }
         });
     }
-    
-    // Initialize rate limit settings on page load
-    initRateLimitSettings();
+    initApiSettingsModal();
     
     // ==================== END VIP TRACKING SYSTEM ====================
     
@@ -4037,7 +4194,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const data = await response.json();
                 
                 if (!response.ok) {
-                    if (data.code === 6) throw new Error('FF Scouter API Error: Your key is not registered. Please register your API key at ffscouter.com.');
+                    if (data.code === 6) throw new Error('FF Scouter API Error: Your key is not registered. Open API Settings to add a FFScouter key, or register your Torn key at ffscouter.com.');
                     throw new Error(`FF Scouter API Error: ${data.error || 'Unknown error'}`);
                 }
                 
@@ -4083,7 +4240,14 @@ document.addEventListener('DOMContentLoaded', () => {
     /** Used by War Dashboard: same FF Scouter pull as Faction Battle Stats (chunks of 200, 3 concurrent, 1s delay). Returns { ff: { player_id: fair_fight }, bs: { player_id: bs_estimate } }. */
     window.getFFAndBattleStatsForMembers = async function (apiKey, memberIds) {
         if (!memberIds || memberIds.length === 0) return { ff: {}, bs: {} };
-        const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+        const effectiveFfScouterKey =
+            typeof window.getApiSettingsFfScouterApiKey === 'function'
+                ? window.getApiSettingsFfScouterApiKey(apiKey)
+                : apiKey;
+        if (!effectiveFfScouterKey) {
+            throw new Error('FFScouter API key missing. Open API Settings and add a FFScouter key, or add a registered Torn API key.');
+        }
+        const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(effectiveFfScouterKey)}&targets=`;
         const ffData = await fetchInParallelChunks(ffScouterUrl, memberIds, 200, 3, 1000);
         const ff = {};
         const bs = {};
@@ -4183,7 +4347,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (vipInfoBtn) vipInfoBtn.style.display = visible ? 'block' : 'none';
         }
         
-        const apiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '');
+        const apiKey = getStoredTornApiKey();
         if (!apiKey || apiKey.length !== 16) {
             welcomeMessage.classList.remove('welcome-vip-pulse');
             setWelcomeVisible(false);
@@ -4207,8 +4371,6 @@ document.addEventListener('DOMContentLoaded', () => {
             welcomeMessage.innerHTML = '<span style="color: #888;">Loading...</span>';
             
             try {
-                // Clear cache for this API key to get fresh data
-                delete userCache[apiKey];
                 const userData = await getUserData(apiKey);
                 if (userData && userData.name) {
                     applyNewsletterGating(playerHasNewsletterAccess(userData.playerId));
@@ -4232,9 +4394,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         window.currentVipLevel = 0;
                         window.vipLevelKnown = true;
                         applyVipGating(0);
-                        // No VIP data, just show welcome + rate limit settings
-                        const rateLimitHtml = getRateLimitSettingsHtml();
-                        welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
+                        // No VIP data, just show welcome.
+                        welcomeMessage.innerHTML = welcomeHtml;
                     }
                     
                     // Always record login + refresh faction in Firestore (even when balance cache is still valid)
@@ -4260,9 +4421,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             welcomeMessage.innerHTML = welcomeHtml;
                             displayVipStatus(updatedVipData, userData.name);
                         } else if (!vipData) {
-                            // Still no VIP data after check, ensure rate limit settings are shown
-                            const rateLimitHtml = getRateLimitSettingsHtml();
-                            welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
+                            // Still no VIP data after check, keep the welcome message visible.
+                            welcomeMessage.innerHTML = welcomeHtml;
                             welcomeMessage.classList.add('welcome-vip-pulse');
                         }
                     }
@@ -4297,9 +4457,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const globalApiKeyInput = document.getElementById('globalApiKey');
     if (globalApiKeyInput) {
         // Load saved API key from localStorage (normalize to 16 alphanumeric)
-        let savedApiKey = (localStorage.getItem('tornApiKey') || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+        let savedApiKey = getStoredTornApiKey();
         if (savedApiKey) {
-            localStorage.setItem('tornApiKey', savedApiKey);
+            setStoredTornApiKey(savedApiKey);
             globalApiKeyInput.value = savedApiKey;
             if (savedApiKey.length === 16) updateWelcomeMessage();
         }
@@ -4307,11 +4467,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Restrict to alphanumeric and max 16 chars; only trigger API/update when length === 16
         globalApiKeyInput.addEventListener('input', () => {
             let raw = globalApiKeyInput.value || '';
-            const apiKeyValue = raw.replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
+            const apiKeyValue = normalizeTornApiKey(raw);
             if (raw !== apiKeyValue) {
                 globalApiKeyInput.value = apiKeyValue;
             }
-            localStorage.setItem('tornApiKey', apiKeyValue);
+            setStoredTornApiKey(apiKeyValue);
+            const modalTornKeyInput = document.getElementById('apiSettingsTornKey');
+            if (modalTornKeyInput) modalTornKeyInput.value = apiKeyValue;
             
             if (apiKeyValue.length === 16) {
                 updateWelcomeMessage();
@@ -4384,6 +4546,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btnEl.textContent = '↻';
             btnEl.title = 'Updating VIP status…';
             try {
+                delete userCache[apiKey];
                 const userData = await getUserData(apiKey);
                 if (!userData || !userData.name) {
                     return;
@@ -4418,12 +4581,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     window.currentVipLevel = 0;
                     window.vipLevelKnown = true;
                     applyVipGating(0);
-                    const rateLimitHtml = getRateLimitSettingsHtml();
-                    welcomeMessage.innerHTML = welcomeHtml + rateLimitHtml;
+                    welcomeMessage.innerHTML = welcomeHtml;
                     welcomeMessage.classList.add('welcome-vip-pulse');
-                }
-                if (!welcomeMessage.innerHTML.includes('API calls/minute')) {
-                    welcomeMessage.innerHTML += getRateLimitSettingsHtml();
                 }
                 applyVipRedirectsForCurrentHash();
                 applyNewsletterRedirectsForCurrentHash();
@@ -4570,6 +4729,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 document.head.appendChild(script);
             } else if (page.includes('war-dashboard')) {
+                if (typeof window.initWarDashboard === 'function') {
+                    window.initWarDashboard();
+                    return;
+                }
                 const oldScript = document.getElementById('war-dashboard-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
@@ -4856,6 +5019,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function updateBattleStatsApiSettingsSummary() {
+        const summary = document.getElementById('battleStatsApiSettingsSummary');
+        if (!summary) return;
+        const hasTornStats = typeof window.getApiSettingsTornStatsKey === 'function' && !!window.getApiSettingsTornStatsKey();
+        summary.textContent = hasTornStats ? ' TornStats key saved locally.' : ' TornStats key not set.';
+    }
+
     function initBattleStats() {
         // Log tool usage
         if (window.logToolUsage) {
@@ -4866,16 +5036,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (fetchBtn) {
             fetchBtn.addEventListener('click', handleBattleStatsFetch);
         }
-        const tornStatsKeyInput = document.getElementById('battleStatsTornStatsApiKey');
-        if (tornStatsKeyInput) {
-            const savedTornStatsKey = localStorage.getItem(BATTLE_STATS_TORNSTATS_KEY_STORAGE) || '';
-            if (savedTornStatsKey) tornStatsKeyInput.value = savedTornStatsKey;
-            tornStatsKeyInput.addEventListener('input', () => {
-                const v = String(tornStatsKeyInput.value || '').trim();
-                if (v) localStorage.setItem(BATTLE_STATS_TORNSTATS_KEY_STORAGE, v);
-                else localStorage.removeItem(BATTLE_STATS_TORNSTATS_KEY_STORAGE);
-            });
-        }
+        updateBattleStatsApiSettingsSummary();
 
         const myFactionBtn = document.getElementById('myFactionBtn');
         const factionIdInput = document.getElementById('factionId');
@@ -5027,7 +5188,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const BATTLE_STATS_ACTIVITY_NOW_PREFIX = 'battle_stats_activity_now_';
     const BATTLE_STATS_MAIN_TTL_MS = 24 * 60 * 60 * 1000;       // 1 day
     const BATTLE_STATS_TORNSTATS_MAX_AGE_SEC = 30 * 24 * 60 * 60; // 30 days
-    const BATTLE_STATS_TORNSTATS_KEY_STORAGE = 'battle_stats_tornstats_api_key';
+    const BATTLE_STATS_TORNSTATS_KEY_STORAGE = API_SETTINGS_STORAGE_KEYS.tornStatsApiKey;
     /** Legacy: one JSON blob for all players — blows localStorage quota; removed opportunistically. */
     const BATTLE_STATS_TORNSTATS_SPY_LEGACY_BLOB_KEY = 'battle_stats_tornstats_spy_cache_v2';
     /** Legacy localStorage per-player keys (removed after IDB write to free quota). */
@@ -5239,7 +5400,12 @@ document.addEventListener('DOMContentLoaded', () => {
             '<button type="button" class="app-modal-close" id="battle-stats-modal-close" aria-label="Close">×</button>' +
             '</div>' +
             '<div class="app-modal-body">' +
-            bodyLines.map((line) => `<p style="margin: 0 0 10px 0; color: #ddd;">${battleStatsEscapeHtml(String(line || ''))}</p>`).join('') +
+            bodyLines.map((line) => {
+                const html = line && typeof line === 'object' && typeof line.html === 'string'
+                    ? line.html
+                    : battleStatsEscapeHtml(String(line || ''));
+                return `<p style="margin: 0 0 10px 0; color: #ddd;">${html}</p>`;
+            }).join('') +
             '<div class="app-modal-actions">' +
             '<button type="button" id="battle-stats-modal-ok" class="fetch-button">OK</button>' +
             '</div>' +
@@ -5255,6 +5421,10 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         document.addEventListener('keydown', onEsc, true);
         overlay.addEventListener('click', (e) => {
+            if (e.target && e.target.closest && e.target.closest('.api-settings-open-link')) {
+                close();
+                return;
+            }
             if (e.target === overlay) close();
         });
         overlay.querySelector('#battle-stats-modal-close')?.addEventListener('click', close);
@@ -5837,7 +6007,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch(chunkUrl);
             const data = await response.json();
             if (!response.ok) {
-                if (data.code === 6) throw new Error('FF Scouter API Error: Your key is not registered. Please register your API key at ffscouter.com.');
+                if (data.code === 6) throw new Error('FF Scouter API Error: Your key is not registered. Open API Settings to add a FFScouter key, or register your Torn key at ffscouter.com.');
                 throw new Error(`FF Scouter API Error: ${data.error || 'Unknown error'}`);
             }
             results = results.concat(data);
@@ -6143,7 +6313,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 memberIDs = membersArray.map(member => member.id.toString());
                 membersObject = buildBattleStatsMembersObject(membersArray);
 
-                const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+                const ffScouterApiKey = getFfScouterApiKey(apiKey);
+                if (!ffScouterApiKey) throw new Error('FFScouter API key missing. Open API Settings and add a FFScouter key, or add a registered Torn API key.');
+                const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(ffScouterApiKey)}&targets=`;
                 ffData = await fetchInParallelChunks(ffScouterUrl, memberIDs, 200, 3, 1000);
 
                 ffScores = {};
@@ -6444,11 +6616,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const importTornStatsBtn = document.getElementById('importTornStatsBtn');
             if (importTornStatsBtn) {
                 importTornStatsBtn.addEventListener('click', async () => {
-                    const keyInput = document.getElementById('battleStatsTornStatsApiKey');
-                    const tornStatsApiKey = keyInput ? String(keyInput.value || '').trim() : '';
+                    const tornStatsApiKey =
+                        typeof window.getApiSettingsTornStatsKey === 'function' ? window.getApiSettingsTornStatsKey() : '';
                     if (!tornStatsApiKey) {
-                        alert('Enter your TornStats API key in the field above first.');
-                        if (keyInput) keyInput.focus();
+                        showBattleStatsStyledModal('TornStats API Key Needed', [
+                            'Add your TornStats API key in API Settings, then try the import again.',
+                            {
+                                html: window.apiSettingsLinkHtml
+                                    ? window.apiSettingsLinkHtml('Open API Settings')
+                                    : 'Open API Settings from the Welcome panel.'
+                            }
+                        ]);
                         return;
                     }
                     importTornStatsBtn.disabled = true;
@@ -6519,7 +6697,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     } catch (e) {
                         console.error('[Battle Stats] TornStats import failed', e);
                         showBattleStatsStyledModal('TornStats Import Failed', [
-                            e && e.message ? e.message : 'Failed to import TornStats spies.'
+                            e && e.message ? e.message : 'Failed to import TornStats spies.',
+                            {
+                                html: window.apiSettingsLinkHtml
+                                    ? window.apiSettingsLinkHtml('Check API Settings')
+                                    : 'Check API Settings from the Welcome panel.'
+                            }
                         ]);
                     } finally {
                         hideTornStatsImportProgress();
@@ -6616,7 +6799,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const resultsContainer = document.getElementById('battle-stats-results');
             const errorDiv = document.createElement('div');
             errorDiv.className = 'error-message';
-            errorDiv.innerHTML = `Error: ${error.message}`;
+            const errorMessage = error && error.message ? String(error.message) : 'Unknown error';
+            errorDiv.innerHTML = 'Error: ' + battleStatsEscapeHtml(errorMessage);
+            if (errorMessage.indexOf('API Settings') !== -1 && window.apiSettingsLinkHtml) {
+                errorDiv.innerHTML += '<br>' + window.apiSettingsLinkHtml('Open API Settings');
+            }
             if (resultsContainer) {
                 resultsContainer.innerHTML = '';
                 resultsContainer.appendChild(errorDiv);
@@ -7498,7 +7685,9 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Fetch FF Scouter data for own faction members to get estimated stats
             const ownFactionMemberIDs = ownSortedMemberIDs.map(id => String(id));
-            const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+            const ffScouterApiKey = getFfScouterApiKey(apiKey);
+            if (!ffScouterApiKey) throw new Error('FFScouter API key missing. Open API Settings and add a FFScouter key, or add a registered Torn API key.');
+            const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(ffScouterApiKey)}&targets=`;
             console.log(`Fetching FF Scouter data for ${ownFactionMemberIDs.length} own faction members...`);
             const ownFfData = await fetchInParallelChunks(ffScouterUrl, ownFactionMemberIDs, 200, 3, 1000);
             
@@ -9926,7 +10115,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const memberIDs = Object.keys(memberStats);
             if (memberIDs.length > 0) {
                 try {
-                    const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${apiKey}&targets=`;
+                    const ffScouterApiKey = getFfScouterApiKey(apiKey);
+                    if (!ffScouterApiKey) throw new Error('FFScouter API key missing. Open API Settings and add a FFScouter key, or add a registered Torn API key.');
+                    const ffScouterUrl = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(ffScouterApiKey)}&targets=`;
                     const ffData = await fetchInParallelChunks(ffScouterUrl, memberIDs, 200, 3, 1000);
                     ffData.forEach(player => {
                         if (player.bs_estimate != null) {

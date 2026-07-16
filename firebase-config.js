@@ -129,7 +129,7 @@
     }
 
     /** Bump with version.json when shipping client updates. Stale tabs poll version.json and show a refresh banner. */
-    var APP_BUILD_VERSION = '20260715b';
+    var APP_BUILD_VERSION = '20260715k';
     window.APP_BUILD_VERSION = APP_BUILD_VERSION;
 
     function showAppUpdateBanner() {
@@ -138,7 +138,19 @@
         bar.id = 'app-update-banner';
         bar.setAttribute('role', 'alert');
         bar.style.cssText =
-            'position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 14px;background:#b45309;color:#fff;text-align:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.35);';
+            'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99999;' +
+            'width:max-content;max-width:calc(100vw - 24px);box-sizing:border-box;' +
+            'margin:0;padding:10px 20px;background:#b45309;color:#fff;text-align:center;font-size:14px;' +
+            'border-radius:0 0 10px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.35);' +
+            'display:inline-flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px 0;' +
+            'animation:appUpdateBannerIn 0.28s ease-out;';
+        if (!document.getElementById('app-update-banner-style')) {
+            var style = document.createElement('style');
+            style.id = 'app-update-banner-style';
+            style.textContent =
+                '@keyframes appUpdateBannerIn{from{opacity:0;transform:translateX(-50%) translateY(-100%)}to{opacity:1;transform:translateX(-50%) translateY(0)}}';
+            document.head.appendChild(style);
+        }
         bar.innerHTML =
             'A new version of Faction Tools is available. ' +
             '<button type="button" style="margin-left:10px;padding:4px 12px;cursor:pointer;font-weight:600;border:none;border-radius:4px;">Refresh now</button>';

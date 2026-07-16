@@ -5,7 +5,7 @@
 (function () {
     'use strict';
 
-    window.__WAR_DASHBOARD_BUILD = '20260715b';
+    window.__WAR_DASHBOARD_BUILD = '20260716a';
 
     const STORAGE_KEYS = {
         enemyFactionId: 'war_dashboard_enemy_faction_id',
@@ -14,14 +14,18 @@
         ffBlue: 'war_dashboard_ff_blue',
         ffGreen: 'war_dashboard_ff_green',
         ffOrange: 'war_dashboard_ff_orange',
+        respectWarlordEnabled: 'war_dashboard_respect_warlord_enabled',
+        respectWarlordPercent: 'war_dashboard_respect_warlord_percent',
         ffNoticeHidden: 'war_dashboard_ff_notice_hidden',
         enemyPickerMinimised: 'war_dashboard_enemy_picker_minimised',
+        enemyFactionIds: 'war_dashboard_enemy_faction_ids',
         refreshSectionMinimised: 'war_dashboard_refresh_section_minimised',
         ffSectionMinimised: 'war_dashboard_ff_section_minimised',
         trackOurChain: 'war_dashboard_track_our_chain',
         trackEnemyChain: 'war_dashboard_track_enemy_chain',
         autoRefreshEnabled: 'war_dashboard_auto_refresh_enabled',
         activityTrackerConfig: 'war_dashboard_activity_tracker_config',
+        activityTrackerDisabledFactions: 'war_dashboard_activity_tracker_disabled_factions',
         activityTrackerLastVisit: 'war_dashboard_activity_tracker_last_visit',
         activityTrackerSectionExpanded: 'war_dashboard_activity_tracker_section_expanded',
         activityAutoWarEnemyFactionId: 'war_dashboard_activity_auto_war_enemy_faction_id'
@@ -36,6 +40,8 @@
     const ACTIVITY_INTERVAL_MS = 10 * 60 * 1000;
     /** Max factions one player may track (matches server MAX_ACTIVITY_TRACKED_FACTIONS_PER_PLAYER). */
     const MAX_ACTIVITY_TRACKED_FACTIONS = 3;
+    const MAX_ENEMY_FACTIONS = 3;
+    const WAR_DASHBOARD_RIBBON_VIP_REQUIRED = 2;
     const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
     const ACTIVITY_DATA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -67,6 +73,7 @@
     const FF_CACHE_PREFIX = 'war_dashboard_ff_';
     const FF_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
     const FF_REFRESH_DAY_KEY = 'war_dashboard_ff_last_refresh_date_'; // + factionId
+    const FACTION_NAME_CACHE_PREFIX = 'war_dashboard_faction_name_';
     const NOTE_PREFIX = 'war_dashboard_note_'; // + player ID, persisted until user clears cache
 
     let refreshTimer = null;
@@ -86,6 +93,8 @@
     let ourSortDir = 'desc';
     let lastEnemyFactionId = null;
     let lastEnemyName = null;
+    let lastEnemyWarKind = null;
+    let lastRetaliationTargetIds = new Set();
     let lastOurFactionId = null;
     let currentUserPlayerId = null;
     let currentUserAbroadCountry = null;
@@ -95,6 +104,10 @@
     /** Mutable display state: { timeout, cooldown } ticked every second */
     let ourChainDisplay = { timeout: 0, cooldown: 0 };
     let enemyChainDisplay = { timeout: 0, cooldown: 0 };
+    let userProfileCacheByKey = {};
+    let userProfilePromiseByKey = {};
+    let dashboardLoadPromise = null;
+    let enemyFactionStates = [];
 
     let activityTrackerIntervalId = null;
     let activityTrackerCountdownIntervalId = null;
@@ -698,6 +711,13 @@
     }
 
     async function fetchJson(url) {
+        if (typeof window.fetchWithRateLimit === 'function') {
+            const data = await window.fetchWithRateLimit(url, { retryOnRateLimit: true, retryDelay: 30000 });
+            if (data && data.error) {
+                throw new Error(typeof data.error === 'object' ? (data.error.error || JSON.stringify(data.error)) : data.error);
+            }
+            return data;
+        }
         const fetchUrl =
             typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
         const res = await fetch(fetchUrl);
@@ -706,24 +726,67 @@
         return data;
     }
 
-    async function getUserProfile(apiKey) {
-        const data = await fetchJson(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
-        const parsed =
-            typeof window.parseTornProfileIdentity === 'function'
-                ? window.parseTornProfileIdentity(data)
-                : null;
-        if (parsed) {
-            return {
-                factionId: parsed.factionId,
-                factionName: parsed.factionName,
-                playerId: parsed.playerId
-            };
+    function warDashboardFriendlyError(err) {
+        const msg = err && err.message ? String(err.message) : String(err || '');
+        if (/too many requests/i.test(msg)) {
+            return 'Too many Torn API requests. Please wait about 60 seconds, then refresh once. I have slowed dashboard refreshes to reduce this.';
         }
-        return {
-            factionId: data.faction_id || data.faction?.faction_id || data.faction?.id || null,
-            factionName: data.faction_name || data.faction?.faction_name || data.faction?.name || '',
-            playerId: data.player_id != null ? Number(data.player_id) : null
-        };
+        return msg || 'Failed to load data.';
+    }
+
+    async function getUserProfile(apiKey) {
+        const key = String(apiKey || '');
+        const cached = userProfileCacheByKey[key];
+        if (cached && (Date.now() - cached.at) < 5 * 60 * 1000) return cached.value;
+        if (userProfilePromiseByKey[key]) return userProfilePromiseByKey[key];
+
+        userProfilePromiseByKey[key] = (async function () {
+            if (typeof window.getUserData === 'function') {
+                const appUser = await window.getUserData(apiKey);
+                if (appUser && appUser.playerId != null) {
+                    return {
+                        factionId: appUser.factionId,
+                        factionName: appUser.factionName || '',
+                        playerId: appUser.playerId
+                    };
+                }
+                const lastUserErr = window.__lastTornUserDataError;
+                if (lastUserErr) {
+                    throw new Error(
+                        typeof lastUserErr === 'object'
+                            ? (lastUserErr.error || JSON.stringify(lastUserErr))
+                            : String(lastUserErr)
+                    );
+                }
+                throw new Error('Could not verify your Torn profile. Check your API key and try again.');
+            }
+
+            const data = await fetchJson(`https://api.torn.com/user/?selections=profile&key=${apiKey}`);
+            const parsed =
+                typeof window.parseTornProfileIdentity === 'function'
+                    ? window.parseTornProfileIdentity(data)
+                    : null;
+            if (parsed) {
+                return {
+                    factionId: parsed.factionId,
+                    factionName: parsed.factionName,
+                    playerId: parsed.playerId
+                };
+            }
+            return {
+                factionId: data.faction_id || data.faction?.faction_id || data.faction?.id || null,
+                factionName: data.faction_name || data.faction?.faction_name || data.faction?.name || '',
+                playerId: data.player_id != null ? Number(data.player_id) : null
+            };
+        })();
+
+        try {
+            const value = await userProfilePromiseByKey[key];
+            userProfileCacheByKey[key] = { at: Date.now(), value };
+            return value;
+        } finally {
+            delete userProfilePromiseByKey[key];
+        }
     }
 
     /**
@@ -805,9 +868,102 @@
         return Array.isArray(members) ? members : Object.values(members);
     }
 
+    const RECENT_ATTACKS_CACHE_MS = 60 * 1000;
+    let recentAttacksCache = { key: '', ourFactionId: '', attacks: [], fetchedAt: 0 };
+    let recentAttacksFetchPromise = null;
+
+    function filterRecentIncomingAttackers(attacks, ourFactionId, enemyFactionId, fromSec) {
+        const our = String(ourFactionId);
+        const enemy = String(enemyFactionId);
+        const out = new Set();
+        (attacks || []).forEach(function (attack) {
+            if (!attack) return;
+            const ts = Number(attack.started || attack.timestamp || attack.ended || 0);
+            if (!Number.isFinite(ts) || ts < fromSec) return;
+            const attackerFactionId = attack.attacker && attack.attacker.faction && attack.attacker.faction.id;
+            const defenderFactionId = attack.defender && attack.defender.faction && attack.defender.faction.id;
+            const attackerId = attack.attacker && attack.attacker.id;
+            if (String(attackerFactionId) === enemy && String(defenderFactionId) === our && attackerId != null) {
+                out.add(String(attackerId));
+            }
+        });
+        return out;
+    }
+
+    /** One shared /faction/attacks fetch per minute; filter per enemy client-side (avoids N duplicate calls). */
+    async function ensureRecentAttacksLoaded(apiKey, ourFactionId) {
+        if (!apiKey || !ourFactionId) return [];
+        const cacheKey = String(apiKey) + ':' + String(ourFactionId);
+        const now = Date.now();
+        if (
+            recentAttacksCache.key === cacheKey
+            && recentAttacksCache.ourFactionId === String(ourFactionId)
+            && recentAttacksCache.fetchedAt
+            && (now - recentAttacksCache.fetchedAt) < RECENT_ATTACKS_CACHE_MS
+        ) {
+            return recentAttacksCache.attacks;
+        }
+        if (recentAttacksFetchPromise) return recentAttacksFetchPromise;
+        const nowSec = Math.floor(Date.now() / 1000);
+        const fromSec = nowSec - (5 * 60);
+        recentAttacksFetchPromise = (async function () {
+            const url = `https://api.torn.com/v2/faction/attacks?limit=100&sort=ASC&from=${fromSec}&key=${apiKey}`;
+            const data = await fetchJson(url);
+            const raw = data.attacks || [];
+            const attacks = Array.isArray(raw) ? raw : Object.values(raw);
+            recentAttacksCache = {
+                key: cacheKey,
+                ourFactionId: String(ourFactionId),
+                attacks: attacks,
+                fetchedAt: Date.now()
+            };
+            return attacks;
+        })().finally(function () {
+            recentAttacksFetchPromise = null;
+        });
+        return recentAttacksFetchPromise;
+    }
+
+    async function fetchRecentIncomingAttackers(apiKey, ourFactionId, enemyFactionId) {
+        if (!apiKey || !ourFactionId || !enemyFactionId) return new Set();
+        const fromSec = Math.floor(Date.now() / 1000) - (5 * 60);
+        const attacks = await ensureRecentAttacksLoaded(apiKey, ourFactionId).catch(function () { return []; });
+        return filterRecentIncomingAttackers(attacks, ourFactionId, enemyFactionId, fromSec);
+    }
+
+    function isUsefulFactionName(factionId, name) {
+        const value = String(name || '').trim();
+        if (!value) return false;
+        const id = String(factionId || '').trim();
+        return value !== 'Faction' && value !== ('Faction ' + id) && value !== id;
+    }
+
+    function getCachedFactionName(factionId) {
+        try {
+            const raw = localStorage.getItem(FACTION_NAME_CACHE_PREFIX + String(factionId || '').trim());
+            if (!raw) return '';
+            const parsed = JSON.parse(raw);
+            return parsed && parsed.name ? String(parsed.name) : '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function setCachedFactionName(factionId, name) {
+        if (!isUsefulFactionName(factionId, name)) return;
+        try {
+            localStorage.setItem(FACTION_NAME_CACHE_PREFIX + String(factionId).trim(), JSON.stringify({
+                name: String(name).trim(),
+                cachedAt: Date.now()
+            }));
+        } catch (e) { /* ignore */ }
+    }
+
     /** Fetch faction name — same URL and parsing as Faction Battle Stats (app.js). */
     async function fetchFactionName(apiKey, factionId) {
         if (!factionId || !apiKey) return null;
+        const cachedName = getCachedFactionName(factionId);
+        if (cachedName) return cachedName;
         const url = `https://api.torn.com/v2/faction/${factionId}?key=${apiKey}`;
         try {
             if (typeof window.batchTornApiCalls === 'function') {
@@ -817,7 +973,10 @@
                 const data = tornData?.factionInfo;
                 if (data && !data.error) {
                     let name = data.basic?.name || data.name || data.faction_name;
-                    if (name) return name;
+                    if (name) {
+                        setCachedFactionName(factionId, name);
+                        return name;
+                    }
                 }
             }
             const res = await fetch(url);
@@ -825,6 +984,7 @@
             if (data && data.error) return null;
             const raw = data?.faction || data;
             let name = raw?.basic?.name || raw?.name || raw?.faction_name;
+            if (name) setCachedFactionName(factionId, name);
             return name || null;
         } catch (e) {
             return null;
@@ -948,7 +1108,14 @@
             const raw = localStorage.getItem(STORAGE_KEYS.activityTrackerConfig);
             if (!raw) return { tracked: [] };
             const obj = JSON.parse(raw);
-            return Array.isArray(obj.tracked) ? obj : { tracked: [] };
+            if (!Array.isArray(obj.tracked)) return { tracked: [] };
+            obj.tracked.forEach(function (t) {
+                if (t && isActivityFactionLocallyDisabled(t.factionId)) {
+                    t.enabled = false;
+                    if (t.disabledAt == null) t.disabledAt = Date.now();
+                }
+            });
+            return obj;
         } catch (e) { return { tracked: [] }; }
     }
 
@@ -958,12 +1125,61 @@
         } catch (e) { /* ignore */ }
     }
 
+    function getActivityDisabledFactionMap() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.activityTrackerDisabledFactions);
+            const parsed = raw ? JSON.parse(raw) : {};
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (e) { return {}; }
+    }
+
+    function setActivityDisabledFactionMap(map) {
+        try {
+            localStorage.setItem(STORAGE_KEYS.activityTrackerDisabledFactions, JSON.stringify(map || {}));
+        } catch (e) { /* ignore */ }
+    }
+
+    function isActivityFactionLocallyDisabled(factionId) {
+        const fid = String(factionId || '').trim();
+        if (!fid) return false;
+        return getActivityDisabledFactionMap()[fid] != null;
+    }
+
+    function setActivityFactionLocallyDisabled(factionId, disabled) {
+        const fid = String(factionId || '').trim();
+        if (!fid) return;
+        const map = getActivityDisabledFactionMap();
+        if (disabled) map[fid] = Date.now();
+        else delete map[fid];
+        setActivityDisabledFactionMap(map);
+    }
+
     /** True if factionId is already tracked, or under the per-player cap. */
     function canAddActivityTrackedFaction(factionId) {
         const fid = String(factionId || '').trim();
         const tracked = getActivityConfig().tracked || [];
         if (fid && tracked.some(function (t) { return String(t.factionId) === fid; })) return true;
         return tracked.length < MAX_ACTIVITY_TRACKED_FACTIONS;
+    }
+
+    function getActivityTrackedEntry(factionId) {
+        const fid = String(factionId || '').trim();
+        if (!fid) return null;
+        return (getActivityConfig().tracked || []).find(function (t) {
+            return String(t.factionId) === fid;
+        }) || null;
+    }
+
+    function isActivityFactionEnabled(factionId) {
+        const entry = getActivityTrackedEntry(factionId);
+        return !!(entry && entry.enabled && !isActivityFactionLocallyDisabled(factionId));
+    }
+
+    function getEnabledActivityTrackedFactionIds() {
+        return (getActivityConfig().tracked || [])
+            .filter(function (t) { return t && t.enabled && !isActivityFactionLocallyDisabled(t.factionId); })
+            .map(function (t) { return String(t.factionId); })
+            .filter(Boolean);
     }
 
     function activityTrackedLimitMessage() {
@@ -1083,11 +1299,11 @@
 
     function getActivityCloudFactionIds(options) {
         if (options && options.factionIds && options.factionIds.length) {
-            return options.factionIds.map(function (id) { return String(id); });
+            return options.factionIds.map(function (id) { return String(id); }).filter(function (id) {
+                return isActivityFactionEnabled(id);
+            });
         }
-        return getActivityConfig().tracked.map(function (t) {
-            return String(t.factionId);
-        }).filter(Boolean);
+        return getEnabledActivityTrackedFactionIds();
     }
 
     function parseActivityWindowDoc(data) {
@@ -1216,7 +1432,11 @@
                         staleBar.id = 'app-update-banner';
                         staleBar.setAttribute('role', 'alert');
                         staleBar.style.cssText =
-                            'position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 14px;background:#b45309;color:#fff;text-align:center;font-size:14px;';
+                            'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99999;' +
+                            'width:max-content;max-width:calc(100vw - 24px);box-sizing:border-box;' +
+                            'padding:10px 20px;background:#b45309;color:#fff;text-align:center;font-size:14px;' +
+                            'border-radius:0 0 10px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.35);' +
+                            'display:inline-flex;align-items:center;justify-content:center;flex-wrap:wrap;';
                         staleBar.innerHTML =
                             'War Dashboard update available — <button type="button" style="margin-left:8px;padding:4px 12px;font-weight:600;">Refresh (Ctrl+F5)</button>';
                         staleBar.querySelector('button').onclick = function () { location.reload(); };
@@ -1278,9 +1498,13 @@
     /** Local cache first, then Firestore (one doc per tracked faction). Persists merged result to localStorage. */
     async function refreshAllTrackedActivityFromCloud(options) {
         hydrateActivityDataCacheFromLocalStorage();
+        const enabledIds = getActivityCloudFactionIds(options);
+        if (!enabledIds.length) return { byFaction: {}, docsRead: 0, lastFetch: Date.now(), readError: null };
+        options = Object.assign({}, options || {}, { factionIds: enabledIds });
         const cloud = await fetchActivitySamplesCloud(options);
         const cfg = getActivityConfig();
         cfg.tracked.forEach(function (t) {
+            if (!t.enabled) return;
             mergeActivityCloudForFaction(t.factionId, cloud);
         });
         return cloud;
@@ -1308,6 +1532,7 @@
     /** Load activity samples from Firestore, merge with local, update cache. One shared doc per faction. */
     async function ensureActivityDataLoaded(factionId, options) {
         hydrateActivityDataCacheFromLocalStorage([String(factionId)]);
+        if (!isActivityFactionEnabled(factionId)) return;
         const opts = Object.assign({}, options || {}, { factionIds: [String(factionId)] });
         const cloud = await fetchActivitySamplesCloud(opts);
         mergeActivityCloudForFaction(factionId, cloud);
@@ -1320,6 +1545,11 @@
         const meta = activityDataCloudMeta[fid];
         const reg = activityCloudRegisterState[fid];
         const bits = [];
+        if (!isActivityFactionEnabled(fid)) {
+            el.textContent = 'Paused. No Firebase reads, writes, or server sampling while this tracker is off.';
+            el.style.color = '#9e9e9e';
+            return;
+        }
         if (reg && reg.ok === false && reg.error) {
             bits.push('24/7 server sampling not registered: ' + reg.error);
         } else if (reg && reg.ok) {
@@ -1393,6 +1623,9 @@
             return Promise.resolve({ ok: false, error: 'Firebase Functions not loaded' });
         }
         if (action === 'add') {
+            if (!isActivityFactionEnabled(fid)) {
+                return Promise.resolve({ ok: false, error: 'Tracker paused' });
+            }
             var apiKey = (getApiKey() || '').trim();
             if (!apiKey) {
                 activityCloudRegisterState[fid] = { ok: false, error: 'No API key in sidebar', at: Date.now() };
@@ -1457,13 +1690,17 @@
             ids.forEach(function (fid) {
                 var s = String(fid);
                 if (seen.has(s)) return;
+                if (isActivityFactionLocallyDisabled(s)) {
+                    syncTrackedFactionToFirestore(s, 'remove').catch(function () {});
+                    return;
+                }
                 if (cfg.tracked.length >= MAX_ACTIVITY_TRACKED_FACTIONS) return;
                 seen.add(s);
                 cfg.tracked.push({
                     factionId: s,
                     factionName: 'Faction ' + s,
-                    enabled: true,
-                    disabledAt: null,
+                    enabled: false,
+                    disabledAt: Date.now(),
                     startedAt: Date.now()
                 });
             });
@@ -1476,8 +1713,10 @@
     function syncAllTrackedFactionsToFirestoreThenRefreshStatus() {
         var cfg = getActivityConfig();
         if (!cfg.tracked.length) return;
-        Promise.all(cfg.tracked.map(function (t) {
-            return syncTrackedFactionToFirestore(t.factionId, t.enabled ? 'add' : 'remove');
+        Promise.all(cfg.tracked.filter(function (t) {
+            return t && t.enabled && !isActivityFactionLocallyDisabled(t.factionId);
+        }).map(function (t) {
+            return syncTrackedFactionToFirestore(t.factionId, 'add');
         })).then(function () {
             updateAllActivityCloudStatusUI();
         }).catch(function (e) { console.warn('syncAllTrackedFactionsToFirestore', e); });
@@ -1531,7 +1770,115 @@
         enforceActivityTrackedLimitLocal();
     }
 
-    function getSortValue(m, column, ffMap, bsMap, nowSec) {
+    function warDashboardFloor2(n) {
+        return Math.floor((Number(n) || 0) * 100) / 100;
+    }
+
+    function warDashboardBaseRespect(level) {
+        const lvl = Number(level);
+        if (!Number.isFinite(lvl) || lvl <= 0) return null;
+        return warDashboardFloor2((lvl / 200) + 1);
+    }
+
+    function warDashboardRespectChainModifier(chain) {
+        const mod = Number(chain && chain.modifier);
+        return Number.isFinite(mod) && mod > 0 ? mod : 1;
+    }
+
+    function warDashboardRespectWarlordConfig() {
+        const enabled = document.getElementById('war-dashboard-respect-warlord-enabled')?.checked === true;
+        const raw = Number(document.getElementById('war-dashboard-respect-warlord-percent')?.value);
+        const percent = Number.isFinite(raw) && raw >= 0 ? raw : 15;
+        return {
+            enabled,
+            percent,
+            multiplier: enabled ? 1 + (percent / 100) : 1
+        };
+    }
+
+    function warDashboardEstimateRespect(member, ffMap, respectContext) {
+        const id = String(member && member.id);
+        const ff = ffMap && ffMap[id] != null ? Number(ffMap[id]) : null;
+        const base = warDashboardBaseRespect(member && member.level);
+        if (!Number.isFinite(ff) || ff <= 0 || base == null) return null;
+        const cappedFf = Math.min(ff, 3);
+        const chainModifier = warDashboardRespectChainModifier(respectContext && respectContext.chain);
+        const warModifier = respectContext && respectContext.isCurrentWarEnemy ? 2 : 1;
+        const nowSec = Math.floor(Date.now() / 1000);
+        const overseasModifier = member && isAbroad(member, nowSec) ? 1.25 : 1;
+        const retaliationModifier =
+            respectContext &&
+            respectContext.retaliationTargetIds &&
+            respectContext.retaliationTargetIds.has(id)
+                ? 1.5
+                : 1;
+        const warlord = warDashboardRespectWarlordConfig();
+        const respect =
+            base *
+            cappedFf *
+            chainModifier *
+            warModifier *
+            overseasModifier *
+            retaliationModifier *
+            warlord.multiplier;
+        return {
+            respect,
+            base,
+            ff,
+            cappedFf,
+            chainModifier,
+            warModifier,
+            overseasModifier,
+            retaliationModifier,
+            warlordModifier: warlord.multiplier,
+            warlordPercent: warlord.percent,
+            warlordEnabled: warlord.enabled,
+            isCurrentWarEnemy: !!(respectContext && respectContext.isCurrentWarEnemy)
+        };
+    }
+
+    function warDashboardRespectText(calc) {
+        return calc ? calc.respect.toFixed(2) : '—';
+    }
+
+    function warDashboardRespectClass(calc, ff, thresholds, respectRange) {
+        if (!calc || !Number.isFinite(calc.respect)) return 'war-dashboard-respect-value--unavailable';
+        const ffValue = Number(ff);
+        if (Number.isFinite(ffValue)) {
+            if (ffValue >= thresholds.orange) return 'war-dashboard-respect-value--danger';
+            if (ffValue >= thresholds.green) return 'war-dashboard-respect-value--difficult';
+        }
+        const min = Number(respectRange && respectRange.min);
+        const max = Number(respectRange && respectRange.max);
+        if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return 'war-dashboard-respect-value--target-high';
+        const score = (calc.respect - min) / (max - min);
+        if (score >= 0.67) return 'war-dashboard-respect-value--target-high';
+        if (score >= 0.34) return 'war-dashboard-respect-value--target-medium';
+        return 'war-dashboard-respect-value--target-low';
+    }
+
+    function warDashboardRespectTooltip(calc) {
+        if (!calc) {
+            return 'Respect estimate unavailable until target level and FF are loaded.';
+        }
+        return [
+            'Estimated respect for a normal attack.',
+            'Torn Wiki formula: base respect = floor((target level / 200 + 1) * 100) / 100.',
+            'Estimate = base × capped FF × chain × war × overseas × retaliation × warlord.',
+            'Base: ' + calc.base.toFixed(2),
+            'FF: ' + calc.ff.toFixed(2) + (calc.ff > 3 ? ' (capped to 3.00)' : ''),
+            'Chain modifier: ×' + calc.chainModifier.toFixed(2),
+            'War modifier: ×' + calc.warModifier.toFixed(2) + (calc.isCurrentWarEnemy ? ' (current ranked-war enemy)' : ' (not applied)'),
+            'Overseas modifier: ×' + calc.overseasModifier.toFixed(2) + (calc.overseasModifier > 1 ? ' (enemy abroad)' : ''),
+            'Retaliation modifier: ×' + calc.retaliationModifier.toFixed(2) + (calc.retaliationModifier > 1 ? ' (enemy attacked us in last 5 minutes; assumes hospitalize)' : ''),
+            'Warlord modifier: ×' + calc.warlordModifier.toFixed(2) + (calc.warlordEnabled ? ' (' + calc.warlordPercent + '% selected)' : ' (off)'),
+            'Result: ' + calc.respect.toFixed(2),
+            'Mug applies ×0.75 in Torn, so mugging would reduce this estimate.',
+            'Not included here: group attacks, exact attack result, or chain milestone bonus.'
+        ].join('\n');
+    }
+
+    function getSortValue(m, column, ffMap, bsMap, nowSec, respectContext) {
         const id = String(m.id);
         const status = statusFromMember(m);
         const expired = status.until != null && nowSec >= status.until;
@@ -1540,6 +1887,10 @@
             case 'member': return (m.name || id).toLowerCase();
             case 'level': return Number(m.level) || -1;
             case 'ff': return ffMap[id] != null ? Number(ffMap[id]) : -1;
+            case 'respect': {
+                const calc = warDashboardEstimateRespect(m, ffMap, respectContext);
+                return calc ? calc.respect : -1;
+            }
             case 'eststats': return bsMap[id] != null ? Number(bsMap[id]) : -1;
             case 'status': return status.actionStatus;
             case 'location': return locationDisplay.toLowerCase();
@@ -1547,12 +1898,12 @@
         }
     }
 
-    function sortMembers(list, column, dir, ffMap, bsMap) {
+    function sortMembers(list, column, dir, ffMap, bsMap, respectContext) {
         const nowSec = Math.floor(Date.now() / 1000);
         const mult = dir === 'asc' ? 1 : -1;
         return [...list].sort((a, b) => {
-            const va = getSortValue(a, column, ffMap, bsMap, nowSec);
-            const vb = getSortValue(b, column, ffMap, bsMap, nowSec);
+            const va = getSortValue(a, column, ffMap, bsMap, nowSec, respectContext);
+            const vb = getSortValue(b, column, ffMap, bsMap, nowSec, respectContext);
             if (typeof va === 'number' && typeof vb === 'number') return mult * (va - vb);
             return mult * String(va).localeCompare(String(vb));
         });
@@ -1579,7 +1930,7 @@
         const orange = Number(document.getElementById('war-dashboard-ff-orange')?.value) || 4.5;
         bsMap = bsMap || {};
 
-        const sorted = sortMembers(members, ourSortColumn, ourSortDir, ffMap, bsMap);
+        const sorted = sortMembers(members, ourSortColumn, ourSortDir, ffMap, bsMap, null);
         updateSortIndicators('war-dashboard-our-table', ourSortColumn, ourSortDir);
 
         const nowSec = Math.floor(Date.now() / 1000);
@@ -1617,9 +1968,13 @@
             if (ourChainDisplay.timeout > 0) ourChainDisplay.timeout--;
             else if (ourChainDisplay.cooldown > 0) ourChainDisplay.cooldown--;
         }
-        if (getTrackEnemyChain() && lastEnemyChain) {
-            if (enemyChainDisplay.timeout > 0) enemyChainDisplay.timeout--;
-            else if (enemyChainDisplay.cooldown > 0) enemyChainDisplay.cooldown--;
+        if (getTrackEnemyChain()) {
+            enemyFactionStates.forEach(function (enemy) {
+                if (!enemy.chain || !enemy.chainDisplay) return;
+                if (enemy.chainDisplay.timeout > 0) enemy.chainDisplay.timeout--;
+                else if (enemy.chainDisplay.cooldown > 0) enemy.chainDisplay.cooldown--;
+            });
+            syncPrimaryEnemyFromStates();
         }
     }
 
@@ -1821,12 +2176,14 @@
         const isUrgent = (timeout > 0 && timeout < 60) || (timeout === 0 && cooldown > 0 && cooldown < 60);
         const trackOn = chainKey === 'our' ? getTrackOurChain() : getTrackEnemyChain();
         const watchRosterHtml = chainKey === 'our' ? getOurChainWatchRosterHtml() : '';
+        const extraEnemyClass = boxEl.classList.contains('war-dashboard-enemy-chain-box-extra') ? ' war-dashboard-enemy-chain-box-extra' : '';
         boxEl.className = 'war-dashboard-chain-box' +
+            extraEnemyClass +
             (!trackOn ? ' war-dashboard-chain-box-off' : '') +
             (trackOn && isActive ? ' war-dashboard-chain-box-active' : '') +
             (trackOn && isUrgent ? ' war-dashboard-chain-box-urgent' : '');
         boxEl.setAttribute('aria-hidden', 'false');
-        boxEl.style.display = 'block';
+        boxEl.style.display = 'flex';
         if (!trackOn) {
             boxEl.innerHTML = `
                 <label class="war-dashboard-chain-track-wrap" title="Tracking off (reduces API calls): click to turn on. Refresh interval in Settings (Chain refresh).">
@@ -1870,11 +2227,11 @@
     /** Inline display must be grid/flex — setting display:block overrides CSS and stacked the chains. */
     function applyChainsRowVisibleLayout(row) {
         if (!row) return;
-        if (lastEnemyFactionId) {
+        if (enemyFactionStates.length) {
             row.style.display = 'grid';
             row.style.gridTemplateColumns = (typeof window !== 'undefined' && window.innerWidth <= 700)
                 ? '1fr'
-                : 'repeat(2, minmax(0, 1fr))';
+                : 'repeat(' + Math.min(4, enemyFactionStates.length + 1) + ', minmax(0, 1fr))';
             row.style.gap = '16px';
             row.style.alignItems = 'stretch';
             row.style.justifyContent = '';
@@ -1891,7 +2248,7 @@
     function updateChainsRowLayout() {
         const row = document.getElementById('war-dashboard-chains-row');
         if (!row) return;
-        if (lastEnemyFactionId) {
+        if (enemyFactionStates.length) {
             row.classList.add('war-dashboard-chains-row--dual');
             row.classList.remove('war-dashboard-chains-row--solo');
         } else {
@@ -1907,7 +2264,7 @@
     function showWarDashboardChainsRow() {
         const row = document.getElementById('war-dashboard-chains-row');
         if (!row) return;
-        if (lastEnemyFactionId) {
+        if (enemyFactionStates.length) {
             row.classList.add('war-dashboard-chains-row--dual');
             row.classList.remove('war-dashboard-chains-row--solo');
         } else {
@@ -1917,7 +2274,7 @@
         applyChainsRowVisibleLayout(row);
     }
 
-    /** Placeholder so Our Chain shows at 0 / tracking off when API failed or not loaded — Chain watch stays visible underneath. */
+    /** Placeholder so Our Chain shows at 0 / tracking off when API failed or not loaded. */
     const OUR_CHAIN_PLACEHOLDER = { current: 0, max: 0, timeout: 0, cooldown: 0, modifier: 0 };
     /** Placeholder so enemy column shows side-by-side before chain API returns. */
     const ENEMY_CHAIN_PLACEHOLDER = { current: 0, max: 0, timeout: 0, cooldown: 0, modifier: 0 };
@@ -1932,15 +2289,32 @@
             ourDisplayForUi,
             'our'
         );
-        const enemyChainForUi = lastEnemyChain || (lastEnemyFactionId ? ENEMY_CHAIN_PLACEHOLDER : null);
-        const enemyDisplayForUi = lastEnemyChain ? enemyChainDisplay : { timeout: 0, cooldown: 0 };
-        renderChainBox(
-            document.getElementById('war-dashboard-enemy-chain-box'),
-            'Enemy Chain',
-            enemyChainForUi,
-            enemyDisplayForUi,
-            'enemy'
-        );
+        const row = document.getElementById('war-dashboard-chains-row');
+        const firstEnemyBox = document.getElementById('war-dashboard-enemy-chain-box');
+        if (row) {
+            row.querySelectorAll('.war-dashboard-enemy-chain-box-extra').forEach(el => el.remove());
+        }
+        enemyFactionStates.forEach(function (enemy, index) {
+            let box = index === 0 ? firstEnemyBox : null;
+            if (!box && row) {
+                box = document.createElement('div');
+                box.className = 'war-dashboard-chain-box war-dashboard-enemy-chain-box-extra';
+                box.id = 'war-dashboard-enemy-chain-box-' + enemy.id;
+                row.appendChild(box);
+            }
+            const enemyChainForUi = enemy.chain || ENEMY_CHAIN_PLACEHOLDER;
+            const enemyDisplayForUi = enemy.chain ? enemy.chainDisplay : { timeout: 0, cooldown: 0 };
+            renderChainBox(
+                box,
+                (enemy.name || 'Faction ' + enemy.id) + ' Chain',
+                enemyChainForUi,
+                enemyDisplayForUi,
+                'enemy'
+            );
+        });
+        if (firstEnemyBox && !enemyFactionStates.length) {
+            renderChainBox(firstEnemyBox, 'Enemy Chain', null, { timeout: 0, cooldown: 0 }, 'enemy');
+        }
         updateChainsRowLayout();
         updateChainWatchBarVisibility();
     }
@@ -1969,28 +2343,28 @@
     }
 
     /**
-     * Ensures Chain watch bar exists directly under Our Chain (inside #war-dashboard-chain-column-our).
+     * Ensures Chain Watch actions exist inside the Chain Watch command modal.
      */
     function ensureChainWatchBarMounted() {
-        const ourCol = document.getElementById('war-dashboard-chain-column-our');
-        const ourBox = document.getElementById('war-dashboard-our-chain-box');
-        if (!ourCol || !ourBox) return;
+        const modalBody = document.querySelector('#war-dashboard-chain-watch-command-modal .war-dashboard-command-modal-body');
 
         let bar = document.getElementById('war-dashboard-chain-watch-bar');
         if (!bar) {
             bar = document.createElement('div');
             bar.id = 'war-dashboard-chain-watch-bar';
-            bar.className = 'war-dashboard-chain-watch-bar';
+            bar.className = 'war-dashboard-chain-watch-bar war-dashboard-chain-watch-command-actions';
             bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:10px;';
-            ourCol.insertBefore(bar, ourBox.nextSibling);
-        } else if (bar.parentNode !== ourCol || bar.previousElementSibling !== ourBox) {
-            ourCol.insertBefore(bar, ourBox.nextSibling);
+            if (modalBody) {
+                modalBody.appendChild(bar);
+            }
+        } else if (modalBody && bar.parentNode !== modalBody) {
+            modalBody.appendChild(bar);
         }
         if (!document.getElementById('war-dashboard-chain-watch-new')) {
             const hint = document.getElementById('war-dashboard-chain-watch-hint');
             const hintHtml = hint
                 ? hint.outerHTML
-                : '<span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint" style="color:#888;font-size:12px;"></span>';
+                : '<span id="war-dashboard-chain-watch-hint" class="war-dashboard-chain-watch-hint war-dashboard-command-summary" style="color:#888;font-size:12px;"></span>';
             bar.innerHTML =
                 '<button type="button" id="war-dashboard-chain-watch-new" class="btn">Add new chain watch</button>' +
                 '<button type="button" id="war-dashboard-chain-watch-open" class="btn">Open chain watch</button>' +
@@ -2013,6 +2387,7 @@
             openBtn.dataset.cwBarWired = '1';
             openBtn.addEventListener('click', function (e) {
                 e.preventDefault();
+                closeWarDashboardChainWatchCommandModal();
                 navigateToChainWatchPage();
             });
         }
@@ -2025,7 +2400,7 @@
 
     async function handleChainWatchNewClick() {
         if (!lastOurFactionId) {
-            alert('Load your faction first (Apply or Use current ranked war).');
+            alert('Load your faction first from the War Dashboard.');
             return;
         }
         if (!getApiKey()) {
@@ -2075,6 +2450,7 @@
                 return;
             }
         }
+        closeWarDashboardChainWatchCommandModal();
         showChainWatchCreateModal();
     }
 
@@ -2082,21 +2458,35 @@
         ensureChainWatchBarMounted();
         const bar = document.getElementById('war-dashboard-chain-watch-bar');
         const hint = document.getElementById('war-dashboard-chain-watch-hint');
+        const summary = document.getElementById('war-dashboard-chain-watch-summary');
         if (!bar) return;
+        if (!hasWarDashboardVip2Access()) {
+            if (summary) summary.textContent = 'VIP 2 required';
+            if (hint) hint.textContent = 'Chain Watch requires VIP 2.';
+            bar.style.display = 'flex';
+            return;
+        }
         // Always show the bar on War Dashboard — visibility does not depend on enemy faction (only our faction is needed for API calls).
         bar.style.display = 'flex';
+        let hintText = '';
+        let summaryText = 'Schedule tools';
         if (hint) {
             if (!lastOurFactionId) {
                 if (!getApiKey()) {
-                    hint.textContent = ' Set API key in the sidebar, then load the dashboard.';
+                    hintText = 'Set API key in the sidebar, then load the dashboard.';
+                    summaryText = 'Set API key first';
                 } else {
-                    hint.textContent = ' Waiting for your faction (dashboard loading or not in a faction). No enemy faction required for Chain watch.';
+                    hintText = 'Waiting for your faction (dashboard loading or not in a faction). No enemy faction required for Chain watch.';
+                    summaryText = 'Waiting for faction';
                 }
             } else {
                 const age = chainWatchLastFetchMs ? Math.max(0, Math.floor((Date.now() - chainWatchLastFetchMs) / 1000)) : null;
-                hint.textContent = age != null ? ('Schedule data: refreshed ' + (age < 60 ? age + 's' : Math.floor(age / 60) + 'm') + ' ago') : '';
+                hintText = age != null ? ('Schedule data: refreshed ' + (age < 60 ? age + 's' : Math.floor(age / 60) + 'm') + ' ago') : '';
+                summaryText = age != null ? ('Refreshed ' + (age < 60 ? age + 's' : Math.floor(age / 60) + 'm') + ' ago') : 'Add or open schedule';
             }
+            hint.textContent = hintText;
         }
+        if (summary) summary.textContent = summaryText;
     }
 
     /** @returns {Promise<object|null>} chainWatchPayload on success, or null (see chainWatchLastError). */
@@ -2105,7 +2495,7 @@
         const fid = lastOurFactionId;
         const apiKey = getApiKey();
         if (!fid) {
-            chainWatchLastError = 'No faction loaded yet. Click Apply or Use current ranked war, then open Chain watch again.';
+            chainWatchLastError = 'No faction loaded yet. Load the War Dashboard, then open Chain Watch again.';
             return null;
         }
         if (!apiKey) {
@@ -2980,7 +3370,7 @@
     function navigateToChainWatchPage() {
         const fid = lastOurFactionId;
         if (!fid) {
-            alert('Load your faction first (Apply or Use current ranked war).');
+            alert('Load your faction first from the War Dashboard.');
             return;
         }
         if (!getApiKey()) {
@@ -3053,8 +3443,11 @@
         overlay.setAttribute('aria-hidden', 'true');
     }
 
-    function renderEnemy(members, ffMap, bsMap, thresholds) {
-        const table = document.getElementById('war-dashboard-enemy-table');
+    function renderEnemy(members, ffMap, bsMap, thresholds, options) {
+        options = options || {};
+        const table = options.tableId
+            ? document.getElementById(options.tableId)
+            : document.getElementById('war-dashboard-enemy-table');
         const tbody = table ? table.querySelector('tbody') : null;
         if (!tbody) return;
 
@@ -3145,18 +3538,53 @@
             });
         }
 
-        filtered = sortMembers(filtered, enemySortColumn, enemySortDir, ffMap, bsMap);
-        updateSortIndicators('war-dashboard-enemy-table', enemySortColumn, enemySortDir);
+        const respectContext = options.respectContext || {
+            chain: lastOurChain,
+            isCurrentWarEnemy: lastEnemyWarKind === 'ongoing',
+            retaliationTargetIds: lastRetaliationTargetIds
+        };
+        const sortColumn = options.sortColumn || enemySortColumn;
+        const sortDir = options.sortDir || enemySortDir;
+        filtered = sortMembers(filtered, sortColumn, sortDir, ffMap, bsMap, respectContext);
+        if (table.id) updateSortIndicators(table.id, sortColumn, sortDir);
 
-        const rowHtml = filtered.map(m => {
+        const respectThresholds = { blue, green, orange };
+        const rowModels = filtered.map(m => {
             const id = m.id;
             const ff = ffMap[String(id)];
+            return {
+                member: m,
+                id,
+                ff,
+                respectCalc: warDashboardEstimateRespect(m, ffMap, respectContext)
+            };
+        });
+        const targetableRespectValues = rowModels
+            .filter(row => {
+                const ffValue = Number(row.ff);
+                return row.respectCalc &&
+                    Number.isFinite(row.respectCalc.respect) &&
+                    (!Number.isFinite(ffValue) || ffValue < green);
+            })
+            .map(row => row.respectCalc.respect);
+        const respectRange = targetableRespectValues.length
+            ? { min: Math.min(...targetableRespectValues), max: Math.max(...targetableRespectValues) }
+            : { min: null, max: null };
+
+        const rowHtml = rowModels.map(row => {
+            const m = row.member;
+            const id = row.id;
+            const ff = row.ff;
             const bs = bsMap[String(id)];
             const status = statusFromMember(m);
             const statusDisplay = formatLocationStatusDisplay(status, nowSec);
             const color = getFFColor(ff, blue, green, orange);
             const statusColor = getStatusColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
+            const respectCalc = row.respectCalc;
+            const respectText = warDashboardRespectText(respectCalc);
+            const respectClass = warDashboardRespectClass(respectCalc, ff, respectThresholds, respectRange);
+            const respectTitle = escapeAttr(warDashboardRespectTooltip(respectCalc));
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             const attackUrl = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
             const noteValue = escapeHtml(getNote(id));
@@ -3165,6 +3593,7 @@
                 <td><a href="${attackUrl}" target="_blank" rel="noopener" title="Attack">🎯</a> <a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelEnemy)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
+                <td class="war-dashboard-respect-col" title="${respectTitle}"><span class="war-dashboard-respect-value ${respectClass}">${respectText}</span></td>
                 <td>${bsText}</td>
                 <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
                 ${warDashboardLocationCellOpenTag(status, nowSec)}${escapeHtml(statusDisplay)}</td>
@@ -3194,6 +3623,61 @@
                 input.setSelectionRange(saved.start, saved.end);
             }
         }
+    }
+
+    function enemyTableHtml(enemy) {
+        const tableId = 'war-dashboard-enemy-table-' + escapeHtml(enemy.id);
+        return '<div class="table-scroll-wrapper" style="overflow-x: auto;">' +
+            '<table id="' + tableId + '" class="war-dashboard-table war-dashboard-enemy-table" data-faction-id="' + escapeHtml(enemy.id) + '">' +
+            '<colgroup>' +
+            '<col style="width: 18%"><col style="width: 6%"><col style="width: 6%"><col style="width: 8%"><col style="width: 10%"><col style="width: 8%"><col style="width: 26%"><col style="width: 14%">' +
+            '</colgroup>' +
+            '<thead><tr>' +
+            '<th data-column="member" class="war-dashboard-th-sort">Member <span class="war-dashboard-sort"></span></th>' +
+            '<th data-column="level" class="war-dashboard-th-sort">Level <span class="war-dashboard-sort"></span></th>' +
+            '<th data-column="ff" class="war-dashboard-th-sort">FF <span class="war-dashboard-sort"></span></th>' +
+            '<th data-column="respect" class="war-dashboard-th-sort war-dashboard-respect-col" title="Estimated respect from a normal attack using the Torn Wiki formula.">Respect <span class="war-dashboard-sort"></span></th>' +
+            '<th data-column="eststats" class="war-dashboard-th-sort">Est. stats <span class="war-dashboard-sort"></span></th>' +
+            '<th data-column="status" class="war-dashboard-th-sort">Status <span class="war-dashboard-sort"></span></th>' +
+            '<th data-column="location" class="war-dashboard-th-sort">Location / state <span class="war-dashboard-sort"></span></th>' +
+            '<th>Notes</th>' +
+            '</tr></thead><tbody></tbody></table></div>';
+    }
+
+    function renderEnemyPanels() {
+        const container = document.getElementById('war-dashboard-enemies-list');
+        if (!container) return;
+        if (!enemyFactionStates.length) {
+            container.innerHTML = '<p class="war-dashboard-command-help">Add an enemy faction to compare members.</p>';
+            return;
+        }
+        container.innerHTML = enemyFactionStates.map(function (enemy) {
+            const expanded = enemy.expanded !== false;
+            const name = enemy.name || ('Faction ' + enemy.id);
+            return '<section class="war-dashboard-enemy-panel" data-faction-id="' + escapeHtml(enemy.id) + '">' +
+                '<button type="button" class="war-dashboard-enemy-panel-toggle" data-faction-id="' + escapeHtml(enemy.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' +
+                '<span class="war-dashboard-enemy-panel-arrow" aria-hidden="true">' + (expanded ? '▼' : '▶') + '</span>' +
+                '<span>' + escapeHtml(name) + '</span>' +
+                '<small>ID: ' + escapeHtml(enemy.id) + ' · ' + ((enemy.members || []).length) + ' members</small>' +
+                '</button>' +
+                '<div class="war-dashboard-enemy-panel-body" style="display:' + (expanded ? 'block' : 'none') + ';">' +
+                enemyTableHtml(enemy) +
+                '</div>' +
+                '</section>';
+        }).join('');
+        enemyFactionStates.forEach(function (enemy) {
+            renderEnemy(enemy.members || [], enemy.ff || {}, enemy.bs || {}, null, {
+                tableId: 'war-dashboard-enemy-table-' + enemy.id,
+                sortColumn: enemy.sortColumn || enemySortColumn,
+                sortDir: enemy.sortDir || enemySortDir,
+                respectContext: {
+                    chain: lastOurChain,
+                    isCurrentWarEnemy: enemy.warKind === 'ongoing',
+                    retaliationTargetIds: enemy.retaliationTargetIds || new Set()
+                }
+            });
+        });
+        warDashboardInjectMemberColumnHeaders();
     }
 
     function escapeHtml(s) {
@@ -3243,32 +3727,46 @@
     function showError(msg) {
         const el = document.getElementById('war-dashboard-error');
         if (el) {
-            el.textContent = msg || '';
+            const text = msg || '';
+            if (text && String(text).indexOf('API Settings') !== -1) {
+                el.innerHTML = escapeHtml(String(text)).replace(
+                    'API Settings',
+                    '<a href="#" class="api-settings-open-link" style="color:#FFD700;text-decoration:underline;">API Settings</a>'
+                );
+            } else {
+                el.textContent = text;
+            }
             el.style.display = msg ? 'block' : 'none';
         }
     }
 
     function loadSettings() {
-        const fid = localStorage.getItem(STORAGE_KEYS.enemyFactionId) || '';
         const interval = localStorage.getItem(STORAGE_KEYS.refreshInterval);
         const chainInterval = localStorage.getItem(STORAGE_KEYS.chainRefreshInterval);
         const blue = localStorage.getItem(STORAGE_KEYS.ffBlue);
         const green = localStorage.getItem(STORAGE_KEYS.ffGreen);
         const orange = localStorage.getItem(STORAGE_KEYS.ffOrange);
+        const warlordEnabled = localStorage.getItem(STORAGE_KEYS.respectWarlordEnabled);
+        const warlordPercent = localStorage.getItem(STORAGE_KEYS.respectWarlordPercent);
 
         const idInput = document.getElementById('war-dashboard-enemy-faction-id');
-        if (idInput) idInput.value = fid;
+        if (idInput) idInput.value = '';
         const intervalInput = document.getElementById('war-dashboard-refresh-interval');
-        if (intervalInput && interval != null) intervalInput.value = interval || '15';
+        if (intervalInput && interval != null) intervalInput.value = String(Math.max(30, parseInt(interval || '30', 10) || 30));
         const chainIntervalInput = document.getElementById('war-dashboard-chain-refresh-interval');
-        if (chainIntervalInput) chainIntervalInput.value = (chainInterval != null && chainInterval !== '') ? chainInterval : '30';
+        if (chainIntervalInput) chainIntervalInput.value = String(Math.max(30, parseInt(chainInterval || '30', 10) || 30));
         const blueInput = document.getElementById('war-dashboard-ff-blue');
         if (blueInput && blue != null) blueInput.value = blue || '2.5';
         const greenInput = document.getElementById('war-dashboard-ff-green');
         if (greenInput && green != null) greenInput.value = green || '3.5';
         const orangeInput = document.getElementById('war-dashboard-ff-orange');
         if (orangeInput && orange != null) orangeInput.value = orange || '4.5';
+        const warlordEnabledInput = document.getElementById('war-dashboard-respect-warlord-enabled');
+        if (warlordEnabledInput && warlordEnabled != null) warlordEnabledInput.checked = warlordEnabled === '1';
+        const warlordPercentInput = document.getElementById('war-dashboard-respect-warlord-percent');
+        if (warlordPercentInput) warlordPercentInput.value = (warlordPercent != null && warlordPercent !== '') ? warlordPercent : '15';
         updateRecommendedLabel();
+        renderEnemyPickerList();
     }
 
     function updateRecommendedLabel() {
@@ -3279,9 +3777,7 @@
     }
 
     function saveSettings() {
-        const idInput = document.getElementById('war-dashboard-enemy-faction-id');
         const intervalInput = document.getElementById('war-dashboard-refresh-interval');
-        if (idInput) localStorage.setItem(STORAGE_KEYS.enemyFactionId, idInput.value.trim());
         if (intervalInput) localStorage.setItem(STORAGE_KEYS.refreshInterval, intervalInput.value);
         const chainIntervalInput = document.getElementById('war-dashboard-chain-refresh-interval');
         if (chainIntervalInput) localStorage.setItem(STORAGE_KEYS.chainRefreshInterval, chainIntervalInput.value);
@@ -3291,9 +3787,193 @@
         if (blue != null) localStorage.setItem(STORAGE_KEYS.ffBlue, blue);
         if (green != null) localStorage.setItem(STORAGE_KEYS.ffGreen, green);
         if (orange != null) localStorage.setItem(STORAGE_KEYS.ffOrange, orange);
+        const warlordEnabled = document.getElementById('war-dashboard-respect-warlord-enabled')?.checked;
+        const warlordPercent = document.getElementById('war-dashboard-respect-warlord-percent')?.value;
+        if (warlordEnabled != null) localStorage.setItem(STORAGE_KEYS.respectWarlordEnabled, warlordEnabled ? '1' : '0');
+        if (warlordPercent != null) localStorage.setItem(STORAGE_KEYS.respectWarlordPercent, warlordPercent || '15');
+    }
+
+    function normalizeEnemyFactionId(value) {
+        return String(value || '').replace(/\D/g, '').trim();
+    }
+
+    function getStoredEnemyFactionIds() {
+        const ids = [];
+        try {
+            const rawList = localStorage.getItem(STORAGE_KEYS.enemyFactionIds);
+            if (rawList) {
+                const parsed = JSON.parse(rawList);
+                if (Array.isArray(parsed)) {
+                    parsed.forEach(id => {
+                        const clean = normalizeEnemyFactionId(id);
+                        if (clean && !ids.includes(clean) && ids.length < MAX_ENEMY_FACTIONS) ids.push(clean);
+                    });
+                }
+            }
+        } catch (e) { /* ignore */ }
+        if (!ids.length) {
+            const legacy = normalizeEnemyFactionId(localStorage.getItem(STORAGE_KEYS.enemyFactionId) || '');
+            if (legacy) ids.push(legacy);
+        }
+        return ids;
+    }
+
+    function setStoredEnemyFactionIds(ids) {
+        const clean = [];
+        (ids || []).forEach(id => {
+            const normalized = normalizeEnemyFactionId(id);
+            if (normalized && !clean.includes(normalized) && clean.length < MAX_ENEMY_FACTIONS) clean.push(normalized);
+        });
+        try {
+            localStorage.setItem(STORAGE_KEYS.enemyFactionIds, JSON.stringify(clean));
+            if (clean[0]) localStorage.setItem(STORAGE_KEYS.enemyFactionId, clean[0]);
+            else localStorage.removeItem(STORAGE_KEYS.enemyFactionId);
+        } catch (e) { /* ignore */ }
+        renderEnemyPickerList();
+        return clean;
+    }
+
+    function addStoredEnemyFactionId(id) {
+        const clean = normalizeEnemyFactionId(id);
+        if (!clean) return { ok: false, message: 'Enter an enemy faction ID.' };
+        const ids = getStoredEnemyFactionIds();
+        if (ids.includes(clean)) return { ok: true, ids };
+        if (ids.length >= MAX_ENEMY_FACTIONS) return { ok: false, message: 'You can add up to 3 enemy factions.' };
+        ids.push(clean);
+        return { ok: true, ids: setStoredEnemyFactionIds(ids) };
+    }
+
+    function removeStoredEnemyFactionId(id) {
+        const clean = normalizeEnemyFactionId(id);
+        setStoredEnemyFactionIds(getStoredEnemyFactionIds().filter(existing => existing !== clean));
+    }
+
+    function renderEnemyPickerList() {
+        const listEl = document.getElementById('war-dashboard-enemy-list');
+        if (!listEl) return;
+        const ids = getStoredEnemyFactionIds();
+        if (!ids.length) {
+            listEl.innerHTML = '<p class="war-dashboard-command-help">No enemy factions added. Add up to 3.</p>';
+            return;
+        }
+        listEl.innerHTML = ids.map(id => {
+            const state = enemyFactionStates.find(enemy => String(enemy.id) === String(id));
+            const label = (state && state.name) || getCachedFactionName(id) || 'Faction ' + id;
+            return '<div class="war-dashboard-enemy-list-row">' +
+                '<span>' + escapeHtml(label) + ' <small>ID: ' + escapeHtml(id) + '</small></span>' +
+                '<button type="button" class="btn war-dashboard-enemy-remove" data-faction-id="' + escapeHtml(id) + '">Remove</button>' +
+                '</div>';
+        }).join('');
+    }
+
+    function syncPrimaryEnemyFromStates() {
+        const first = enemyFactionStates[0] || null;
+        lastEnemyFactionId = first ? first.id : null;
+        lastEnemyName = first ? first.name : null;
+        lastEnemyWarKind = first ? first.warKind : null;
+        lastRetaliationTargetIds = first ? first.retaliationTargetIds : new Set();
+        lastEnemyMembers = first ? first.members : [];
+        lastEnemyFF = first ? first.ff : {};
+        lastEnemyBS = first ? first.bs : {};
+        lastEnemyChain = first ? first.chain : null;
+        enemyChainDisplay = first && first.chainDisplay ? first.chainDisplay : { timeout: 0, cooldown: 0 };
+        lastEnemyChainFetchTime = first ? first.chainFetchTime || 0 : 0;
+    }
+
+    function updateWarDashboardEnemyLabels() {
+        const storedIds = getStoredEnemyFactionIds();
+        const activeStates = enemyFactionStates.length
+            ? enemyFactionStates
+            : storedIds.map(id => ({ id, name: getCachedFactionName(id) || 'Faction ' + id }));
+        const count = activeStates.length;
+        const names = activeStates.map(enemy => enemy.name || getCachedFactionName(enemy.id) || ('Faction ' + enemy.id));
+        const title = count === 1 ? names[0] : 'Enemies';
+        const summaryText = count ? (count + '/' + MAX_ENEMY_FACTIONS + ' selected') : 'Choose up to 3';
+
+        const titleEl = document.getElementById('war-dashboard-enemy-title');
+        if (titleEl) titleEl.textContent = title;
+
+        const commandTitleEl = document.getElementById('war-dashboard-enemy-command-title');
+        if (commandTitleEl) commandTitleEl.textContent = 'Enemies';
+
+        const summaryEl = document.getElementById('war-dashboard-enemy-picker-summary');
+        if (summaryEl) summaryEl.textContent = summaryText;
+
+        const labelEl = document.getElementById('war-dashboard-enemy-label');
+        if (labelEl) labelEl.textContent = count ? names.join(', ') : 'Add up to 3 enemy factions.';
+        renderEnemyPickerList();
+    }
+
+    async function loadEnemyFactionState(apiKey, ourFactionId, enemyFactionId, currentWarEnemy) {
+        let enemyName = '';
+        let warKind = null;
+        if (currentWarEnemy && currentWarEnemy.enemyFactionId === enemyFactionId) {
+            enemyName = currentWarEnemy.enemyName || '';
+            warKind = currentWarEnemy.kind || null;
+            setCachedFactionName(enemyFactionId, enemyName);
+        }
+        if (!enemyName) {
+            enemyName = getCachedFactionName(enemyFactionId) || await fetchFactionName(apiKey, enemyFactionId).catch(() => null) || '';
+        }
+
+        const [members, chainData, recentRetalIds] = await Promise.all([
+            fetchFactionMembers(apiKey, enemyFactionId).catch(() => []),
+            fetchFactionChain(apiKey, enemyFactionId).catch(() => null),
+            fetchRecentIncomingAttackers(apiKey, ourFactionId, enemyFactionId).catch(() => new Set())
+        ]);
+
+        let ff = {};
+        let bs = {};
+        const memberIds = members.map(m => String(m.id));
+        const cached = getFFCache(enemyFactionId);
+        if (cached && cached.ff && !shouldRefreshFFToday(enemyFactionId)) {
+            ff = cached.ff || {};
+            bs = cached.bs || {};
+        } else if (memberIds.length) {
+            try {
+                const data = await fetchFFForMembers(apiKey, memberIds);
+                ff = data.ff || {};
+                bs = data.bs || {};
+                setFFCache(enemyFactionId, { ff, bs });
+            } catch (e) {
+                console.warn('War Dashboard enemy FF:', e.message);
+                if (cached && cached.ff) {
+                    ff = cached.ff || {};
+                    bs = cached.bs || {};
+                }
+            }
+        } else if (cached && cached.ff) {
+            ff = cached.ff || {};
+            bs = cached.bs || {};
+        }
+
+        const existing = enemyFactionStates.find(enemy => String(enemy.id) === String(enemyFactionId));
+        return {
+            id: enemyFactionId,
+            name: enemyName || 'Faction ' + enemyFactionId,
+            warKind,
+            members,
+            ff,
+            bs,
+            chain: chainData,
+            chainDisplay: chainData ? { timeout: chainData.timeout, cooldown: chainData.cooldown } : { timeout: 0, cooldown: 0 },
+            chainFetchTime: chainData ? Date.now() : 0,
+            retaliationTargetIds: recentRetalIds || new Set(),
+            expanded: existing ? existing.expanded !== false : true,
+            sortColumn: existing ? existing.sortColumn : enemySortColumn,
+            sortDir: existing ? existing.sortDir : enemySortDir
+        };
     }
 
     async function runDashboard() {
+        if (dashboardLoadPromise) return dashboardLoadPromise;
+        dashboardLoadPromise = runDashboardInner().finally(function () {
+            dashboardLoadPromise = null;
+        });
+        return dashboardLoadPromise;
+    }
+
+    async function runDashboardInner() {
         const apiKey = getApiKey();
         if (!apiKey) {
             showError('Please enter your API key in the sidebar.');
@@ -3304,9 +3984,7 @@
         showError('');
         showLoading(true);
 
-        const idInput = document.getElementById('war-dashboard-enemy-faction-id');
-        const enemyFactionId = (idInput?.value || '').trim();
-        let enemyName = '';
+        const enemyFactionIds = getStoredEnemyFactionIds();
 
         try {
             const user = await getUserProfile(apiKey);
@@ -3320,8 +3998,11 @@
             lastOurFactionId = ourFactionId;
             currentUserPlayerId = user.playerId;
 
-            if (!enemyFactionId) {
-                lastEnemyFactionId = null;
+            if (!enemyFactionIds.length) {
+                enemyFactionStates = [];
+                syncPrimaryEnemyFromStates();
+                lastEnemyWarKind = null;
+                lastRetaliationTargetIds = new Set();
                 showWarDashboardChainsRow();
                 renderChainBoxes();
                 // No enemy applied: still show Our team and Our chain (collapsed)
@@ -3353,14 +4034,13 @@
                 lastOurChain = ourChainData;
                 if (ourChainData) lastOurChainFetchTime = Date.now();
                 ourChainDisplay = ourChainData ? { timeout: ourChainData.timeout, cooldown: ourChainData.cooldown } : { timeout: 0, cooldown: 0 };
-                lastEnemyMembers = [];
-                lastEnemyFF = {};
-                lastEnemyBS = {};
-                lastEnemyChain = null;
-                enemyChainDisplay = { timeout: 0, cooldown: 0 };
+                enemyFactionStates = [];
+                syncPrimaryEnemyFromStates();
+                updateWarDashboardEnemyLabels();
                 const me = ourMembers.find(m => String(m.id) === String(user.playerId));
                 currentUserAbroadCountry = me ? parseAbroadCountry(me) : null;
                 renderOurTeam(ourMembers, ourFF, ourBS, null);
+                renderEnemyPanels();
                 renderChainBoxes();
                 showWarDashboardChainsRow();
                 document.getElementById('war-dashboard-our-team').style.display = 'block';
@@ -3371,35 +4051,19 @@
                 updateActivityTrackerUI();
                 syncAllTrackedFactionsToFirestoreThenRefreshStatus();
                 setOurTeamCollapsed(true);
-                showError('Enter an enemy faction ID or click "Use current ranked war" to compare.');
+                showError('Enter an enemy faction ID or click "Add current ranked war" to compare.');
                 fetchChainWatchData(false).catch(function () {});
                 syncChainWatchFromDashboard();
                 showLoading(false);
                 return;
             }
 
-            // Try to get enemy name from current war for label (optional)
             const current = await getCurrentWarEnemy(apiKey, ourFactionId).catch(() => null);
-            if (current && current.enemyFactionId === enemyFactionId) {
-                enemyName = current.enemyName;
-            }
-            lastEnemyName = enemyName || '';
-            const labelText = enemyName ? `Enemy: ${enemyName} (ID: ${enemyFactionId})` : `Enemy Faction ID: ${enemyFactionId}`;
-            const labelEl = document.getElementById('war-dashboard-enemy-label');
-            if (labelEl) labelEl.textContent = labelText;
-            const summaryEl = document.getElementById('war-dashboard-enemy-picker-summary');
-            if (summaryEl) summaryEl.textContent = labelText ? ' — ' + labelText : '';
 
-            lastEnemyFactionId = enemyFactionId;
-            showWarDashboardChainsRow();
-            renderChainBoxes();
-
-            // Fetch our members, enemy members, and both chains in parallel
-            const [ourMembers, enemyMembers, ourChainData, enemyChainData] = await Promise.all([
+            const [ourMembers, ourChainData, loadedEnemies] = await Promise.all([
                 fetchFactionMembers(apiKey, null),
-                fetchFactionMembers(apiKey, enemyFactionId).catch(() => []),
                 fetchFactionChain(apiKey, ourFactionId).catch(() => null),
-                fetchFactionChain(apiKey, enemyFactionId).catch(() => null)
+                Promise.all(enemyFactionIds.map(id => loadEnemyFactionState(apiKey, ourFactionId, id, current)))
             ]);
 
             // FF + battle stats for our faction: cache 1 week, refresh on first use each day
@@ -3422,29 +4086,9 @@
                 ourBS = ourCached.bs || {};
             }
 
-            // FF + battle stats for enemy: same cache rules
-            let enemyFF = {};
-            let enemyBS = {};
-            const enemyIds = enemyMembers.map(m => String(m.id));
-            const enemyCached = getFFCache(enemyFactionId);
-            if (enemyCached && enemyCached.ff && !shouldRefreshFFToday(enemyFactionId)) {
-                enemyFF = enemyCached.ff || {};
-                enemyBS = enemyCached.bs || {};
-            } else if (enemyIds.length) {
-                try {
-                    const enemyData = await fetchFFForMembers(apiKey, enemyIds);
-                    enemyFF = enemyData.ff || {};
-                    enemyBS = enemyData.bs || {};
-                    setFFCache(enemyFactionId, { ff: enemyFF, bs: enemyBS });
-                } catch (e) { console.warn('War Dashboard enemy FF:', e.message); }
-            } else if (enemyCached && enemyCached.ff) {
-                enemyFF = enemyCached.ff;
-                enemyBS = enemyCached.bs || {};
-            }
-
-            lastEnemyMembers = enemyMembers;
-            lastEnemyFF = enemyFF;
-            lastEnemyBS = enemyBS;
+            enemyFactionStates = loadedEnemies;
+            syncPrimaryEnemyFromStates();
+            updateWarDashboardEnemyLabels();
             lastOurMembers = ourMembers;
             lastOurFF = ourFF;
             lastOurBS = ourBS;
@@ -3454,14 +4098,11 @@
             currentUserAbroadCountry = me ? parseAbroadCountry(me) : null;
 
             lastOurChain = ourChainData;
-            lastEnemyChain = enemyChainData;
             if (ourChainData) lastOurChainFetchTime = Date.now();
-            if (enemyChainData) lastEnemyChainFetchTime = Date.now();
             ourChainDisplay = lastOurChain ? { timeout: lastOurChain.timeout, cooldown: lastOurChain.cooldown } : { timeout: 0, cooldown: 0 };
-            enemyChainDisplay = lastEnemyChain ? { timeout: lastEnemyChain.timeout, cooldown: lastEnemyChain.cooldown } : { timeout: 0, cooldown: 0 };
 
             renderOurTeam(ourMembers, ourFF, ourBS, null);
-            renderEnemy(enemyMembers, enemyFF, enemyBS, null);
+            renderEnemyPanels();
             renderChainBoxes();
             showWarDashboardChainsRow();
             document.getElementById('war-dashboard-enemy-section').style.display = 'block';
@@ -3475,7 +4116,7 @@
             fetchChainWatchData(false).catch(function () {});
             syncChainWatchFromDashboard();
         } catch (err) {
-            showError(err.message || 'Failed to load data.');
+            showError(warDashboardFriendlyError(err));
             console.error('War Dashboard:', err);
         } finally {
             showLoading(false);
@@ -3509,21 +4150,29 @@
         if (chainKey !== 'our' && chainKey !== 'enemy') return;
         const apiKey = getApiKey();
         if (!apiKey) return;
-        const factionId = chainKey === 'our' ? lastOurFactionId : lastEnemyFactionId;
-        if (!factionId) return;
         try {
-            const data = await fetchFactionChain(apiKey, factionId);
-            if (data) {
-                if (chainKey === 'our') {
+            if (chainKey === 'our') {
+                if (!lastOurFactionId) return;
+                const data = await fetchFactionChain(apiKey, lastOurFactionId);
+                if (data) {
                     lastOurChain = data;
                     ourChainDisplay = { timeout: data.timeout, cooldown: data.cooldown };
                     lastOurChainFetchTime = Date.now();
-                } else {
-                    lastEnemyChain = data;
-                    enemyChainDisplay = { timeout: data.timeout, cooldown: data.cooldown };
-                    lastEnemyChainFetchTime = Date.now();
                 }
+            } else {
+                await Promise.all(enemyFactionStates.map(async function (enemy) {
+                    const data = await fetchFactionChain(apiKey, enemy.id).catch(() => null);
+                    if (!data) return;
+                    enemy.chain = data;
+                    enemy.chainDisplay = { timeout: data.timeout, cooldown: data.cooldown };
+                    enemy.chainFetchTime = Date.now();
+                }));
+                syncPrimaryEnemyFromStates();
+            }
+            if (chainKey === 'our' || enemyFactionStates.length) {
                 renderChainBoxes();
+                renderEnemyPanels();
+                if (isOurTeamExpanded()) renderOurTeam(lastOurMembers, lastOurFF, lastOurBS, null);
             }
         } catch (e) {
             console.warn('War Dashboard refresh chain on turn on:', e);
@@ -3537,8 +4186,8 @@
             showError('Please enter your API key in the sidebar.');
             return;
         }
-        if (!lastEnemyFactionId || !lastOurFactionId) {
-            showError('Load the dashboard first (Apply or Use current ranked war), then refresh battle stats.');
+        if (!enemyFactionStates.length || !lastOurFactionId) {
+            showError('Load the dashboard first (Add enemy or Add current ranked war), then refresh battle stats.');
             return;
         }
         const btn = document.getElementById('war-dashboard-refresh-battle-stats');
@@ -3547,23 +4196,27 @@
         showError('');
         try {
             const ourIds = lastOurMembers.map(m => String(m.id));
-            const enemyIds = lastEnemyMembers.map(m => String(m.id));
-            const [ourData, enemyData] = await Promise.all([
+            const [ourData, enemyDatas] = await Promise.all([
                 ourIds.length ? fetchFFForMembers(apiKey, ourIds) : Promise.resolve({ ff: {}, bs: {} }),
-                enemyIds.length ? fetchFFForMembers(apiKey, enemyIds) : Promise.resolve({ ff: {}, bs: {} })
+                Promise.all(enemyFactionStates.map(function (enemy) {
+                    const ids = (enemy.members || []).map(m => String(m.id));
+                    return ids.length ? fetchFFForMembers(apiKey, ids) : Promise.resolve({ ff: {}, bs: {} });
+                }))
             ]);
             const ourFF = ourData.ff || {};
             const ourBS = ourData.bs || {};
-            const enemyFF = enemyData.ff || {};
-            const enemyBS = enemyData.bs || {};
             setFFCache(lastOurFactionId, { ff: ourFF, bs: ourBS });
-            setFFCache(lastEnemyFactionId, { ff: enemyFF, bs: enemyBS });
+            enemyFactionStates.forEach(function (enemy, index) {
+                const enemyData = enemyDatas[index] || {};
+                enemy.ff = enemyData.ff || {};
+                enemy.bs = enemyData.bs || {};
+                setFFCache(enemy.id, { ff: enemy.ff, bs: enemy.bs });
+            });
             lastOurFF = ourFF;
             lastOurBS = ourBS;
-            lastEnemyFF = enemyFF;
-            lastEnemyBS = enemyBS;
+            syncPrimaryEnemyFromStates();
             renderOurTeam(lastOurMembers, lastOurFF, lastOurBS, null);
-            renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
+            renderEnemyPanels();
         } catch (e) {
             showError(e.message || 'Failed to refresh battle stats.');
             console.warn('War Dashboard refresh battle stats:', e);
@@ -3577,7 +4230,7 @@
     async function refreshStatusOnly() {
         const page = (window.location.hash || '').replace('#', '').split('/')[0];
         if (page !== 'war-dashboard') return;
-        if (!lastEnemyFactionId) return;
+        if (!enemyFactionStates.length) return;
         const apiKey = getApiKey();
         if (!apiKey) return;
 
@@ -3590,28 +4243,42 @@
                     return Promise.resolve(lastOurChain);
                 return lastOurFactionId ? fetchFactionChain(apiKey, lastOurFactionId).then((data) => { lastOurChainFetchTime = Date.now(); return data; }).catch(() => lastOurChain) : Promise.resolve(lastOurChain);
             })();
-            const enemyChainPromise = (() => {
-                if (!getTrackEnemyChain()) return Promise.resolve(lastEnemyChain);
-                if (isChainAtZero(lastEnemyChain) && lastEnemyChainFetchTime && (now - lastEnemyChainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
-                    return Promise.resolve(lastEnemyChain);
-                return fetchFactionChain(apiKey, lastEnemyFactionId).then((data) => { lastEnemyChainFetchTime = Date.now(); return data; }).catch(() => lastEnemyChain);
-            })();
+            const sharedAttacksPromise = lastOurFactionId
+                ? fetchRecentIncomingAttackers(apiKey, lastOurFactionId, enemyFactionStates[0].id).catch(() => null)
+                : Promise.resolve(null);
+            const enemyRefreshesPromise = Promise.all(enemyFactionStates.map(async function (enemy) {
+                const membersPromise = fetchFactionMembers(apiKey, enemy.id).catch(() => enemy.members || []);
+                const chainPromise = (() => {
+                    if (!getTrackEnemyChain()) return Promise.resolve(enemy.chain);
+                    if (isChainAtZero(enemy.chain) && enemy.chainFetchTime && (now - enemy.chainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
+                        return Promise.resolve(enemy.chain);
+                    return fetchFactionChain(apiKey, enemy.id).then((data) => {
+                        enemy.chainFetchTime = Date.now();
+                        return data;
+                    }).catch(() => enemy.chain);
+                })();
+                await sharedAttacksPromise;
+                const retaliationTargetIds = await fetchRecentIncomingAttackers(apiKey, lastOurFactionId, enemy.id).catch(() => enemy.retaliationTargetIds || new Set());
+                const [members, chain] = await Promise.all([membersPromise, chainPromise]);
+                enemy.members = members;
+                enemy.retaliationTargetIds = retaliationTargetIds;
+                if (chain) {
+                    enemy.chain = chain;
+                    enemy.chainDisplay = { timeout: chain.timeout, cooldown: chain.cooldown };
+                }
+                return enemy;
+            }));
 
-            const [enemyMembers, ourChainData, enemyChainData] = await Promise.all([
-                fetchFactionMembers(apiKey, lastEnemyFactionId).catch(() => lastEnemyMembers),
+            const [ourChainData] = await Promise.all([
                 ourChainPromise,
-                enemyChainPromise
+                enemyRefreshesPromise
             ]);
-            lastEnemyMembers = enemyMembers;
             if (ourChainData) {
                 lastOurChain = ourChainData;
                 ourChainDisplay = { timeout: ourChainData.timeout, cooldown: ourChainData.cooldown };
             }
-            if (enemyChainData) {
-                lastEnemyChain = enemyChainData;
-                enemyChainDisplay = { timeout: enemyChainData.timeout, cooldown: enemyChainData.cooldown };
-            }
-            renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
+            syncPrimaryEnemyFromStates();
+            renderEnemyPanels();
             renderChainBoxes();
             syncChainWatchFromDashboard();
 
@@ -3626,11 +4293,11 @@
     }
 
     function getRefreshIntervalSec() {
-        return Math.max(5, Math.min(300, parseInt(document.getElementById('war-dashboard-refresh-interval')?.value || '15', 10)));
+        return Math.max(30, Math.min(300, parseInt(document.getElementById('war-dashboard-refresh-interval')?.value || '30', 10)));
     }
 
     function getChainRefreshIntervalSec() {
-        return Math.max(10, Math.min(300, parseInt(document.getElementById('war-dashboard-chain-refresh-interval')?.value || '30', 10)));
+        return Math.max(30, Math.min(300, parseInt(document.getElementById('war-dashboard-chain-refresh-interval')?.value || '30', 10)));
     }
 
     /** Fetch chain data only (our and/or enemy when tracking). Uses chain refresh interval, independent of main refresh. */
@@ -3646,23 +4313,31 @@
                 return Promise.resolve(lastOurChain);
             return fetchFactionChain(apiKey, lastOurFactionId).then((data) => { lastOurChainFetchTime = Date.now(); return data; }).catch(() => lastOurChain);
         })();
-        const enemyPromise = (() => {
-            if (!getTrackEnemyChain() || !lastEnemyFactionId) return Promise.resolve(lastEnemyChain);
-            if (isChainAtZero(lastEnemyChain) && lastEnemyChainFetchTime && (now - lastEnemyChainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
-                return Promise.resolve(lastEnemyChain);
-            return fetchFactionChain(apiKey, lastEnemyFactionId).then((data) => { lastEnemyChainFetchTime = Date.now(); return data; }).catch(() => lastEnemyChain);
-        })();
+        const enemyPromise = Promise.all(enemyFactionStates.map(function (enemy) {
+            if (!getTrackEnemyChain()) return Promise.resolve(enemy.chain);
+            if (isChainAtZero(enemy.chain) && enemy.chainFetchTime && (now - enemy.chainFetchTime < CHAIN_AT_ZERO_THROTTLE_MS))
+                return Promise.resolve(enemy.chain);
+            return fetchFactionChain(apiKey, enemy.id).then((data) => {
+                enemy.chainFetchTime = Date.now();
+                return data;
+            }).catch(() => enemy.chain);
+        }));
         try {
-            const [ourChainData, enemyChainData] = await Promise.all([ourPromise, enemyPromise]);
+            const [ourChainData, enemyChainDataList] = await Promise.all([ourPromise, enemyPromise]);
             if (ourChainData) {
                 lastOurChain = ourChainData;
                 ourChainDisplay = { timeout: ourChainData.timeout, cooldown: ourChainData.cooldown };
             }
-            if (enemyChainData) {
-                lastEnemyChain = enemyChainData;
-                enemyChainDisplay = { timeout: enemyChainData.timeout, cooldown: enemyChainData.cooldown };
-            }
+            enemyFactionStates.forEach(function (enemy, index) {
+                const enemyChainData = enemyChainDataList[index];
+                if (!enemyChainData) return;
+                enemy.chain = enemyChainData;
+                enemy.chainDisplay = { timeout: enemyChainData.timeout, cooldown: enemyChainData.cooldown };
+            });
+            syncPrimaryEnemyFromStates();
             renderChainBoxes();
+            renderEnemyPanels();
+            if (isOurTeamExpanded()) renderOurTeam(lastOurMembers, lastOurFF, lastOurBS, null);
             syncChainWatchFromDashboard();
         } catch (e) {
             console.warn('War Dashboard chain refresh:', e);
@@ -3697,15 +4372,79 @@
         }
     }
 
-    function updateCountdownDisplay() {
-        const el = document.getElementById('war-dashboard-refresh-countdown');
-        if (!el) return;
-        if (nextRefreshAt == null) {
-            el.textContent = 'Next refresh in —s';
-            return;
+    function stopAllWarDashboardTimers() {
+        stopRefreshTimer();
+        stopChainTick();
+        stopChainRefreshTimer();
+        if (activityTrackerIntervalId) {
+            clearInterval(activityTrackerIntervalId);
+            activityTrackerIntervalId = null;
         }
-        const secLeft = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
-        el.textContent = secLeft > 0 ? `Next refresh in ${secLeft}s` : 'Refreshing…';
+        if (activityTrackerCountdownIntervalId) {
+            clearInterval(activityTrackerCountdownIntervalId);
+            activityTrackerCountdownIntervalId = null;
+        }
+        if (window._warDashboardActivityCloudRefreshId) {
+            clearInterval(window._warDashboardActivityCloudRefreshId);
+            window._warDashboardActivityCloudRefreshId = null;
+        }
+        if (window._warDashboardChainWatchPollId) {
+            clearInterval(window._warDashboardChainWatchPollId);
+            window._warDashboardChainWatchPollId = null;
+        }
+        if (window._warDashboardActivityStartupTimer) {
+            clearTimeout(window._warDashboardActivityStartupTimer);
+            window._warDashboardActivityStartupTimer = null;
+        }
+    }
+
+    function startWarDashboardTimers() {
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        startRefreshTimer();
+        startChainTick();
+        startChainRefreshTimer();
+        if (!activityTrackerIntervalId) {
+            activityTrackerIntervalId = setInterval(runActivityTrackerTick, ACTIVITY_INTERVAL_MS);
+        }
+        if (!activityTrackerCountdownIntervalId) {
+            activityTrackerCountdownIntervalId = setInterval(updateActivityCountdown, 1000);
+            updateActivityCountdown();
+        }
+        if (!window._warDashboardActivityCloudRefreshId) {
+            window._warDashboardActivityCloudRefreshId = setInterval(runActivityCloudRefreshTick, ACTIVITY_FIRESTORE_REFRESH_MS);
+        }
+        if (!window._warDashboardChainWatchPollId) {
+            window._warDashboardChainWatchPollId = setInterval(function () {
+                const p = (window.location.hash || '').replace('#', '').split('/')[0];
+                if (p !== 'war-dashboard' || !lastOurFactionId) return;
+                fetchChainWatchData(false).catch(function () {});
+            }, CHAIN_WATCH_POLL_MS);
+        }
+        if (!window._warDashboardActivityStartupTimer) {
+            nextActivitySampleAt = Date.now() + 5000;
+            window._warDashboardActivityStartupTimer = setTimeout(function () {
+                window._warDashboardActivityStartupTimer = null;
+                runActivityTrackerTick();
+            }, 5000);
+        }
+    }
+
+    window._warDashboardStopTimers = stopAllWarDashboardTimers;
+
+    function updateCountdownDisplay() {
+        const els = Array.from(document.querySelectorAll('[data-war-dashboard-refresh-countdown]'));
+        const fallback = document.getElementById('war-dashboard-refresh-countdown');
+        if (!els.length && fallback) els.push(fallback);
+        if (!els.length) return;
+        let text = '';
+        if (nextRefreshAt == null) {
+            text = 'Next refresh in —s';
+        } else {
+            const secLeft = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
+            text = secLeft > 0 ? `Next refresh in ${secLeft}s` : 'Refreshing…';
+        }
+        els.forEach(el => { el.textContent = text; });
     }
 
     function scheduleNextRefresh() {
@@ -3715,9 +4454,10 @@
         if (page !== 'war-dashboard') return;
         const sec = getRefreshIntervalSec();
         nextRefreshAt = Date.now() + sec * 1000;
-        refreshTimer = setTimeout(() => {
-            refreshStatusOnly();
-            syncActivityTrackerWithCurrentWar().then(() => updateActivityTrackerUI()).catch(() => {});
+        refreshTimer = setTimeout(async () => {
+            refreshTimer = null;
+            await refreshStatusOnly();
+            await syncActivityTrackerWithCurrentWar().then(() => updateActivityTrackerUI()).catch(() => {});
             scheduleNextRefresh();
         }, sec * 1000);
         if (!countdownTick) {
@@ -3800,25 +4540,19 @@
 
     /** Clear enemy tracking only (does not affect Activity Tracker). */
     function clearEnemyTracking() {
-        lastEnemyFactionId = null;
-        lastEnemyName = null;
-        lastEnemyMembers = [];
-        lastEnemyFF = {};
-        lastEnemyBS = {};
-        lastEnemyChain = null;
-        lastEnemyChainFetchTime = 0;
-        enemyChainDisplay = { timeout: 0, cooldown: 0 };
-        try { localStorage.removeItem(STORAGE_KEYS.enemyFactionId); } catch (e) { /* ignore */ }
+        enemyFactionStates = [];
+        syncPrimaryEnemyFromStates();
+        try {
+            localStorage.removeItem(STORAGE_KEYS.enemyFactionIds);
+            localStorage.removeItem(STORAGE_KEYS.enemyFactionId);
+        } catch (e) { /* ignore */ }
         const idInput = document.getElementById('war-dashboard-enemy-faction-id');
         if (idInput) idInput.value = '';
-        const labelEl = document.getElementById('war-dashboard-enemy-label');
-        if (labelEl) labelEl.textContent = '';
-        const summaryEl = document.getElementById('war-dashboard-enemy-picker-summary');
-        if (summaryEl) summaryEl.textContent = '';
-        renderEnemy([], {}, {}, null);
+        updateWarDashboardEnemyLabels();
+        renderEnemyPanels();
         renderChainBoxes();
         document.getElementById('war-dashboard-enemy-section').style.display = 'none';
-        showError('Enter an enemy faction ID or click "Use current ranked war" to compare.');
+        showError('Enter an enemy faction ID or click "Add current ranked war" to compare.');
     }
 
     function setRefreshSectionMinimised(minimised) {
@@ -3853,18 +4587,148 @@
         }
     }
 
+    function openWarDashboardCommandModal(modalId) {
+        const overlay = document.getElementById(modalId);
+        if (overlay) {
+            overlay.style.display = 'flex';
+            overlay.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    function closeWarDashboardCommandModal(modalId) {
+        const overlay = document.getElementById(modalId);
+        if (overlay) {
+            overlay.style.display = 'none';
+            overlay.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    function openWarDashboardEnemyModal() {
+        openWarDashboardCommandModal('war-dashboard-enemy-modal');
+        const input = document.getElementById('war-dashboard-enemy-faction-id');
+        if (input) input.focus();
+    }
+
+    function closeWarDashboardEnemyModal() {
+        closeWarDashboardCommandModal('war-dashboard-enemy-modal');
+    }
+
+    function openWarDashboardActivityTrackerModal() {
+        if (!hasWarDashboardVip2Access()) {
+            showWarDashboardVip2GateMessage('Activity Tracker');
+            return;
+        }
+        openWarDashboardCommandModal('war-dashboard-activity-tracker-modal');
+        updateActivityTrackerUI();
+        const factionId = getActivityTrackerFactionIdFromInputs();
+        if (factionId) runActivityTrackerImmediatePull(factionId);
+    }
+
+    function closeWarDashboardActivityTrackerModal() {
+        closeWarDashboardCommandModal('war-dashboard-activity-tracker-modal');
+    }
+
+    function hasWarDashboardVip2Access() {
+        return Number(window.currentVipLevel || 0) >= WAR_DASHBOARD_RIBBON_VIP_REQUIRED;
+    }
+
+    function showWarDashboardVip2GateMessage(featureName) {
+        if (typeof window.openVipProgramInfoModal === 'function') {
+            window.openVipProgramInfoModal();
+        } else {
+            alert((featureName || 'This feature') + ' requires VIP 2.');
+        }
+    }
+
+    function setWarDashboardVip2CommandState(button, unlocked) {
+        if (!button) return;
+        button.classList.toggle('war-dashboard-command-btn--vip-locked', !unlocked);
+        button.setAttribute('aria-disabled', unlocked ? 'false' : 'true');
+        if (unlocked) {
+            button.removeAttribute('title');
+        } else {
+            button.setAttribute('title', 'Requires VIP 2. Open How VIP works for details.');
+        }
+    }
+
+    function applyWarDashboardVip2RibbonGating() {
+        const unlocked = hasWarDashboardVip2Access();
+        setWarDashboardVip2CommandState(document.getElementById('war-dashboard-activity-tracker-command'), unlocked);
+        setWarDashboardVip2CommandState(document.getElementById('war-dashboard-chain-watch-command'), unlocked);
+
+        const activitySummary = document.getElementById('war-dashboard-activity-tracker-summary');
+        if (activitySummary) activitySummary.textContent = unlocked ? 'Manage tracked factions' : 'VIP 2 required';
+
+        if (!unlocked) {
+            const chainSummary = document.getElementById('war-dashboard-chain-watch-summary');
+            if (chainSummary) chainSummary.textContent = 'VIP 2 required';
+        } else {
+            updateChainWatchBarVisibility();
+        }
+    }
+
+    function openWarDashboardChainWatchCommandModal() {
+        if (!hasWarDashboardVip2Access()) {
+            showWarDashboardVip2GateMessage('Chain Watch');
+            return;
+        }
+        updateChainWatchBarVisibility();
+        openWarDashboardCommandModal('war-dashboard-chain-watch-command-modal');
+    }
+
+    function closeWarDashboardChainWatchCommandModal() {
+        closeWarDashboardCommandModal('war-dashboard-chain-watch-command-modal');
+    }
+
+    function wireWarDashboardCommandModal(modalId, closeId, closeFn) {
+        const modal = document.getElementById(modalId);
+        if (!modal || modal._warDashboardCommandModalWired) return;
+        modal._warDashboardCommandModalWired = true;
+        document.getElementById(closeId)?.addEventListener('click', closeFn);
+        modal.addEventListener('click', function (e) {
+            if (e.target.id === modalId) closeFn();
+        });
+    }
+
+    function wireWarDashboardCommandRibbon() {
+        const container = document.getElementById('war-dashboard-tool-container');
+        if (!container || container._warDashboardCommandRibbonWired) return;
+        container._warDashboardCommandRibbonWired = true;
+        container.addEventListener('click', function (e) {
+            const button = e.target && e.target.closest
+                ? e.target.closest('#war-dashboard-enemy-command, #war-dashboard-activity-tracker-command, #war-dashboard-chain-watch-command')
+                : null;
+            if (!button || !container.contains(button)) return;
+            e.preventDefault();
+            if (button.matches('[data-war-dashboard-vip2-command]') && !hasWarDashboardVip2Access()) {
+                showWarDashboardVip2GateMessage(button.id === 'war-dashboard-chain-watch-command' ? 'Chain Watch' : 'Activity Tracker');
+                return;
+            }
+            if (button.id === 'war-dashboard-enemy-command') openWarDashboardEnemyModal();
+            else if (button.id === 'war-dashboard-activity-tracker-command') openWarDashboardActivityTrackerModal();
+            else if (button.id === 'war-dashboard-chain-watch-command') openWarDashboardChainWatchCommandModal();
+        });
+    }
+
     /** Run one 5-min tick: for each enabled tracked faction (with lastVisit within 2 days), fetch members and append sample. */
     async function runActivityTrackerTick() {
-        nextActivitySampleAt = Date.now() + ACTIVITY_INTERVAL_MS;
         const page = (window.location.hash || '').replace('#', '').split('/')[0];
         if (page !== 'war-dashboard') return;
         const apiKey = getApiKey();
         if (!apiKey) return;
         const config = getActivityConfig();
+        const enabledTracked = config.tracked.filter(function (t) {
+            return t && t.enabled && !isActivityFactionLocallyDisabled(t.factionId);
+        });
+        if (!enabledTracked.length) {
+            nextActivitySampleAt = 0;
+            updateActivityCountdown();
+            return;
+        }
+        nextActivitySampleAt = Date.now() + ACTIVITY_INTERVAL_MS;
         const lastVisit = getActivityLastVisit();
         if (lastVisit === 0 || (Date.now() - lastVisit) > TWO_DAYS_MS) return;
-        for (const t of config.tracked) {
-            if (!t.enabled) continue;
+        for (const t of enabledTracked) {
             try {
                 const members = await fetchFactionMembers(apiKey, t.factionId);
                 const onlineIds = members
@@ -3894,8 +4758,12 @@
         const page = (window.location.hash || '').replace('#', '').split('/')[0];
         if (page !== 'war-dashboard') return;
         const remaining = nextActivitySampleAt > 0 ? nextActivitySampleAt - Date.now() : 0;
-        const text = remaining <= 0 ? 'Next sample soon…' : 'Next sample in ' + formatCountdown(remaining);
-        document.querySelectorAll('.war-dashboard-activity-next-sample').forEach(el => { el.textContent = text; });
+        const activeText = remaining <= 0 ? 'Next sample soon…' : 'Next sample in ' + formatCountdown(remaining);
+        document.querySelectorAll('.war-dashboard-activity-next-sample').forEach(function (el) {
+            const block = el.closest('.war-dashboard-activity-faction-block');
+            const fid = block ? block.getAttribute('data-faction-id') : '';
+            el.textContent = fid && !isActivityFactionEnabled(fid) ? 'Paused' : activeText;
+        });
     }
 
     /** Aggregate samples by hour (TCT = UTC). Returns { labels: ['00:00', ...], values: [...], countByHour: [...] }. */
@@ -4039,7 +4907,8 @@
         const membersMap = {};
         (activityData.members || []).forEach(m => { membersMap[String(m.id)] = m; });
         const cached = getFFCache(factionId);
-        const bsMap = cached ? (cached.bs || {}) : (factionId === lastEnemyFactionId ? lastEnemyBS : {});
+        const enemyState = enemyFactionStates.find(enemy => String(enemy.id) === String(factionId));
+        const bsMap = cached ? (cached.bs || {}) : (enemyState ? enemyState.bs || {} : {});
         const rows = ids.map(id => {
             const m = membersMap[id];
             const name = m ? (m.name || id) : id;
@@ -4263,8 +5132,9 @@
         if (!tbody) return;
         const data = getActivityData(factionId);
         const cached = getFFCache(factionId);
-        const ffMap = cached ? (cached.ff || {}) : (factionId === lastEnemyFactionId ? lastEnemyFF : {});
-        const bsMap = cached ? (cached.bs || {}) : (factionId === lastEnemyFactionId ? lastEnemyBS : {});
+        const enemyState = enemyFactionStates.find(enemy => String(enemy.id) === String(factionId));
+        const ffMap = cached ? (cached.ff || {}) : (enemyState ? enemyState.ff || {} : {});
+        const bsMap = cached ? (cached.bs || {}) : (enemyState ? enemyState.bs || {} : {});
         const sampleCounts = getPlayerSampleCounts(factionId);
         const hoursTracked = getHoursTracked(factionId);
         const members = data.members && data.members.length ? data.members : [];
@@ -4370,7 +5240,7 @@
                         <h3 style="color: var(--accent-color); font-size: 14px; margin: 0 0 8px 0;">Players and active times (TCT)</h3>
                         <div class="table-scroll-wrapper" style="overflow-x: auto;">
                             <table id="war-dashboard-activity-tracker-table-${escapeHtml(fid)}" class="war-dashboard-table war-dashboard-activity-tracker-sortable-table">
-                                <thead><tr><th class="war-dashboard-activity-tracker-sortable" data-column="member" scope="col">${window.toolsMemberColumnHeaderWrap('<span>Member<span class="war-dashboard-activity-tracker-sort-arrow"></span></span>', { align: 'flex-start' })}</th><th class="war-dashboard-activity-tracker-sortable" data-column="level" scope="col">Level<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="stats" scope="col">Est. stats<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="hoursActive" scope="col">Hours active (<span class="war-dashboard-activity-hours-tracked" data-faction-id="${escapeHtml(fid)}">—</span> tracked)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="activeBetween" scope="col">Peak hours (TCT, top 3)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th></tr></thead>
+                                <thead><tr><th class="war-dashboard-activity-tracker-sortable" data-column="member" scope="col">${warDashboardMemberHeaderHtml('<span>Member<span class="war-dashboard-activity-tracker-sort-arrow"></span></span>', { align: 'flex-start' })}</th><th class="war-dashboard-activity-tracker-sortable" data-column="level" scope="col">Level<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="stats" scope="col">Est. stats<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="hoursActive" scope="col">Hours active (<span class="war-dashboard-activity-hours-tracked" data-faction-id="${escapeHtml(fid)}">—</span> tracked)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th><th class="war-dashboard-activity-tracker-sortable" data-column="activeBetween" scope="col">Peak hours (TCT, top 3)<span class="war-dashboard-activity-tracker-sort-arrow"></span></th></tr></thead>
                                 <tbody></tbody>
                             </table>
                         </div>
@@ -4393,11 +5263,13 @@
                     renderActivityTrackerChart(fid);
                     renderActivityTrackerTable(fid);
                     updateActivityCloudStatusUI(fid);
-                    refreshAllTrackedActivityFromCloud().then(function () {
-                        updateActivityCloudStatusUI(fid);
-                        renderActivityTrackerChart(fid);
-                        renderActivityTrackerTable(fid);
-                    }).catch(function () {});
+                    if (isActivityFactionEnabled(fid)) {
+                        refreshAllTrackedActivityFromCloud({ factionIds: [fid] }).then(function () {
+                            updateActivityCloudStatusUI(fid);
+                            renderActivityTrackerChart(fid);
+                            renderActivityTrackerTable(fid);
+                        }).catch(function () {});
+                    }
                     await ensureActivityTrackerBattleStats(fid);
                 }
             });
@@ -4405,14 +5277,16 @@
             const enabledCb = block.querySelector('.war-dashboard-activity-faction-enabled');
             enabledCb.addEventListener('change', () => {
                 t.enabled = enabledCb.checked;
-                if (!t.enabled) t.disabledAt = Date.now();
-                else t.disabledAt = null;
+                if (!t.enabled) {
+                    t.disabledAt = Date.now();
+                    setActivityFactionLocallyDisabled(fid, true);
+                } else {
+                    t.disabledAt = null;
+                    setActivityFactionLocallyDisabled(fid, false);
+                }
                 setActivityConfig(config);
                 if (t.enabled) {
-                    syncTrackedFactionToFirestore(fid, 'add').then(function (r) {
-                        updateActivityCloudStatusUI(fid);
-                        if (!r.ok && r.error) showError('Cloud activity (24/7): ' + r.error);
-                    });
+                    runActivityTrackerImmediatePull(fid);
                 } else {
                     syncTrackedFactionToFirestore(fid, 'remove').then(function () {
                         updateActivityCloudStatusUI(fid);
@@ -4448,6 +5322,7 @@
                 const factionLabel = t.factionName || 'Faction ' + fid;
                 if (!confirm('Remove ' + factionLabel + ' from the activity tracker? Its cached data will be cleared. You can add it again later by loading the faction.')) return;
                 config.tracked = config.tracked.filter(x => String(x.factionId) !== String(fid));
+                setActivityFactionLocallyDisabled(fid, true);
                 try { localStorage.removeItem(ACTIVITY_DATA_PREFIX + fid); } catch (e) { /* ignore */ }
                 clearActivityCloudIgnoreBeforeMs(fid);
                 delete activityDataCache[fid];
@@ -4472,15 +5347,17 @@
             updateActivityCloudStatusUI(t.factionId);
         });
 
-        refreshAllTrackedActivityFromCloud()
-            .then(function () {
-                config.tracked.forEach(function (t) {
-                    renderActivityTrackerChart(t.factionId);
-                    renderActivityTrackerTable(t.factionId);
-                    updateActivityCloudStatusUI(t.factionId);
-                });
-            })
-            .catch(function (e) { console.warn('Activity cloud merge batch', e); });
+        if (config.tracked.some(function (t) { return t.enabled; })) {
+            refreshAllTrackedActivityFromCloud()
+                .then(function () {
+                    config.tracked.forEach(function (t) {
+                        renderActivityTrackerChart(t.factionId);
+                        renderActivityTrackerTable(t.factionId);
+                        updateActivityCloudStatusUI(t.factionId);
+                    });
+                })
+                .catch(function (e) { console.warn('Activity cloud merge batch', e); });
+        }
 
         if (empty) empty.style.display = config.tracked.length ? 'none' : 'block';
 
@@ -4524,63 +5401,20 @@
         }
     }
 
-    /** Sync activity tracker with current ranked war: auto-add enemy when war is active, auto-disable when war ends. */
+    /**
+     * Previously auto-added / re-enabled the current ranked-war enemy on every login.
+     * That caused unwanted Firestore registrations and overrode trash/disable.
+     * Activity tracking is opt-in only (Load / toggle); this clears leftover auto-track markers.
+     */
     async function syncActivityTrackerWithCurrentWar() {
-        const apiKey = getApiKey();
-        if (!apiKey) return;
         try {
-            const user = await getUserProfile(apiKey);
-            const ourFactionId = user.factionId;
-            if (!ourFactionId) return;
-            const current = await getCurrentWarEnemy(apiKey, ourFactionId).catch(() => null);
-            const config = getActivityConfig();
-            const storedAutoId = localStorage.getItem(STORAGE_KEYS.activityAutoWarEnemyFactionId);
-
-            if (current) {
-                const enemyId = current.enemyFactionId;
-                const enemyName = current.enemyName || 'Faction ' + enemyId;
-                const existing = config.tracked.find(t => t.factionId === enemyId);
-                if (!existing) {
-                    if (!canAddActivityTrackedFaction(enemyId)) {
-                        console.warn('Activity tracker: at ' + MAX_ACTIVITY_TRACKED_FACTIONS + ' faction limit; skip auto-track of war enemy ' + enemyId);
-                        try { localStorage.setItem(STORAGE_KEYS.activityAutoWarEnemyFactionId, enemyId); } catch (e) { /* ignore */ }
-                        return;
-                    }
-                    config.tracked.push({
-                        factionId: enemyId,
-                        factionName: enemyName,
-                        enabled: true,
-                        disabledAt: null,
-                        startedAt: Date.now()
-                    });
-                    setActivityConfig(config);
-                    syncTrackedFactionToFirestore(enemyId, 'add');
-                    try { localStorage.setItem(STORAGE_KEYS.activityAutoWarEnemyFactionId, enemyId); } catch (e) { /* ignore */ }
-                    await runActivityTrackerImmediatePull(enemyId);
-                    return;
-                }
-                existing.enabled = true;
-                existing.disabledAt = null;
-                if (existing.factionName === 'Faction ' + enemyId) existing.factionName = enemyName;
-                setActivityConfig(config);
-                try { localStorage.setItem(STORAGE_KEYS.activityAutoWarEnemyFactionId, enemyId); } catch (e) { /* ignore */ }
-                updateActivityTrackerUI();
-            } else {
-                if (storedAutoId) {
-                    const t = config.tracked.find(x => x.factionId === storedAutoId);
-                    if (t) {
-                        t.enabled = false;
-                        t.disabledAt = Date.now();
-                        setActivityConfig(config);
-                        updateActivityTrackerUI();
-                    }
-                    syncTrackedFactionToFirestore(storedAutoId, 'remove');
-                    try { localStorage.removeItem(STORAGE_KEYS.activityAutoWarEnemyFactionId); } catch (e) { /* ignore */ }
-                }
+            const oldAutoId = localStorage.getItem(STORAGE_KEYS.activityAutoWarEnemyFactionId);
+            if (oldAutoId) {
+                setActivityFactionLocallyDisabled(oldAutoId, true);
+                syncTrackedFactionToFirestore(oldAutoId, 'remove').catch(function () {});
             }
-        } catch (e) {
-            console.warn('Activity tracker sync with current war:', e);
-        }
+            localStorage.removeItem(STORAGE_KEYS.activityAutoWarEnemyFactionId);
+        } catch (e) { /* ignore */ }
     }
 
     /** Ensure faction is in tracked list; add with default name if missing. Updates factionName when provided. Returns config or null if at cap. */
@@ -4598,10 +5432,11 @@
         config.tracked.push({
             factionId: factionId,
             factionName: factionName || 'Faction ' + factionId,
-            enabled: true,
-            disabledAt: null,
+            enabled: false,
+            disabledAt: Date.now(),
             startedAt: Date.now()
         });
+        setActivityFactionLocallyDisabled(factionId, true);
         setActivityConfig(config);
         return config;
     }
@@ -4632,11 +5467,18 @@
                     return a === 'online';
                 })
                 .map(m => String(m.id));
-            if (!ensureActivityTrackerFactionInConfig(factionId, factionName || undefined)) {
+            const ensuredConfig = ensureActivityTrackerFactionInConfig(factionId, factionName || undefined);
+            if (!ensuredConfig) {
                 showError(activityTrackedLimitMessage());
                 return;
             }
-            appendActivitySample(factionId, onlineIds, members);
+            const trackerRow = ensuredConfig.tracked.find(t => String(t.factionId) === String(factionId));
+            if (trackerRow && trackerRow.enabled) {
+                appendActivitySample(factionId, onlineIds, members);
+            } else {
+                const existing = getActivityData(factionId);
+                setActivityData(factionId, { samples: existing.samples || [], members: members });
+            }
             // Auto-fetch and cache battle stats (same as war dashboard) so table can show Est. stats
             const memberIds = members.map(m => String(m.id));
             if (memberIds.length > 0) {
@@ -4647,11 +5489,16 @@
                     console.warn('Activity tracker: could not fetch battle stats for faction', factionId, ffErr);
                 }
             }
-            const reg = await syncTrackedFactionToFirestore(factionId, 'add');
+            const trackerEnabled = !!(trackerRow && trackerRow.enabled);
+            const reg = trackerEnabled
+                ? await syncTrackedFactionToFirestore(factionId, 'add')
+                : { ok: true };
             updateActivityCloudStatusUI(factionId);
-            if (!reg.ok && reg.error) showError('Cloud activity (24/7): ' + reg.error + ' — this tab will still sample every 10 min while open.');
-            await refreshAllTrackedActivityFromCloud({ full: true });
-            updateActivityCloudStatusUI(factionId);
+            if (trackerEnabled) {
+                if (!reg.ok && reg.error) showError('Cloud activity (24/7): ' + reg.error + ' — this tab will still sample every 10 min while open.');
+                await refreshAllTrackedActivityFromCloud({ full: true, factionIds: [String(factionId)] });
+                updateActivityCloudStatusUI(factionId);
+            }
             updateActivityTrackerUI();
         } catch (e) {
             showError(e.message || 'Failed to load faction.');
@@ -4659,52 +5506,100 @@
     }
 
     function setActivityTrackerSectionExpanded(expanded) {
-        const body = document.getElementById('war-dashboard-activity-tracker-body');
-        const btn = document.getElementById('war-dashboard-activity-tracker-toggle');
-        const arrow = document.getElementById('war-dashboard-activity-tracker-arrow');
-        if (body) body.style.display = expanded ? 'block' : 'none';
-        if (btn) btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-        if (arrow) arrow.textContent = expanded ? '▼' : '▶';
-        try {
-            localStorage.setItem(STORAGE_KEYS.activityTrackerSectionExpanded, expanded ? '1' : '0');
-        } catch (e) { /* ignore */ }
         if (expanded) {
-            updateActivityTrackerUI();
-            const factionId = getActivityTrackerFactionIdFromInputs();
-            if (factionId) runActivityTrackerImmediatePull(factionId);
+            openWarDashboardActivityTrackerModal();
+        } else {
+            closeWarDashboardActivityTrackerModal();
         }
     }
 
+    function warDashboardMemberHeaderHtml(html, options) {
+        return typeof window.toolsMemberColumnHeaderWrap === 'function'
+            ? window.toolsMemberColumnHeaderWrap(html, options || { align: 'flex-start' })
+            : html;
+    }
+
     function warDashboardInjectMemberColumnHeaders() {
-        ['war-dashboard-enemy-table', 'war-dashboard-our-table'].forEach(function (tid) {
-            const th = document.querySelector('#' + tid + ' thead th[data-column="member"]');
+        const headers = Array.from(document.querySelectorAll('#war-dashboard-our-table thead th[data-column="member"], .war-dashboard-enemy-table thead th[data-column="member"]'));
+        headers.forEach(function (th) {
             if (!th || th.getAttribute('data-tools-member-header') === '1') return;
             th.setAttribute('data-tools-member-header', '1');
             const sortEl = th.querySelector('.war-dashboard-sort');
             const sortHtml = sortEl ? sortEl.outerHTML : '<span class="war-dashboard-sort"></span>';
-            th.innerHTML = window.toolsMemberColumnHeaderWrap('<span>Member ' + sortHtml + '</span>', { align: 'flex-start' });
+            th.innerHTML = warDashboardMemberHeaderHtml('<span>Member ' + sortHtml + '</span>', { align: 'flex-start' });
         });
     }
 
     function initWarDashboard() {
         if (window.logToolUsage) window.logToolUsage('war-dashboard');
 
-        warDashboardInjectMemberColumnHeaders();
+        if (typeof window._warDashboardStopTimers === 'function') {
+            window._warDashboardStopTimers();
+        }
+
+        if (!window._warDashboardUiWired) {
+            window._warDashboardUiWired = true;
+            wireWarDashboardUiOnce();
+        }
 
         loadSettings();
-        Promise.all(getActivityConfig().tracked.map(function (t) {
-            return syncTrackedFactionToFirestore(t.factionId, t.enabled ? 'add' : 'remove');
+        Promise.all(getActivityConfig().tracked.filter(function (t) {
+            return t && t.enabled && !isActivityFactionLocallyDisabled(t.factionId);
+        }).map(function (t) {
+            return syncTrackedFactionToFirestore(t.factionId, 'add');
         })).then(function () {
             updateAllActivityCloudStatusUI();
         });
 
         if (localStorage.getItem(STORAGE_KEYS.ffNoticeHidden) === '1') setFFNoticeVisible(false);
-        if (localStorage.getItem(STORAGE_KEYS.enemyPickerMinimised) === '1') setEnemyPickerMinimised(true);
-        if (localStorage.getItem(STORAGE_KEYS.refreshSectionMinimised) === '1') setRefreshSectionMinimised(true);
+
+        const autoRefreshCb = document.getElementById('war-dashboard-auto-refresh-enabled');
+        if (autoRefreshCb) autoRefreshCb.checked = getAutoRefreshEnabled();
+        if (!getAutoRefreshEnabled()) stopRefreshTimer();
+
+        // Faction activity tracker
+        updateActivityLastVisitAndCleanup();
+        const activitySection = document.getElementById('war-dashboard-activity-tracker');
+        if (activitySection) activitySection.style.display = 'block';
+        updateActivityTrackerUI();
+        syncActivityTrackerWithCurrentWar().then(() => updateActivityTrackerUI()).catch(() => {});
+
+        // Only run timer when on this page; stop when user navigates away
+        function onHashChange() {
+            const page = (window.location.hash || '').replace('#', '').split('/')[0];
+            if (page !== 'war-dashboard') {
+                stopAllWarDashboardTimers();
+            } else {
+                startWarDashboardTimers();
+            }
+        }
+        window.removeEventListener('hashchange', window._warDashboardHashChange);
+        window._warDashboardHashChange = onHashChange;
+        window.addEventListener('hashchange', onHashChange);
+
+        // Show chains row shell before runDashboard finishes; Chain Watch commands stay in the ribbon.
+        showWarDashboardChainsRow();
+        updateChainWatchBarVisibility();
+        runDashboard();
+        startWarDashboardTimers();
+    }
+
+    function wireWarDashboardUiOnce() {
+        wireWarDashboardCommandRibbon();
+        wireWarDashboardCommandModal('war-dashboard-enemy-modal', 'war-dashboard-enemy-modal-close', closeWarDashboardEnemyModal);
+        wireWarDashboardCommandModal('war-dashboard-activity-tracker-modal', 'war-dashboard-activity-tracker-modal-close', closeWarDashboardActivityTrackerModal);
+        wireWarDashboardCommandModal('war-dashboard-chain-watch-command-modal', 'war-dashboard-chain-watch-command-modal-close', closeWarDashboardChainWatchCommandModal);
+        applyWarDashboardVip2RibbonGating();
+        if (!window._warDashboardVipChangedListener) {
+            window._warDashboardVipChangedListener = true;
+            window.addEventListener('tornToolsVipChanged', applyWarDashboardVip2RibbonGating);
+        }
+        warDashboardInjectMemberColumnHeaders();
+
+        document.getElementById('war-dashboard-hide-ff-notice')?.addEventListener('click', () => setFFNoticeVisible(false));
 
         const autoRefreshCb = document.getElementById('war-dashboard-auto-refresh-enabled');
         if (autoRefreshCb) {
-            autoRefreshCb.checked = getAutoRefreshEnabled();
             autoRefreshCb.addEventListener('change', () => {
                 setAutoRefreshEnabled(autoRefreshCb.checked);
                 if (autoRefreshCb.checked) startRefreshTimer();
@@ -4712,17 +5607,6 @@
             });
         }
         document.getElementById('war-dashboard-auto-refresh-slider-wrap')?.addEventListener('click', (e) => e.stopPropagation());
-        if (!getAutoRefreshEnabled()) stopRefreshTimer();
-
-        document.getElementById('war-dashboard-hide-ff-notice')?.addEventListener('click', () => setFFNoticeVisible(false));
-        document.getElementById('war-dashboard-enemy-picker-toggle')?.addEventListener('click', () => {
-            const currently = localStorage.getItem(STORAGE_KEYS.enemyPickerMinimised) === '1';
-            setEnemyPickerMinimised(!currently);
-        });
-        document.getElementById('war-dashboard-refresh-picker-toggle')?.addEventListener('click', () => {
-            const currently = localStorage.getItem(STORAGE_KEYS.refreshSectionMinimised) === '1';
-            setRefreshSectionMinimised(!currently);
-        });
 
         document.getElementById('war-dashboard-settings-cog')?.addEventListener('click', openWarDashboardSettingsModal);
         document.getElementById('war-dashboard-settings-close')?.addEventListener('click', closeWarDashboardSettingsModal);
@@ -4824,13 +5708,6 @@
             if (e.target.id === 'war-dashboard-chain-watch-rewards-modal') closeChainWatchRewardsModal();
         });
 
-        if (window._warDashboardChainWatchPollId) clearInterval(window._warDashboardChainWatchPollId);
-        window._warDashboardChainWatchPollId = setInterval(function () {
-            const p = (window.location.hash || '').replace('#', '').split('/')[0];
-            if (p !== 'war-dashboard' || !lastOurFactionId) return;
-            fetchChainWatchData(false).catch(function () {});
-        }, 60 * 1000);
-
         document.getElementById('war-dashboard-activity-hour-modal-close')?.addEventListener('click', closeActivityHourModal);
         document.getElementById('war-dashboard-activity-hour-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'war-dashboard-activity-hour-modal') closeActivityHourModal();
@@ -4841,8 +5718,16 @@
         });
 
         document.getElementById('war-dashboard-apply-enemy')?.addEventListener('click', () => {
+            const idInput = document.getElementById('war-dashboard-enemy-faction-id');
+            const result = addStoredEnemyFactionId(idInput ? idInput.value : '');
+            if (!result.ok) {
+                showError(result.message);
+                return;
+            }
+            if (idInput) idInput.value = '';
             runDashboard();
             startRefreshTimer();
+            closeWarDashboardEnemyModal();
         });
 
         document.getElementById('war-dashboard-use-current-war')?.addEventListener('click', async () => {
@@ -4867,16 +5752,16 @@
                     return;
                 }
                 const idInput = document.getElementById('war-dashboard-enemy-faction-id');
-                if (idInput) idInput.value = current.enemyFactionId;
-                if (btn) {
-                    btn.textContent =
-                        current.kind === 'upcoming'
-                            ? `Use upcoming ranked war (vs ${current.enemyName})`
-                            : `Use current ranked war (vs ${current.enemyName})`;
+                if (idInput) idInput.value = '';
+                const result = addStoredEnemyFactionId(current.enemyFactionId);
+                if (!result.ok) {
+                    showError(result.message);
+                    return;
                 }
-                saveSettings();
+                if (btn) btn.textContent = 'Add current ranked war';
                 runDashboard();
                 startRefreshTimer();
+                closeWarDashboardEnemyModal();
             } catch (e) {
                 showError(e.message || 'Failed to load current war.');
             } finally {
@@ -4886,6 +5771,14 @@
 
         document.getElementById('war-dashboard-clear-enemy')?.addEventListener('click', () => {
             clearEnemyTracking();
+            closeWarDashboardEnemyModal();
+        });
+
+        document.getElementById('war-dashboard-enemy-list')?.addEventListener('click', function (e) {
+            const btn = e.target && e.target.closest ? e.target.closest('.war-dashboard-enemy-remove') : null;
+            if (!btn) return;
+            removeStoredEnemyFactionId(btn.getAttribute('data-faction-id'));
+            runDashboard();
         });
 
         // Our team collapsible toggle
@@ -4897,7 +5790,18 @@
         ['war-dashboard-filter-online', 'war-dashboard-filter-offline', 'war-dashboard-filter-idle', 'war-dashboard-filter-okay', 'war-dashboard-filter-hospital', 'war-dashboard-filter-abroad', 'war-dashboard-filter-recommended'].forEach(id => {
             document.getElementById(id)?.addEventListener('change', () => {
                 if (id === 'war-dashboard-filter-recommended') syncRecommendedButton();
-                renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
+                renderEnemyPanels();
+            });
+        });
+
+        ['war-dashboard-respect-warlord-enabled', 'war-dashboard-respect-warlord-percent'].forEach(id => {
+            document.getElementById(id)?.addEventListener('change', () => {
+                saveSettings();
+                renderEnemyPanels();
+            });
+            document.getElementById(id)?.addEventListener('input', () => {
+                saveSettings();
+                renderEnemyPanels();
             });
         });
 
@@ -4917,14 +5821,27 @@
         });
         syncRecommendedButton();
 
-        document.querySelectorAll('#war-dashboard-enemy-table th.war-dashboard-th-sort').forEach(th => {
-            th.addEventListener('click', () => {
-                const col = th.getAttribute('data-column');
-                if (!col) return;
-                enemySortDir = enemySortColumn === col ? (enemySortDir === 'asc' ? 'desc' : 'asc') : 'desc';
-                enemySortColumn = col;
-                renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
-            });
+        document.getElementById('war-dashboard-enemies-list')?.addEventListener('click', function (e) {
+            const toggle = e.target && e.target.closest ? e.target.closest('.war-dashboard-enemy-panel-toggle') : null;
+            if (toggle) {
+                const factionId = toggle.getAttribute('data-faction-id');
+                const enemy = enemyFactionStates.find(item => String(item.id) === String(factionId));
+                if (enemy) {
+                    enemy.expanded = enemy.expanded === false;
+                    renderEnemyPanels();
+                }
+                return;
+            }
+            const th = e.target && e.target.closest ? e.target.closest('th.war-dashboard-th-sort') : null;
+            if (!th) return;
+            const table = th.closest('table[data-faction-id]');
+            const factionId = table ? table.getAttribute('data-faction-id') : null;
+            const enemy = enemyFactionStates.find(item => String(item.id) === String(factionId));
+            const col = th.getAttribute('data-column');
+            if (!enemy || !col) return;
+            enemy.sortDir = enemy.sortColumn === col ? (enemy.sortDir === 'asc' ? 'desc' : 'asc') : 'desc';
+            enemy.sortColumn = col;
+            renderEnemyPanels();
         });
         document.querySelectorAll('#war-dashboard-our-table th.war-dashboard-th-sort').forEach(th => {
             th.addEventListener('click', () => {
@@ -4936,7 +5853,7 @@
             });
         });
 
-        document.getElementById('war-dashboard-enemy-table')?.addEventListener('input', (e) => {
+        document.getElementById('war-dashboard-enemies-list')?.addEventListener('input', (e) => {
             const input = e.target;
             if (!input.classList.contains('war-dashboard-note-input')) return;
             const playerId = input.getAttribute('data-player-id');
@@ -4965,20 +5882,6 @@
         document.getElementById('war-dashboard-ff-green')?.addEventListener('change', () => { updateRecommendedLabel(); runDashboard(); });
         document.getElementById('war-dashboard-ff-orange')?.addEventListener('change', () => runDashboard());
 
-        // Faction activity tracker
-        updateActivityLastVisitAndCleanup();
-        const activitySection = document.getElementById('war-dashboard-activity-tracker');
-        if (activitySection) activitySection.style.display = 'block';
-        setActivityTrackerSectionExpanded(localStorage.getItem(STORAGE_KEYS.activityTrackerSectionExpanded) === '1');
-        updateActivityTrackerUI();
-        syncActivityTrackerWithCurrentWar().then(() => updateActivityTrackerUI()).catch(() => {});
-
-        document.getElementById('war-dashboard-activity-tracker-toggle')?.addEventListener('click', () => {
-            const body = document.getElementById('war-dashboard-activity-tracker-body');
-            const expanded = body && body.style.display === 'block';
-            setActivityTrackerSectionExpanded(!expanded);
-        });
-
         document.getElementById('war-dashboard-activity-tracker-load')?.addEventListener('click', () => {
             const factionId = getActivityTrackerFactionIdFromInputs();
             if (!factionId) {
@@ -4987,74 +5890,6 @@
             }
             runActivityTrackerImmediatePull(factionId);
         });
-
-        if (activityTrackerIntervalId) clearInterval(activityTrackerIntervalId);
-        activityTrackerIntervalId = setInterval(runActivityTrackerTick, ACTIVITY_INTERVAL_MS);
-        nextActivitySampleAt = Date.now() + 5000;
-        setTimeout(runActivityTrackerTick, 5000);
-
-        if (activityTrackerCountdownIntervalId) clearInterval(activityTrackerCountdownIntervalId);
-        activityTrackerCountdownIntervalId = setInterval(updateActivityCountdown, 1000);
-        updateActivityCountdown();
-
-        if (window._warDashboardActivityCloudRefreshId) clearInterval(window._warDashboardActivityCloudRefreshId);
-        window._warDashboardActivityCloudRefreshId = setInterval(runActivityCloudRefreshTick, ACTIVITY_FIRESTORE_REFRESH_MS);
-
-        // Only run timer when on this page; stop when user navigates away
-        function onHashChange() {
-            const page = (window.location.hash || '').replace('#', '').split('/')[0];
-            if (page !== 'war-dashboard') {
-                stopRefreshTimer();
-                if (activityTrackerIntervalId) {
-                    clearInterval(activityTrackerIntervalId);
-                    activityTrackerIntervalId = null;
-                }
-                if (activityTrackerCountdownIntervalId) {
-                    clearInterval(activityTrackerCountdownIntervalId);
-                    activityTrackerCountdownIntervalId = null;
-                }
-                if (window._warDashboardActivityCloudRefreshId) {
-                    clearInterval(window._warDashboardActivityCloudRefreshId);
-                    window._warDashboardActivityCloudRefreshId = null;
-                }
-                if (window._warDashboardChainWatchPollId) {
-                    clearInterval(window._warDashboardChainWatchPollId);
-                    window._warDashboardChainWatchPollId = null;
-                }
-            } else {
-                startRefreshTimer();
-                startChainTick();
-                startChainRefreshTimer();
-                if (!activityTrackerIntervalId) {
-                    activityTrackerIntervalId = setInterval(runActivityTrackerTick, ACTIVITY_INTERVAL_MS);
-                }
-                if (!activityTrackerCountdownIntervalId) {
-                    activityTrackerCountdownIntervalId = setInterval(updateActivityCountdown, 1000);
-                    updateActivityCountdown();
-                }
-                if (!window._warDashboardActivityCloudRefreshId) {
-                    window._warDashboardActivityCloudRefreshId = setInterval(runActivityCloudRefreshTick, ACTIVITY_FIRESTORE_REFRESH_MS);
-                }
-                if (!window._warDashboardChainWatchPollId) {
-                    window._warDashboardChainWatchPollId = setInterval(function () {
-                        const p = (window.location.hash || '').replace('#', '').split('/')[0];
-                        if (p !== 'war-dashboard' || !lastOurFactionId) return;
-                        fetchChainWatchData(false).catch(function () {});
-                    }, CHAIN_WATCH_POLL_MS);
-                }
-            }
-        }
-        window.removeEventListener('hashchange', window._warDashboardHashChange);
-        window._warDashboardHashChange = onHashChange;
-        window.addEventListener('hashchange', onHashChange);
-
-        // Show chains row shell so Chain watch (under Our Chain) is visible before runDashboard finishes.
-        showWarDashboardChainsRow();
-        updateChainWatchBarVisibility();
-        runDashboard();
-        startRefreshTimer();
-        startChainTick();
-        startChainRefreshTimer();
     }
 
     window.initWarDashboard = initWarDashboard;
@@ -5063,7 +5898,7 @@
         window._warDashToolsMemberIdListener = true;
         window.addEventListener('toolsMemberIdDisplayChanged', function () {
             if (lastOurMembers && lastOurMembers.length) renderOurTeam(lastOurMembers, lastOurFF, lastOurBS, null);
-            if (lastEnemyMembers && lastEnemyMembers.length) renderEnemy(lastEnemyMembers, lastEnemyFF, lastEnemyBS, null);
+            if (enemyFactionStates && enemyFactionStates.length) renderEnemyPanels();
             try {
                 getActivityConfig().tracked.forEach(function (t) {
                     renderActivityTrackerTable(t.factionId);

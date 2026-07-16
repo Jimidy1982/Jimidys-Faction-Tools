@@ -14,7 +14,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-functions-compat.js"></script>
-    <script src="firebase-config.js?v=20260715b"></script>
+    <script src="firebase-config.js?v=20260715c"></script>
 </head>
 <body>
     <button class="mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle navigation menu">☰</button>
@@ -48,6 +48,7 @@
                                 Your key is stored only in your browser and is never sent to our servers. It is used only to request data from Torn and FFScouter.
                             </span>
                         </span>
+                        <button type="button" id="apiSettingsBtn" class="api-settings-btn" aria-label="Open API settings" title="API settings">API Settings</button>
                     </div>
                     <input type="text" id="globalApiKey" placeholder="16-character key" maxlength="16" pattern="[A-Za-z0-9]*" autocomplete="off" inputmode="text">
                 </li>
@@ -80,6 +81,45 @@
         </nav>
         <main id="app-content"></main>
     </div>
+    <div id="apiSettingsModal" class="app-modal-overlay api-settings-modal-overlay" aria-hidden="true" style="display: none;">
+        <div class="app-modal app-modal-api-settings" role="dialog" aria-labelledby="apiSettingsTitle">
+            <div class="app-modal-header">
+                <h2 id="apiSettingsTitle">API Settings</h2>
+                <button type="button" id="apiSettingsClose" class="app-modal-close" aria-label="Close">×</button>
+            </div>
+            <div class="app-modal-body api-settings-modal-body">
+                <p class="api-settings-intro">These settings are stored only in this browser. The Torn key is the same key used by the sidebar.</p>
+                <div class="api-settings-field">
+                    <label for="apiSettingsTornKey">Torn API Key</label>
+                    <input type="text" id="apiSettingsTornKey" placeholder="16-character key" maxlength="16" pattern="[A-Za-z0-9]*" autocomplete="off" inputmode="text">
+                    <p class="api-settings-help">Used for Torn API requests across the tools.</p>
+                </div>
+                <div class="api-settings-field">
+                    <label for="apiSettingsRateLimit">Torn API Call Rate</label>
+                    <div class="api-settings-inline-field">
+                        <input type="number" id="apiSettingsRateLimit" min="50" max="100" step="1">
+                        <span>calls per minute</span>
+                    </div>
+                    <p id="apiSettingsRateLimitHint" class="api-settings-help"></p>
+                </div>
+                <div class="api-settings-field">
+                    <label for="apiSettingsFfScouterKey">FFScouter API Key</label>
+                    <input type="text" id="apiSettingsFfScouterKey" placeholder="Optional FFScouter key override" autocomplete="off">
+                    <p class="api-settings-help">Used for FFScouter estimates. If blank, tools use your Torn key as before.</p>
+                </div>
+                <div class="api-settings-field">
+                    <label for="apiSettingsTornStatsKey">TornStats API Key</label>
+                    <input type="text" id="apiSettingsTornStatsKey" placeholder="Optional TornStats key" autocomplete="off">
+                    <p class="api-settings-help">Used for importing recent spy stats in tools such as Faction Battle Stats.</p>
+                </div>
+                <p id="apiSettingsStatus" class="api-settings-status" aria-live="polite"></p>
+                <div class="app-modal-actions">
+                    <button type="button" id="apiSettingsSave" class="fetch-button">Save settings</button>
+                    <button type="button" id="apiSettingsCancel" class="fetch-button secondary">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <footer class="page-footer">
         <p class="api-attribution">
             This tool uses the <a href="https://www.torn.com" target="_blank" rel="noopener noreferrer">Torn City</a> API. 
@@ -92,6 +132,6 @@
             Questions or feedback? <a href="#" id="contactProfileLink" target="_blank" rel="noopener noreferrer">Contact Jimidy on Torn</a>
         </p>
     </footer>
-    <script src="app.js?v=20260715b"></script>
+    <script src="app.js?v=20260715c"></script>
 </body>
 </html> 
