@@ -638,6 +638,11 @@
         };
     }
 
+    function mprProgressDetailsLooksLikeRateLimitWait(text) {
+        const t = String(text || '').toLowerCase();
+        return t.includes('rate limit') || t.includes('waiting for api') || t.includes('resuming in');
+    }
+
     function mprChecklistEnsure() {
         const ul = document.getElementById('mprChecklist');
         if (!ul) return null;
@@ -1859,8 +1864,8 @@
                 progressDetails: progressEls.progressDetails,
                 progressPercentage: progressEls.progressPercentage,
                 progressFill: progressEls.progressFill,
-                progressSegmentStart: 0,
-                progressSegmentWidth: 0.85,
+                progressSegmentStart: 0.72,
+                progressSegmentWidth: 0.23,
                 progressDetailsPrefix: 'Activity (timeplayed): ',
                 onSuccess,
                 onError: (err, req) => console.warn('[MPR] timeplayed', req && req.playerId, err)
@@ -1881,8 +1886,8 @@
                     progressDetails: progressEls.progressDetails,
                     progressPercentage: progressEls.progressPercentage,
                     progressFill: progressEls.progressFill,
-                    progressSegmentStart: 0.85,
-                    progressSegmentWidth: 0.15,
+                    progressSegmentStart: 0.95,
+                    progressSegmentWidth: 0.05,
                     progressDetailsPrefix: 'Activity retry: ',
                     onSuccess,
                     onError: (err, req) => console.warn('[MPR] timeplayed retry', req && req.playerId, err)
@@ -2166,16 +2171,28 @@
     }
 
     async function mprEnsureWarChainHitsScript() {
-        if (typeof window.factionToolsFetchWarChainHitsForRange === 'function') return;
-        const id = 'mpr-war-chain-hits-script';
-        if (!document.getElementById(id)) {
-            const s = document.createElement('script');
-            s.id = id;
-            s.src = './tools/member-performance-range/mpr-war-chain-hits.js';
-            document.body.appendChild(s);
+        const build = window.APP_BUILD_VERSION || String(Date.now());
+        if (
+            typeof window.factionToolsFetchWarChainHitsForRange === 'function' &&
+            window.__mprWarChainHitsBuild === build
+        ) {
+            return;
         }
+        const id = 'mpr-war-chain-hits-script';
+        const existing = document.getElementById(id);
+        if (existing) existing.remove();
+        window.factionToolsFetchWarChainHitsForRange = undefined;
+        const s = document.createElement('script');
+        s.id = id;
+        s.src =
+            './tools/member-performance-range/mpr-war-chain-hits.js?v=' +
+            encodeURIComponent(build);
+        document.body.appendChild(s);
         for (let i = 0; i < 200; i++) {
-            if (typeof window.factionToolsFetchWarChainHitsForRange === 'function') return;
+            if (typeof window.factionToolsFetchWarChainHitsForRange === 'function') {
+                window.__mprWarChainHitsBuild = build;
+                return;
+            }
             await new Promise(r => setTimeout(r, 50));
         }
     }
@@ -2675,12 +2692,12 @@
             }
 
             mprChecklistSet('war', 'active');
-            setProg(60, 'War & chain hits…', '');
+            setProg(60, 'War & chain hits…', 'Fetching ranked wars and chain reports…');
             let warMeta = { ok: false, hitsById: {}, warnings: [], message: '' };
             try {
                 await mprEnsureWarChainHitsScript();
                 if (typeof window.factionToolsFetchWarChainHitsForRange === 'function') {
-                    warMeta = await window.factionToolsFetchWarChainHitsForRange(apiKey, fromTs, toTs);
+                    warMeta = await window.factionToolsFetchWarChainHitsForRange(apiKey, fromTs, toTs, progressEls);
                 } else {
                     warMeta.message = 'War/chain helper not available.';
                 }
@@ -2782,7 +2799,10 @@
                             row.activityHours = hoursVal;
                         }
                         const done = mprLastRows.filter(r => !r.activityPending).length;
-                        if (progressEls.progressDetails) {
+                        if (
+                            progressEls.progressDetails &&
+                            !mprProgressDetailsLooksLikeRateLimitWait(progressEls.progressDetails.textContent)
+                        ) {
                             progressEls.progressDetails.textContent = `Activity: ${done}/${mprLastRows.length} members (timeplayed ready)`;
                         }
                         mprRenderTable(mprLastRows);

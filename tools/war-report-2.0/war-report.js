@@ -496,6 +496,13 @@ function warReportPlayerRespectPointsTotal(player) {
     return (player.playerWarRespect || 0) + (player.playerOutsideRespect || 0);
 }
 
+/** Respect shown / sorted for payout UI — matches Include Outside Respect setting. */
+function warReportPlayerRespectPointsForPayout(player, includeOutsideRespect) {
+    const war = player.playerWarRespect || 0;
+    if (includeOutsideRespect) return war + (player.playerOutsideRespect || 0);
+    return war;
+}
+
 function warReportPlayerSupportHitsTotal(player) {
     return (player.warRetals || 0) + (player.warAssists || 0) + (player.overseasHits || 0);
 }
@@ -1762,10 +1769,13 @@ function initWarReport2() {
     const formatWarDate = (timestamp) => formatUnixAsTct(timestamp);
 
     // Helper function to determine war status
+    // Torn ranked wars use end === 0 while the war is still active (not unix epoch).
     const getWarStatus = (war) => {
         const now = Date.now() / 1000;
-        if (now < war.start) return 'Upcoming';
-        if (now > war.end) return 'Ended';
+        const start = Number(war.start) || 0;
+        const end = Number(war.end) || 0;
+        if (start > 0 && now < start) return 'Upcoming';
+        if (end > 0 && now > end) return 'Ended';
         return 'Ongoing';
     };
 
@@ -1775,7 +1785,13 @@ function initWarReport2() {
         const enemyName = enemy?.name || 'Unknown';
         const status = getWarStatus(war);
         const startDate = formatWarDate(war.start);
-        const endDate = status === 'Upcoming' ? 'TBC' : formatWarDate(war.end);
+        const endTs = Number(war.end) || 0;
+        const endDate =
+            endTs > 0
+                ? formatWarDate(endTs)
+                : status === 'Upcoming'
+                  ? 'TBC'
+                  : 'In progress';
         
         // Left border accent: green = ongoing, gold = ended & upcoming (matches tool theme)
         const borderAccentColor = status === 'Ongoing' ? '#4CAF50' : '#ffd700';
@@ -1805,7 +1821,7 @@ function initWarReport2() {
         const buttonClass = isWarEnded ? 'btn btn-success' : 'btn btn-secondary';
         const buttonText = isWarEnded ? 'Fetch War Data' : `${status} War`;
         const buttonStyle = isWarEnded ? 'white-space: nowrap;' : 'white-space: nowrap; cursor: not-allowed; opacity: 0.6;';
-        const warEndUnix = war.end || 0;
+        const warEndUnix = endTs;
         const tctDefaults = warEndUnix ? unixToTctDateTimeInputValues(warEndUnix) : { dateStr: '', timeStr: '' };
 
         const chainRow =
@@ -1910,7 +1926,9 @@ function initWarReport2() {
         
         wars.forEach(war => {
             const warStart = war.start;
-            const warEnd = war.end || Math.floor(Date.now() / 1000);
+            const warEnd = Number(war.end) || 0;
+            // Active wars have end === 0 from Torn — only match chains once the war has a real end.
+            if (!(warEnd > 0)) return;
             
             // Find chains that:
             // 1. Started during the war (chain.start >= war.start && chain.start <= war.end)
@@ -2186,7 +2204,7 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
         }
 
         let warStartTime = targetWar.start;
-        const officialEnd = targetWar.end || Math.floor(Date.now() / 1000);
+        const officialEnd = Number(targetWar.end) > 0 ? Number(targetWar.end) : Math.floor(Date.now() / 1000);
         let warEndTime = officialEnd;
         let payoutEndSource = 'official';
 
@@ -5267,9 +5285,9 @@ function renderRespectPayoutTable() {
         let aValue;
         let bValue;
         if (sortColumn === 'respectTotal') {
-            aValue = warReportPlayerRespectPointsTotal(a);
-            bValue = warReportPlayerRespectPointsTotal(b);
-        } else         if (sortColumn === 'supportHitsTotal') {
+            aValue = warReportPlayerRespectPointsForPayout(a, includeOutsideRespect);
+            bValue = warReportPlayerRespectPointsForPayout(b, includeOutsideRespect);
+        } else if (sortColumn === 'supportHitsTotal') {
             aValue = warReportPlayerSupportHitsTotal(a);
             bValue = warReportPlayerSupportHitsTotal(b);
         } else if (sortColumn === 'otherAttacks') {
@@ -5364,7 +5382,7 @@ function renderRespectPayoutTable() {
 
     const respectHeadRow1R = showRespectColBreakdownR
         ? `<th colspan="3" class="war-report-col-group-lead" title="War, outside, and share of respect pool" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Respect ${respectBreakdownLabelR}</th>`
-        : `<th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" data-column="respectTotal" title="War + outside respect (total points)" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Respect <span class="sort-indicator">${resSortIndR}</span>${respectBreakdownLabelR}</th>`;
+        : `<th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" data-column="respectTotal" title="${includeOutsideRespect ? 'War + outside respect (total points)' : 'War respect used for payout (outside excluded)'}" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Respect <span class="sort-indicator">${resSortIndR}</span>${respectBreakdownLabelR}</th>`;
 
     const respectHeadRow2R = showRespectColBreakdownR
         ? `<th class="war-report-col-group-lead" data-column="playerWarRespect" title="War ${removeModifiers ? 'base' : 'full'} respect from war hits${respectRealWarFactor > 1 ? ' — hover for payout weight (real × ' + respectRealWarFactor + ')' : ''}" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">War ${removeModifiers ? 'Base' : 'Full'} <span class="sort-indicator">${warData.respectPayoutSortState.column === 'playerWarRespect' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -5523,7 +5541,7 @@ function renderRespectPayoutTable() {
                         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerOtherAttacksTotal(player)}</td>`;
                     const respectCellsR = showRespectColBreakdownR
                         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportRespectCellHtml(player.playerWarRespect || 0, warRespectTooltip)}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerOutsideRespect || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${(parseFloat(player.respectRatio) * 100).toFixed(2)}%</td>`
-                        : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportRespectCellHtml(warReportPlayerRespectPointsTotal(player), warRespectTooltip || '')}</td>`;
+                        : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportRespectCellHtml(warReportPlayerRespectPointsForPayout(player, includeOutsideRespect), warRespectTooltip || '')}</td>`;
                     const supportCellsR = showSupportColBreakdownR
                         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warRetals || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warAssists || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.overseasHits || 0}</td>`
                         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerSupportHitsTotal(player)}</td>`;
@@ -5557,7 +5575,7 @@ function renderRespectPayoutTable() {
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${totalTermedWarHitsDisplay}</strong></td>
                     ${showRespectColBreakdownR
         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalBaseRespect)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalOutsideRespect)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>100.00%</strong></td>`
-        : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalBaseRespect + totalOutsideRespect)}</strong></td>`}
+        : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(includeOutsideRespect ? totalBaseRespect + totalOutsideRespect : totalBaseRespect)}</strong></td>`}
                     ${showSupportColBreakdownR
         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerSupportHitsTotal(p), 0)}</strong></td>`}
@@ -5640,7 +5658,7 @@ function renderRespectPayoutTable() {
     if (showRespectColBreakdownR) {
         respectCopyCols.push(warRespectHdr, outsideRespectHdr, '% pool');
     } else {
-        respectCopyCols.push('Respect (total)');
+        respectCopyCols.push(includeOutsideRespect ? 'Respect (total)' : 'Respect (war)');
     }
     if (showSupportColBreakdownR) {
         respectCopyCols.push('Retals', 'Assists', 'Abroad');
@@ -5668,7 +5686,7 @@ function renderRespectPayoutTable() {
                 `${(parseFloat(player.respectRatio) * 100).toFixed(2)}%`
             );
         } else {
-            row.push(String(warReportPlayerRespectPointsTotal(player)));
+            row.push(String(warReportPlayerRespectPointsForPayout(player, includeOutsideRespect)));
         }
         if (showSupportColBreakdownR) {
             row.push(String(player.warRetals || 0), String(player.warAssists || 0), String(player.overseasHits || 0));
@@ -5698,7 +5716,7 @@ function renderRespectPayoutTable() {
             '100.00%'
         );
     } else {
-        respectCopyFooter.push(String(Math.round(totalBaseRespect + totalOutsideRespect)));
+        respectCopyFooter.push(String(Math.round(includeOutsideRespect ? totalBaseRespect + totalOutsideRespect : totalBaseRespect)));
     }
     if (showSupportColBreakdownR) {
         respectCopyFooter.push(
@@ -5880,6 +5898,7 @@ function exportRespectPayoutToCSV() {
     
     const payoutData = warData.respectPayoutData;
     const removeModifiers = payoutData.removeModifiers;
+    const includeOutsideRespect = payoutData.includeOutsideRespect === true;
     const playersWithRespectPayouts = payoutData.playersWithRespectPayouts;
     
     // Sort by respect payout sort state (same as table display)
@@ -5888,8 +5907,8 @@ function exportRespectPayoutToCSV() {
         let aValue;
         let bValue;
         if (sortColumn === 'respectTotal') {
-            aValue = warReportPlayerRespectPointsTotal(a);
-            bValue = warReportPlayerRespectPointsTotal(b);
+            aValue = warReportPlayerRespectPointsForPayout(a, includeOutsideRespect);
+            bValue = warReportPlayerRespectPointsForPayout(b, includeOutsideRespect);
         } else if (sortColumn === 'supportHitsTotal') {
             aValue = warReportPlayerSupportHitsTotal(a);
             bValue = warReportPlayerSupportHitsTotal(b);
@@ -5922,7 +5941,7 @@ function exportRespectPayoutToCSV() {
             'Respect %'
         );
     } else {
-        headers.push('Total respect (war + outside)');
+        headers.push(includeOutsideRespect ? 'Total respect (war + outside)' : 'Respect (war, for payout)');
     }
     if (showSupportCsv) {
         headers.push('Retals', 'Assists', 'Abroad');
@@ -5953,7 +5972,7 @@ function exportRespectPayoutToCSV() {
                 (parseFloat(player.respectRatio) * 100).toFixed(2) + '%'
             );
         } else {
-            row.push(warReportPlayerRespectPointsTotal(player));
+            row.push(warReportPlayerRespectPointsForPayout(player, includeOutsideRespect));
         }
         if (showSupportCsv) {
             row.push(player.warRetals || 0, player.warAssists || 0, player.overseasHits || 0);

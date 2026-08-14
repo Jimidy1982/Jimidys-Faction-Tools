@@ -3077,6 +3077,64 @@
                     });
             });
 
+        document.getElementById('alliance-dash-delete-btn') &&
+            document.getElementById('alliance-dash-delete-btn').addEventListener('click', function () {
+                const st = document.getElementById('alliance-dash-settings-status');
+                if (!currentAllianceId || !lastAllianceDoc) {
+                    setStatus(st, 'No alliance loaded.', true);
+                    return;
+                }
+                if (!isAllianceCreator()) {
+                    setStatus(st, 'Only the alliance creator can delete this alliance.', true);
+                    return;
+                }
+                const apiKey = getApiKey();
+                if (!apiKey || apiKey.length !== 16) {
+                    setStatus(st, 'API key required.', true);
+                    return;
+                }
+                const allianceName = String(lastAllianceDoc.name || '').trim();
+                if (!allianceName) {
+                    setStatus(st, 'Alliance has no display name — rename it first, then delete.', true);
+                    return;
+                }
+                if (
+                    !confirm(
+                        'Delete alliance “‘ +
+                            allianceName +
+                            '” permanently?\n\n' +
+                            'This removes the alliance for everyone, including the shared vault and territory data. This cannot be undone.'
+                    )
+                ) {
+                    return;
+                }
+                const typed = window.prompt(
+                    'Type the alliance name exactly to confirm deletion:\n\n' + allianceName,
+                    ''
+                );
+                if (typed == null) return;
+                if (String(typed).trim() !== allianceName) {
+                    setStatus(st, 'Name did not match — alliance was not deleted.', true);
+                    return;
+                }
+                const deletedId = currentAllianceId;
+                setStatus(st, 'Deleting alliance…', false);
+                callHttps('allianceDelete', {
+                    apiKey: apiKey,
+                    allianceId: deletedId,
+                    confirmName: allianceName
+                })
+                    .then(function () {
+                        closeAllianceSettingsModal();
+                        subscribeAlliance('');
+                        refreshMyAllianceList();
+                        updateLoadedAllianceStatus('Alliance deleted.', false);
+                    })
+                    .catch(function (err) {
+                        setStatus(st, err.message || String(err), true);
+                    });
+            });
+
         const settingsDialog = document.querySelector('#alliance-dash-settings-modal .alliance-dash-modal-dialog');
         if (settingsDialog && !settingsDialog._allianceSettingsFactionClicks) {
             settingsDialog._allianceSettingsFactionClicks = true;

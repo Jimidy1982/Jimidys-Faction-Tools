@@ -218,7 +218,7 @@
 
             <div class="alliance-dash-modal-section">
                 <h4 class="alliance-dash-modal-section-title">Faction roster</h4>
-                <p id="alliance-dash-settings-readonly-note" class="alliance-dash-modal-desc" style="display:none;">You are not the alliance creator. You can copy the ID, view the roster, and add your own faction (if you are Leader / Co-leader). Renaming, removing factions, and directory repair are creator-only.</p>
+                <p id="alliance-dash-settings-readonly-note" class="alliance-dash-modal-desc" style="display:none;">You are not the alliance creator. You can copy the ID, view the roster, and add your own faction (if you are Leader / Co-leader). Renaming, removing factions, deleting the alliance, and directory repair are creator-only.</p>
                 <div class="alliance-dash-table-wrap alliance-dash-settings-table-wrap">
                     <table class="alliance-dash-table">
                         <thead>
@@ -258,6 +258,11 @@
 
                 <p class="alliance-dash-hint" id="alliance-dash-repair-wrap" style="display:none;">If this alliance existed before the “My alliances” directory, click once to sync faction rows to the directory.</p>
                 <button type="button" id="alliance-dash-repair-index" class="btn" style="display:none;">Repair directory index</button>
+
+                <div class="alliance-dash-modal-divider"></div>
+                <h4 class="alliance-dash-modal-section-title">Delete alliance</h4>
+                <p class="alliance-dash-modal-desc">Permanently removes this alliance for everyone: roster, shared vault, and territory data. This cannot be undone.</p>
+                <button type="button" id="alliance-dash-delete-btn" class="btn alliance-dash-btn-danger">Delete alliance…</button>
             </div>
 
             <p id="alliance-dash-settings-status" class="alliance-dash-status" role="status"></p>

@@ -2224,6 +2224,7 @@ exports.allianceCreate = allianceDashboard.allianceCreate;
 exports.allianceAddFaction = allianceDashboard.allianceAddFaction;
 exports.allianceRename = allianceDashboard.allianceRename;
 exports.allianceRemoveFaction = allianceDashboard.allianceRemoveFaction;
+exports.allianceDelete = allianceDashboard.allianceDelete;
 exports.allianceListMine = allianceDashboard.allianceListMine;
 exports.allianceBackfillMembershipIndex = allianceDashboard.allianceBackfillMembershipIndex;
 exports.allianceVaultUpsert = allianceDashboard.allianceVaultUpsert;

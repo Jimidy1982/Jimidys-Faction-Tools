@@ -4280,7 +4280,12 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // Batch multiple Torn API calls
-    const batchTornApiCalls = async (apiKey, requests) => {
+    // Optional 3rd arg: progress UI options (objects). Legacy callers may pass a number (ignored).
+    const batchTornApiCalls = async (apiKey, requests, optionsOrLegacy = {}) => {
+        const opts =
+            optionsOrLegacy && typeof optionsOrLegacy === 'object' && !Array.isArray(optionsOrLegacy)
+                ? optionsOrLegacy
+                : {};
         const results = {};
         
         // Check cache first and separate cached vs uncached requests
@@ -4311,6 +4316,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Only make API calls for uncached requests using global batch function
         if (uncachedRequests.length > 0) {
             await window.batchApiCallsWithRateLimit(uncachedRequests, {
+                progressMessage: opts.progressMessage,
+                progressDetails: opts.progressDetails,
+                progressPercentage: opts.progressPercentage,
+                progressFill: opts.progressFill,
+                progressDetailsPrefix: opts.progressDetailsPrefix || '',
                 onSuccess: (data, request) => {
                     // Store in cache
                     setCachedData(request.cacheKey, data);
@@ -4672,7 +4682,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const oldScript = document.getElementById('member-performance-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
-                script.src = './tools/member-performance-range/member-performance-range.js';
+                script.src =
+                    './tools/member-performance-range/member-performance-range.js?v=' +
+                    encodeURIComponent(window.APP_BUILD_VERSION || Date.now());
                 script.id = 'member-performance-script';
                 script.onload = () => {
                     console.log('[APP] member-performance-range.js loaded');
@@ -4759,7 +4771,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const oldScript = document.getElementById('alliance-dashboard-script');
                 if (oldScript) oldScript.remove();
                 const script = document.createElement('script');
-                script.src = 'tools/alliance-dashboard/alliance-dashboard.js';
+                script.src =
+                    'tools/alliance-dashboard/alliance-dashboard.js?v=' +
+                    encodeURIComponent(window.APP_BUILD_VERSION || Date.now());
                 script.id = 'alliance-dashboard-script';
                 script.onload = () => {
                     if (typeof window.initAllianceDashboard === 'function') window.initAllianceDashboard();

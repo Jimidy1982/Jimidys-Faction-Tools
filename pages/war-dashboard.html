@@ -74,7 +74,7 @@
                     <span class="war-dashboard-recommended-wrap">
                         <input type="checkbox" id="war-dashboard-filter-recommended" class="war-dashboard-recommended-checkbox" aria-hidden="true" tabindex="-1">
                         <button type="button" id="war-dashboard-recommended-btn" class="war-dashboard-recommended-btn" aria-pressed="false" aria-describedby="war-dashboard-recommended-desc">Recommended</button>
-                        <span id="war-dashboard-recommended-desc" class="war-dashboard-recommended-desc">Top 5 (Okay, <span id="war-dashboard-recommended-ff-range">FF 2.5 – 3.5</span>)</span>
+                        <span id="war-dashboard-recommended-desc" class="war-dashboard-recommended-desc">Top 5 (Okay / hosp ≤<span id="war-dashboard-recommended-hosp-max">10</span>m, <span id="war-dashboard-recommended-ff-range">FF 2.5 – 3.5</span>)</span>
                     </span>
                 </div>
                 <div class="war-dashboard-filter-group">
@@ -89,6 +89,22 @@
                     </div>
                     <p class="war-dashboard-command-help">Mug applies ×0.75 in Torn.</p>
                 </div>
+                <div class="war-dashboard-filter-group">
+                    <p class="war-dashboard-command-section-title">Retals</p>
+                    <label class="war-dashboard-refresh-slider-wrap war-dashboard-command-toggle" title="Poll faction attack logs for retaliation windows (uses your Torn API rate)">
+                        <span id="war-dashboard-retals-enabled-label">Off</span>
+                        <input type="checkbox" id="war-dashboard-retals-enabled" class="war-dashboard-chain-track-input" aria-label="Retaliation tracking on or off">
+                        <span class="war-dashboard-chain-track-slider"></span>
+                    </label>
+                    <p id="war-dashboard-retals-strip-hint" class="war-dashboard-command-help">When on, orange box below lists who hit you (5 min from attack end).</p>
+                </div>
+            </div>
+            <div id="war-dashboard-retals-panel" class="war-dashboard-retals-panel" hidden aria-live="polite">
+                <div class="war-dashboard-retals-panel-head">
+                    <p class="war-dashboard-command-section-title" style="margin: 0;">Retaliation windows</p>
+                    <span id="war-dashboard-retals-panel-meta" class="war-dashboard-command-help"></span>
+                </div>
+                <div id="war-dashboard-retals-list" class="war-dashboard-retals-list"></div>
             </div>
             <div id="war-dashboard-enemies-list" class="war-dashboard-enemies-list"></div>
         </section>
@@ -157,7 +173,32 @@
                     <button type="button" id="war-dashboard-clear-enemy" class="btn">Clear all</button>
                 </div>
                 <div id="war-dashboard-enemy-list" class="war-dashboard-enemy-list"></div>
+                <div id="war-dashboard-enemy-archived-wrap" class="war-dashboard-enemy-archived-wrap" style="display: none;">
+                    <p class="war-dashboard-command-section-title" style="margin-top: 14px;">Archived</p>
+                    <p class="war-dashboard-command-help">Archived when a ranked war filled your 3 active slots. Restore when you have room.</p>
+                    <div id="war-dashboard-enemy-archived-list" class="war-dashboard-enemy-list"></div>
+                </div>
                 <p id="war-dashboard-enemy-label" class="war-dashboard-command-help"></p>
+            </div>
+        </div>
+    </div>
+
+    <div id="war-dashboard-war-enemy-chooser-modal" class="war-dashboard-settings-overlay" aria-hidden="true" style="display: none;">
+        <div class="war-dashboard-settings-modal war-dashboard-command-modal" role="dialog" aria-labelledby="war-dashboard-war-enemy-chooser-title" style="max-width: 480px;">
+            <div class="war-dashboard-settings-modal-header">
+                <h2 id="war-dashboard-war-enemy-chooser-title">Ranked war enemy added</h2>
+                <button type="button" id="war-dashboard-war-enemy-chooser-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+            </div>
+            <div class="war-dashboard-settings-modal-body war-dashboard-command-modal-body">
+                <p id="war-dashboard-war-enemy-chooser-msg" class="war-dashboard-command-help" style="margin-top: 0;"></p>
+                <div id="war-dashboard-war-enemy-chooser-war" class="war-dashboard-enemy-list-row war-dashboard-enemy-list-row-locked"></div>
+                <p class="war-dashboard-command-section-title" style="margin-top: 12px;">Keep active (non-war)</p>
+                <p class="war-dashboard-command-help">Pick up to <span id="war-dashboard-war-enemy-chooser-slots">2</span> other enemies. Unchecked ones stay archived.</p>
+                <div id="war-dashboard-war-enemy-chooser-list" class="war-dashboard-enemy-list"></div>
+                <div class="war-dashboard-command-row" style="margin-top: 14px;">
+                    <button type="button" id="war-dashboard-war-enemy-chooser-apply" class="btn">Apply</button>
+                    <button type="button" id="war-dashboard-war-enemy-chooser-dismiss" class="btn">Keep current selection</button>
+                </div>
             </div>
         </div>
     </div>
@@ -216,6 +257,20 @@
                     <div class="war-dashboard-settings-ff-row"><span class="war-dashboard-settings-ff-label">Green &lt;</span><input type="number" id="war-dashboard-ff-green" class="war-dashboard-ff-input" min="0" max="10" step="0.1" value="3.5"></div>
                     <div class="war-dashboard-settings-ff-row"><span class="war-dashboard-settings-ff-label">Orange &lt;</span><input type="number" id="war-dashboard-ff-orange" class="war-dashboard-ff-input" min="0" max="10" step="0.1" value="4.5"></div>
                     <div class="war-dashboard-settings-ff-row"><span class="war-dashboard-settings-ff-label">Red</span><span class="war-dashboard-settings-ff-hint">(no upper limit)</span></div>
+                </div>
+                <hr class="war-dashboard-settings-divider">
+                <p style="color: var(--accent-color); font-weight: bold; margin: 0 0 8px 0;">Recommended</p>
+                <p style="color: #b0b0b0; font-size: 13px; margin: 0 0 12px 0;">Include hospital targets only when their countdown is at or under this many minutes (Okay always included).</p>
+                <div class="war-dashboard-settings-ff-row">
+                    <label for="war-dashboard-recommended-hospital-max" class="war-dashboard-settings-ff-label">Hospital under (minutes)</label>
+                    <input type="number" id="war-dashboard-recommended-hospital-max" min="0" max="180" step="1" value="10" class="war-dashboard-settings-interval-input" title="Max hospital timer for Recommended filter">
+                </div>
+                <hr class="war-dashboard-settings-divider">
+                <p style="color: var(--accent-color); font-weight: bold; margin: 0 0 8px 0;">Retals</p>
+                <p style="color: #b0b0b0; font-size: 13px; margin: 0 0 12px 0;">Used when Retals is turned on in the filter strip. Window runs 5 minutes from attack <strong>ended</strong> time. Faster polling uses more of your Torn API rate (Torn may still cache ~30s).</p>
+                <div class="war-dashboard-settings-ff-row">
+                    <label for="war-dashboard-retals-poll-interval" class="war-dashboard-settings-ff-label">Poll interval (seconds)</label>
+                    <input type="number" id="war-dashboard-retals-poll-interval" min="2" max="60" step="1" value="15" class="war-dashboard-settings-interval-input" title="How often to re-check attack logs while Retals is on">
                 </div>
                 <hr class="war-dashboard-settings-divider">
                 <p style="color: var(--accent-color); font-weight: bold; margin: 0 0 8px 0;">Auto-refresh</p>

@@ -5,7 +5,7 @@
 (function () {
     'use strict';
 
-    window.__WAR_DASHBOARD_BUILD = '20260716a';
+    window.__WAR_DASHBOARD_BUILD = '20260719a';
 
     const STORAGE_KEYS = {
         enemyFactionId: 'war_dashboard_enemy_faction_id',
@@ -14,11 +14,15 @@
         ffBlue: 'war_dashboard_ff_blue',
         ffGreen: 'war_dashboard_ff_green',
         ffOrange: 'war_dashboard_ff_orange',
+        recommendedHospitalMaxMinutes: 'war_dashboard_recommended_hospital_max_minutes',
+        retalsEnabled: 'war_dashboard_retals_enabled',
+        retalsPollInterval: 'war_dashboard_retals_poll_interval',
         respectWarlordEnabled: 'war_dashboard_respect_warlord_enabled',
         respectWarlordPercent: 'war_dashboard_respect_warlord_percent',
         ffNoticeHidden: 'war_dashboard_ff_notice_hidden',
         enemyPickerMinimised: 'war_dashboard_enemy_picker_minimised',
         enemyFactionIds: 'war_dashboard_enemy_faction_ids',
+        enemyFactionIdsArchived: 'war_dashboard_enemy_faction_ids_archived',
         refreshSectionMinimised: 'war_dashboard_refresh_section_minimised',
         ffSectionMinimised: 'war_dashboard_ff_section_minimised',
         trackOurChain: 'war_dashboard_track_our_chain',
@@ -108,6 +112,8 @@
     let userProfilePromiseByKey = {};
     let dashboardLoadPromise = null;
     let enemyFactionStates = [];
+    /** Ranked war enemy faction id — always kept first in the active enemy stack. */
+    let pinnedWarEnemyFactionId = null;
 
     let activityTrackerIntervalId = null;
     let activityTrackerCountdownIntervalId = null;
@@ -869,8 +875,145 @@
     }
 
     const RECENT_ATTACKS_CACHE_MS = 60 * 1000;
+    const RETALIATION_WINDOW_SEC = 5 * 60;
     let recentAttacksCache = { key: '', ourFactionId: '', attacks: [], fetchedAt: 0 };
     let recentAttacksFetchPromise = null;
+    /** @type {Record<string, { id: string, name: string, factionId: string, factionName: string, endedAt: number, expiresAt: number }>} */
+    let retaliationTargetsById = {};
+    let retalsPollTimer = null;
+    let retalsLastFetchAt = 0;
+    let retalsLastError = '';
+
+    /** Prefer attack ended time — retaliation window runs from when the hit finished. */
+    function getAttackEndedSec(attack) {
+        if (!attack) return 0;
+        const n = Number(
+            attack.ended != null ? attack.ended
+                : (attack.timestamp_ended != null ? attack.timestamp_ended
+                    : (attack.timestamp != null ? attack.timestamp
+                        : attack.started))
+        );
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function getPlayerFactionId(player) {
+        if (!player || typeof player !== 'object') return '';
+        const fac = player.faction;
+        if (fac == null) return '';
+        if (typeof fac === 'object') {
+            if (fac.id != null) return String(fac.id);
+            return '';
+        }
+        return String(fac);
+    }
+
+    function getPlayerFactionName(player) {
+        if (!player || typeof player !== 'object') return '';
+        const fac = player.faction;
+        if (fac && typeof fac === 'object' && fac.name) return String(fac.name);
+        return '';
+    }
+
+    function getRetalsEnabled() {
+        const strip = document.getElementById('war-dashboard-retals-enabled');
+        if (strip) return strip.checked === true;
+        return localStorage.getItem(STORAGE_KEYS.retalsEnabled) === '1';
+    }
+
+    function setRetalsEnabled(on) {
+        try { localStorage.setItem(STORAGE_KEYS.retalsEnabled, on ? '1' : '0'); } catch (e) { /* ignore */ }
+        const strip = document.getElementById('war-dashboard-retals-enabled');
+        if (strip) strip.checked = !!on;
+    }
+
+    function getRetalsPollIntervalSec() {
+        const raw = document.getElementById('war-dashboard-retals-poll-interval')?.value;
+        const n = parseInt(raw != null && raw !== '' ? raw : (localStorage.getItem(STORAGE_KEYS.retalsPollInterval) || '15'), 10);
+        if (!Number.isFinite(n)) return 15;
+        return Math.max(2, Math.min(60, n));
+    }
+
+    function isActiveEnemyFactionId(factionId) {
+        const id = String(factionId || '');
+        if (!id) return false;
+        if (pinnedWarEnemyFactionId && String(pinnedWarEnemyFactionId) === id) return true;
+        return getStoredEnemyFactionIds().some(function (existing) { return String(existing) === id; })
+            || enemyFactionStates.some(function (enemy) { return String(enemy.id) === id; });
+    }
+
+    function getActiveRetaliationTarget(playerId) {
+        const t = retaliationTargetsById[String(playerId)];
+        if (!t) return null;
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (t.expiresAt <= nowSec) return null;
+        return t;
+    }
+
+    function getActiveRetaliationTargetIds() {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const out = new Set();
+        Object.keys(retaliationTargetsById).forEach(function (id) {
+            const t = retaliationTargetsById[id];
+            if (t && t.expiresAt > nowSec) out.add(String(id));
+        });
+        return out;
+    }
+
+    function pruneExpiredRetaliationTargets() {
+        const nowSec = Math.floor(Date.now() / 1000);
+        let changed = false;
+        Object.keys(retaliationTargetsById).forEach(function (id) {
+            if (retaliationTargetsById[id].expiresAt <= nowSec) {
+                delete retaliationTargetsById[id];
+                changed = true;
+            }
+        });
+        return changed;
+    }
+
+    /**
+     * Anyone who attacked our faction in the last 5 minutes (from attack ended).
+     * Keeps the latest ended hit per attacker. Skips anonymous (no attacker id).
+     * @param {boolean} assumeIncoming - true when API used filters=incoming
+     */
+    function buildRetaliationTargetsFromAttacks(attacks, ourFactionId, nowSec, assumeIncoming) {
+        const our = String(ourFactionId);
+        const fromSec = nowSec - RETALIATION_WINDOW_SEC;
+        const map = {};
+        let inspected = 0;
+        let incoming = 0;
+        (attacks || []).forEach(function (attack) {
+            if (!attack) return;
+            inspected++;
+            const endedAt = getAttackEndedSec(attack);
+            if (!endedAt || endedAt < fromSec) return;
+            const defender = attack.defender || null;
+            const defenderFactionId = getPlayerFactionId(defender);
+            if (defenderFactionId) {
+                if (defenderFactionId !== our) return;
+            } else if (!assumeIncoming) {
+                return;
+            }
+            incoming++;
+            const attacker = attack.attacker || null;
+            if (!attacker || attacker.id == null) return; // stealth / anonymous — cannot retal
+            const attackerFactionId = getPlayerFactionId(attacker);
+            if (attackerFactionId && attackerFactionId === our) return; // never retal our own
+            const id = String(attacker.id);
+            const prev = map[id];
+            if (prev && prev.endedAt >= endedAt) return;
+            const factionName = getPlayerFactionName(attacker) || (attackerFactionId ? ('Faction ' + attackerFactionId) : 'Unknown');
+            map[id] = {
+                id: id,
+                name: attacker.name || ('Player ' + id),
+                factionId: attackerFactionId,
+                factionName: factionName,
+                endedAt: endedAt,
+                expiresAt: endedAt + RETALIATION_WINDOW_SEC
+            };
+        });
+        return { map: map, inspected: inspected, incoming: incoming };
+    }
 
     function filterRecentIncomingAttackers(attacks, ourFactionId, enemyFactionId, fromSec) {
         const our = String(ourFactionId);
@@ -878,10 +1021,10 @@
         const out = new Set();
         (attacks || []).forEach(function (attack) {
             if (!attack) return;
-            const ts = Number(attack.started || attack.timestamp || attack.ended || 0);
-            if (!Number.isFinite(ts) || ts < fromSec) return;
-            const attackerFactionId = attack.attacker && attack.attacker.faction && attack.attacker.faction.id;
-            const defenderFactionId = attack.defender && attack.defender.faction && attack.defender.faction.id;
+            const endedAt = getAttackEndedSec(attack);
+            if (!endedAt || endedAt < fromSec) return;
+            const attackerFactionId = getPlayerFactionId(attack.attacker);
+            const defenderFactionId = getPlayerFactionId(attack.defender);
             const attackerId = attack.attacker && attack.attacker.id;
             if (String(attackerFactionId) === enemy && String(defenderFactionId) === our && attackerId != null) {
                 out.add(String(attackerId));
@@ -890,32 +1033,46 @@
         return out;
     }
 
-    /** One shared /faction/attacks fetch per minute; filter per enemy client-side (avoids N duplicate calls). */
-    async function ensureRecentAttacksLoaded(apiKey, ourFactionId) {
+    /** One shared /faction/attacks fetch; prefer incoming filter. */
+    async function ensureRecentAttacksLoaded(apiKey, ourFactionId, options) {
         if (!apiKey || !ourFactionId) return [];
+        const force = !!(options && options.force);
         const cacheKey = String(apiKey) + ':' + String(ourFactionId);
         const now = Date.now();
+        const cacheMs = (options && options.cacheMs != null) ? options.cacheMs : RECENT_ATTACKS_CACHE_MS;
         if (
-            recentAttacksCache.key === cacheKey
+            !force
+            && recentAttacksCache.key === cacheKey
             && recentAttacksCache.ourFactionId === String(ourFactionId)
             && recentAttacksCache.fetchedAt
-            && (now - recentAttacksCache.fetchedAt) < RECENT_ATTACKS_CACHE_MS
+            && (now - recentAttacksCache.fetchedAt) < cacheMs
         ) {
             return recentAttacksCache.attacks;
         }
         if (recentAttacksFetchPromise) return recentAttacksFetchPromise;
         const nowSec = Math.floor(Date.now() / 1000);
-        const fromSec = nowSec - (5 * 60);
+        const fromSec = nowSec - RETALIATION_WINDOW_SEC;
         recentAttacksFetchPromise = (async function () {
-            const url = `https://api.torn.com/v2/faction/attacks?limit=100&sort=ASC&from=${fromSec}&key=${apiKey}`;
-            const data = await fetchJson(url);
-            const raw = data.attacks || [];
-            const attacks = Array.isArray(raw) ? raw : Object.values(raw);
+            const bust = force ? ('&timestamp=' + nowSec) : '';
+            const qs = `limit=100&sort=DESC&from=${fromSec}&comment=WarDashboardRetals&key=${apiKey}${bust}`;
+            let data;
+            let assumeIncoming = false;
+            try {
+                data = await fetchJson(`https://api.torn.com/v2/faction/attacks?filters=incoming&${qs}`);
+                assumeIncoming = true;
+            } catch (e) {
+                console.warn('War Dashboard retals: incoming filter failed, retrying all attacks', e);
+                data = await fetchJson(`https://api.torn.com/v2/faction/attacks?${qs}`);
+                assumeIncoming = false;
+            }
+            const raw = data.attacks || data.attack || [];
+            const attacks = Array.isArray(raw) ? raw : Object.values(raw || {});
             recentAttacksCache = {
                 key: cacheKey,
                 ourFactionId: String(ourFactionId),
                 attacks: attacks,
-                fetchedAt: Date.now()
+                fetchedAt: Date.now(),
+                assumeIncoming: assumeIncoming
             };
             return attacks;
         })().finally(function () {
@@ -926,9 +1083,246 @@
 
     async function fetchRecentIncomingAttackers(apiKey, ourFactionId, enemyFactionId) {
         if (!apiKey || !ourFactionId || !enemyFactionId) return new Set();
-        const fromSec = Math.floor(Date.now() / 1000) - (5 * 60);
+        const fromSec = Math.floor(Date.now() / 1000) - RETALIATION_WINDOW_SEC;
         const attacks = await ensureRecentAttacksLoaded(apiKey, ourFactionId).catch(function () { return []; });
         return filterRecentIncomingAttackers(attacks, ourFactionId, enemyFactionId, fromSec);
+    }
+
+    function formatRetalCountdown(expiresAt, nowSec) {
+        const remaining = Math.max(0, Math.floor(Number(expiresAt) - nowSec));
+        const m = Math.floor(remaining / 60);
+        const s = remaining % 60;
+        return String(m) + ':' + String(s).padStart(2, '0');
+    }
+
+    function updateRetalsToggleLabel() {
+        const on = getRetalsEnabled();
+        const label = document.getElementById('war-dashboard-retals-enabled-label');
+        if (label) label.textContent = on ? 'On' : 'Off';
+    }
+
+    function renderRetalsPanel() {
+        const panel = document.getElementById('war-dashboard-retals-panel');
+        const list = document.getElementById('war-dashboard-retals-list');
+        const meta = document.getElementById('war-dashboard-retals-panel-meta');
+        updateRetalsToggleLabel();
+        if (!panel || !list) {
+            console.warn('[War Dashboard Retals] panel markup missing from page');
+            return;
+        }
+        const enabled = getRetalsEnabled();
+        if (!enabled) {
+            panel.hidden = true;
+            panel.classList.remove('is-open');
+            panel.style.display = 'none';
+            return;
+        }
+        panel.hidden = false;
+        panel.classList.add('is-open');
+        panel.style.display = 'block';
+        pruneExpiredRetaliationTargets();
+        const nowSec = Math.floor(Date.now() / 1000);
+        const rows = Object.keys(retaliationTargetsById)
+            .map(function (id) { return retaliationTargetsById[id]; })
+            .filter(function (t) { return t && t.expiresAt > nowSec; })
+            .sort(function (a, b) {
+                const aWar = isActiveEnemyFactionId(a.factionId) ? 0 : 1;
+                const bWar = isActiveEnemyFactionId(b.factionId) ? 0 : 1;
+                if (aWar !== bWar) return aWar - bWar;
+                return a.expiresAt - b.expiresAt;
+            });
+        if (meta) {
+            const poll = getRetalsPollIntervalSec();
+            const age = retalsLastFetchAt ? Math.max(0, Math.round((Date.now() - retalsLastFetchAt) / 1000)) + 's ago' : 'waiting…';
+            meta.textContent = rows.length + ' open · poll ' + poll + 's · last check ' + age
+                + (retalsLastError ? ' · ' + retalsLastError : '');
+        }
+        if (!rows.length) {
+            list.innerHTML = '<p class="war-dashboard-retals-empty">' +
+                (retalsLastError
+                    ? ('Could not load attack log: ' + escapeHtml(retalsLastError))
+                    : (retalsLastFetchAt
+                        ? 'No open retaliation windows right now. Anyone who hits your faction appears here for 5 minutes from attack end (stealth hits have no target).'
+                        : 'Checking faction attack log…')) +
+                '</p>';
+            return;
+        }
+        list.innerHTML = rows.map(function (t) {
+            const isWar = isActiveEnemyFactionId(t.factionId);
+            const attackUrl = 'https://www.torn.com/page.php?sid=attack&user2ID=' + encodeURIComponent(t.id);
+            const warBadge = isWar ? ' <span class="war-dashboard-enemy-badge">War</span>' : '';
+            const memLabel = window.toolsFormatMemberDisplayLabel
+                ? window.toolsFormatMemberDisplayLabel({ name: t.name, id: t.id }, window.toolsGetShowMemberIdInBrackets && window.toolsGetShowMemberIdInBrackets())
+                : (t.name + ' [' + t.id + ']');
+            return '<div class="war-dashboard-retals-row' + (isWar ? ' is-war' : '') + '" data-retal-id="' + escapeHtml(t.id) + '" data-expires-at="' + escapeHtml(String(t.expiresAt)) + '">' +
+                '<div>' +
+                '<a href="' + attackUrl + '" target="_blank" rel="noopener" title="Attack">🎯</a> ' +
+                '<a href="https://www.torn.com/profiles.php?XID=' + encodeURIComponent(t.id) + '" target="_blank" rel="noopener" style="color:#FFD700;">' + escapeHtml(memLabel) + '</a>' +
+                warBadge +
+                '<div class="war-dashboard-command-help" style="margin:2px 0 0 0;">' + escapeHtml(t.factionName || 'Unknown') +
+                (t.factionId ? ' <small>ID: ' + escapeHtml(t.factionId) + '</small>' : '') +
+                '</div></div>' +
+                '<span class="war-dashboard-retals-countdown" data-retals-countdown>' + formatRetalCountdown(t.expiresAt, nowSec) + '</span>' +
+                '</div>';
+        }).join('');
+    }
+
+    /** Document-level delegation so Retals still works after SPA re-injects war-dashboard HTML. */
+    function wireRetalsControls() {
+        if (window._warDashboardRetalsDelegated) return;
+        window._warDashboardRetalsDelegated = true;
+        document.addEventListener('change', function (e) {
+            const t = e.target;
+            if (!t || !t.id) return;
+            if (t.id === 'war-dashboard-retals-enabled') {
+                applyRetalsEnabledChange(t.checked === true);
+                return;
+            }
+            if (t.id === 'war-dashboard-retals-poll-interval') {
+                saveSettings();
+                if (getRetalsEnabled()) startRetalsPollTimer();
+                else renderRetalsPanel();
+            }
+        });
+    }
+
+    function syncRetalsUiAfterInit() {
+        wireRetalsControls();
+        updateRetalsToggleLabel();
+        if (getRetalsEnabled()) startRetalsPollTimer();
+        else renderRetalsPanel();
+    }
+
+    function updateRetaliationCountdowns() {
+        if (!getRetalsEnabled()) return;
+        const pruned = pruneExpiredRetaliationTargets();
+        const nowSec = Math.floor(Date.now() / 1000);
+        let anyLeft = false;
+        document.querySelectorAll('#war-dashboard-retals-list [data-expires-at]').forEach(function (row) {
+            const expiresAt = Number(row.getAttribute('data-expires-at'));
+            const el = row.querySelector('[data-retals-countdown]');
+            if (!Number.isFinite(expiresAt) || expiresAt <= nowSec) {
+                row.remove();
+                return;
+            }
+            anyLeft = true;
+            if (el) el.textContent = formatRetalCountdown(expiresAt, nowSec);
+        });
+        if (pruned || (!anyLeft && document.getElementById('war-dashboard-retals-list'))) {
+            renderRetalsPanel();
+            if (pruned && enemyFactionStates.length) {
+                enemyFactionStates.forEach(function (enemy) {
+                    const activeIds = getActiveRetaliationTargetIds();
+                    enemy.retaliationTargetIds = new Set(
+                        Array.from(enemy.retaliationTargetIds || []).filter(function (id) { return activeIds.has(String(id)); })
+                    );
+                });
+                renderEnemyPanels();
+            }
+        }
+    }
+
+    async function refreshRetalsOnly(force) {
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        if (!getRetalsEnabled()) {
+            renderRetalsPanel();
+            return;
+        }
+        renderRetalsPanel(); // show panel immediately while fetching
+        const apiKey = getApiKey();
+        if (!apiKey) {
+            retalsLastError = 'Set your Torn API key first';
+            renderRetalsPanel();
+            return;
+        }
+        if (!lastOurFactionId) {
+            retalsLastError = 'Waiting for your faction to load…';
+            renderRetalsPanel();
+            return;
+        }
+        try {
+            const attacks = await ensureRecentAttacksLoaded(apiKey, lastOurFactionId, {
+                force: force !== false,
+                cacheMs: getRetalsPollIntervalSec() * 1000
+            });
+            const nowSec = Math.floor(Date.now() / 1000);
+            const built = buildRetaliationTargetsFromAttacks(
+                attacks,
+                lastOurFactionId,
+                nowSec,
+                !!(recentAttacksCache && recentAttacksCache.assumeIncoming)
+            );
+            retaliationTargetsById = built.map || {};
+            retalsLastFetchAt = Date.now();
+            const openCount = Object.keys(retaliationTargetsById).length;
+            retalsLastError = openCount
+                ? ''
+                : (built.inspected
+                    ? ('Checked ' + built.inspected + ' recent attacks — none with a retal target right now (stealth hits cannot be shown)')
+                    : 'Attack log returned 0 rows — key may lack faction attacks access (Limited+)');
+            if (attacks && attacks[0] && openCount === 0) {
+                console.warn('[War Dashboard Retals] sample attack keys', Object.keys(attacks[0]), attacks[0]);
+            }
+            const activeIds = getActiveRetaliationTargetIds();
+            enemyFactionStates.forEach(function (enemy) {
+                const set = new Set();
+                activeIds.forEach(function (id) {
+                    const t = retaliationTargetsById[id];
+                    if (t && String(t.factionId) === String(enemy.id)) set.add(id);
+                });
+                enemy.retaliationTargetIds = set;
+            });
+            syncPrimaryEnemyFromStates();
+            renderRetalsPanel();
+            if (enemyFactionStates.length) renderEnemyPanels();
+        } catch (e) {
+            retalsLastError = (e && e.message) ? String(e.message) : 'Retals fetch failed';
+            renderRetalsPanel();
+            console.warn('War Dashboard retals:', e);
+        }
+    }
+
+    function stopRetalsPollTimer() {
+        if (retalsPollTimer) {
+            clearTimeout(retalsPollTimer);
+            retalsPollTimer = null;
+        }
+    }
+
+    function scheduleNextRetalsPoll() {
+        stopRetalsPollTimer();
+        if (!getRetalsEnabled()) return;
+        const page = (window.location.hash || '').replace('#', '').split('/')[0];
+        if (page !== 'war-dashboard') return;
+        const sec = getRetalsPollIntervalSec();
+        retalsPollTimer = setTimeout(async function () {
+            retalsPollTimer = null;
+            await refreshRetalsOnly(true);
+            scheduleNextRetalsPoll();
+        }, sec * 1000);
+    }
+
+    function startRetalsPollTimer() {
+        stopRetalsPollTimer();
+        if (!getRetalsEnabled()) {
+            renderRetalsPanel();
+            return;
+        }
+        renderRetalsPanel();
+        refreshRetalsOnly(true).finally(scheduleNextRetalsPoll);
+    }
+
+    function applyRetalsEnabledChange(on) {
+        setRetalsEnabled(!!on);
+        saveSettings();
+        if (on) {
+            retalsLastError = '';
+            startRetalsPollTimer();
+        } else {
+            stopRetalsPollTimer();
+            renderRetalsPanel();
+        }
     }
 
     function isUsefulFactionName(factionId, name) {
@@ -1042,12 +1436,40 @@
         const actionStatus = (la.status || 'Offline').toLowerCase();
         const state = (st.state || '').toLowerCase();
         const description = st.description || '';
+        const lastActionTs = la.timestamp != null ? Number(la.timestamp) : NaN;
         return {
             actionStatus: actionStatus,
             state: state,
             description: description,
-            until: st.until
+            until: st.until,
+            lastActionTimestamp: Number.isFinite(lastActionTs) && lastActionTs > 0 ? lastActionTs : null,
+            lastActionRelative: la.relative != null ? String(la.relative).trim() : ''
         };
+    }
+
+    /** Compact idle/offline duration from last_action timestamp, e.g. "5m", "1h 12m", "2d". */
+    function formatIdleDuration(lastActionTimestamp, nowSec) {
+        if (lastActionTimestamp == null || !Number.isFinite(Number(lastActionTimestamp))) return '';
+        const sec = Math.max(0, Math.floor(nowSec - Number(lastActionTimestamp)));
+        if (sec < 60) return sec + 's';
+        const mins = Math.floor(sec / 60);
+        if (mins < 60) return mins + 'm';
+        const hours = Math.floor(mins / 60);
+        const remMins = mins % 60;
+        if (hours < 48) return remMins ? (hours + 'h ' + remMins + 'm') : (hours + 'h');
+        const days = Math.floor(hours / 24);
+        const remHours = hours % 24;
+        return remHours ? (days + 'd ' + remHours + 'h') : (days + 'd');
+    }
+
+    /** Status column text: "idle (12m)" when idle and we know last_action time. */
+    function formatActionStatusDisplay(status, nowSec) {
+        const a = (status && status.actionStatus) ? String(status.actionStatus).toLowerCase() : '';
+        if (a !== 'idle') return a || '—';
+        const dur = formatIdleDuration(status.lastActionTimestamp, nowSec);
+        if (dur) return 'idle (' + dur + ')';
+        if (status.lastActionRelative) return 'idle (' + status.lastActionRelative + ')';
+        return 'idle';
     }
 
     /** Return CSS color for Status column: Online=green, Idle=orange, Abroad=blue, else inherit. */
@@ -1807,9 +2229,10 @@
         const nowSec = Math.floor(Date.now() / 1000);
         const overseasModifier = member && isAbroad(member, nowSec) ? 1.25 : 1;
         const retaliationModifier =
-            respectContext &&
-            respectContext.retaliationTargetIds &&
-            respectContext.retaliationTargetIds.has(id)
+            (respectContext &&
+                respectContext.retaliationTargetIds &&
+                respectContext.retaliationTargetIds.has(id))
+            || getActiveRetaliationTarget(id)
                 ? 1.5
                 : 1;
         const warlord = warDashboardRespectWarlordConfig();
@@ -1870,7 +2293,7 @@
             'Chain modifier: ×' + calc.chainModifier.toFixed(2),
             'War modifier: ×' + calc.warModifier.toFixed(2) + (calc.isCurrentWarEnemy ? ' (current ranked-war enemy)' : ' (not applied)'),
             'Overseas modifier: ×' + calc.overseasModifier.toFixed(2) + (calc.overseasModifier > 1 ? ' (enemy abroad)' : ''),
-            'Retaliation modifier: ×' + calc.retaliationModifier.toFixed(2) + (calc.retaliationModifier > 1 ? ' (enemy attacked us in last 5 minutes; assumes hospitalize)' : ''),
+            'Retaliation modifier: ×' + calc.retaliationModifier.toFixed(2) + (calc.retaliationModifier > 1 ? ' (they hit us within 5 minutes of attack end; assumes you hospitalize)' : ''),
             'Warlord modifier: ×' + calc.warlordModifier.toFixed(2) + (calc.warlordEnabled ? ' (' + calc.warlordPercent + '% selected)' : ' (off)'),
             'Result: ' + calc.respect.toFixed(2),
             'Mug applies ×0.75 in Torn, so mugging would reduce this estimate.',
@@ -1943,17 +2366,21 @@
             if (ff != null) { sum += ff; count++; }
             const status = statusFromMember(m);
             const statusDisplay = formatLocationStatusDisplay(status, nowSec);
+            const actionStatusDisplay = formatActionStatusDisplay(status, nowSec);
             const color = getFFColor(ff, blue, green, orange);
             const statusColor = getStatusColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
             const bsText = bs != null ? Number(bs).toLocaleString() : '—';
             const memLabelOur = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
+            const idleSinceAttr = (status.actionStatus === 'idle' && status.lastActionTimestamp != null)
+                ? ' data-idle-since="' + escapeAttr(String(status.lastActionTimestamp)) + '"'
+                : '';
             return `<tr>
                 <td><a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelOur)}</a></td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td>${bsText}</td>
-                <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
+                <td class="war-dashboard-action-status"${idleSinceAttr}${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(actionStatusDisplay)}</td>
                 ${warDashboardLocationCellOpenTag(status, nowSec)}${escapeHtml(statusDisplay)}</td>
             </tr>`;
         }).join('');
@@ -2012,6 +2439,36 @@
         if (status.until != null && nowSec >= status.until) return false;
         const blob = ((status.state || '') + ' ' + (status.description || '')).toLowerCase();
         return blob.includes('hospital');
+    }
+
+    /** Minutes remaining on a timed status (hospital etc.); null if no timer / expired. */
+    function getStatusRemainingMinutes(status, nowSec) {
+        if (status == null || status.until == null || !Number.isFinite(Number(status.until))) return null;
+        const remainingSec = Math.max(0, Math.floor(Number(status.until) - nowSec));
+        if (remainingSec <= 0) return 0;
+        return remainingSec / 60;
+    }
+
+    function getRecommendedHospitalMaxMinutes() {
+        const raw = document.getElementById('war-dashboard-recommended-hospital-max')?.value;
+        const n = parseInt(raw != null && raw !== '' ? raw : '10', 10);
+        if (!Number.isFinite(n)) return 10;
+        return Math.max(0, Math.min(180, n));
+    }
+
+    /**
+     * Recommended eligibility: Okay, or hospital with countdown ≤ settings max minutes.
+     * Abroad only when canShowInRecommended already allowed (same country). Long hospital excluded.
+     */
+    function isEligibleForRecommended(member, nowSec, maxHospitalMinutes) {
+        if (!canShowInRecommended(member)) return false;
+        const status = statusFromMember(member);
+        if (isInHospitalStatus(status, nowSec)) {
+            const remainingMin = getStatusRemainingMinutes(status, nowSec);
+            if (remainingMin == null) return false;
+            return remainingMin <= maxHospitalMinutes;
+        }
+        return true;
     }
 
     function normalizeHospitalPlaceName(place) {
@@ -2113,6 +2570,18 @@
                 td.classList.remove('war-dashboard-hospital-countdown');
                 td.style.color = getLocationStateColor(status, nowSec);
             }
+        });
+    }
+
+    function updateIdleStatusTimers() {
+        const nowSec = Math.floor(Date.now() / 1000);
+        document.querySelectorAll('.war-dashboard-action-status[data-idle-since]').forEach(function (td) {
+            const since = Number(td.getAttribute('data-idle-since'));
+            if (!Number.isFinite(since) || since <= 0) return;
+            td.textContent = formatActionStatusDisplay({
+                actionStatus: 'idle',
+                lastActionTimestamp: since
+            }, nowSec);
         });
     }
 
@@ -3470,8 +3939,9 @@
         let filtered;
 
         if (filterRecommended) {
+            const maxHospitalMinutes = getRecommendedHospitalMaxMinutes();
             const pool = members.filter(m => {
-                if (!canShowInRecommended(m)) return false;
+                if (!isEligibleForRecommended(m, nowSec, maxHospitalMinutes)) return false;
                 const action = statusFromMember(m).actionStatus;
                 const matchActivity = !anyActivity ||
                     (action === 'online' && filterOnline) ||
@@ -3488,7 +3958,7 @@
                 const state = (status.state || '').toLowerCase();
                 const desc = (status.description || '').toLowerCase();
                 const statusExpired = status.until != null && nowSec >= status.until;
-                const inHospital = !statusExpired && (state.includes('hospital') || desc.includes('hospital'));
+                const inHospital = !statusExpired && (state.includes('hospital') || desc.includes('hospital') || isInHospitalStatus(status, nowSec));
                 const inAbroad = !statusExpired && (state.includes('abroad') || state.includes('traveling') || desc.includes('abroad'));
                 const isOkay = !inHospital && !inAbroad;
                 return isOkay && inRange(ffVal(m));
@@ -3499,6 +3969,7 @@
 
             let tier2 = [];
             if (chosenIds.size < 5) {
+                // Prefer short-hospital targets in FF range before other fill candidates
                 tier2 = pool.filter(m => !chosenIds.has(String(m.id)) && inRange(ffVal(m)));
                 tier2.sort((a, b) => (ffVal(a) ?? 999) - (ffVal(b) ?? 999));
                 tier2 = tier2.slice(0, 5 - chosenIds.size);
@@ -3578,6 +4049,7 @@
             const bs = bsMap[String(id)];
             const status = statusFromMember(m);
             const statusDisplay = formatLocationStatusDisplay(status, nowSec);
+            const actionStatusDisplay = formatActionStatusDisplay(status, nowSec);
             const color = getFFColor(ff, blue, green, orange);
             const statusColor = getStatusColor(status, nowSec);
             const ffText = ff != null ? ff.toFixed(2) : '—';
@@ -3589,13 +4061,23 @@
             const attackUrl = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
             const noteValue = escapeHtml(getNote(id));
             const memLabelEnemy = window.toolsFormatMemberDisplayLabel({ name: m.name || id, id }, window.toolsGetShowMemberIdInBrackets());
-            return `<tr>
-                <td><a href="${attackUrl}" target="_blank" rel="noopener" title="Attack">🎯</a> <a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelEnemy)}</a></td>
+            const retalTarget = getActiveRetaliationTarget(id);
+            const isRetal = !!(retalTarget || (respectContext && respectContext.retaliationTargetIds && respectContext.retaliationTargetIds.has(String(id))));
+            const retalBadge = isRetal
+                ? ' <span class="war-dashboard-retal-badge" title="Retaliation window open (from their attack end)">Retal' +
+                  (retalTarget ? ' ' + formatRetalCountdown(retalTarget.expiresAt, nowSec) : '') +
+                  '</span>'
+                : '';
+            const idleSinceAttr = (status.actionStatus === 'idle' && status.lastActionTimestamp != null)
+                ? ' data-idle-since="' + escapeAttr(String(status.lastActionTimestamp)) + '"'
+                : '';
+            return `<tr class="${isRetal ? 'war-dashboard-retal-row' : ''}"${isRetal && retalTarget ? ' data-retal-expires="' + escapeAttr(String(retalTarget.expiresAt)) + '"' : ''}>
+                <td><a href="${attackUrl}" target="_blank" rel="noopener" title="Attack">🎯</a> <a href="https://www.torn.com/profiles.php?XID=${id}" target="_blank" rel="noopener" style="color: #FFD700;"${window.toolsMemberLinkAttrs(m.name || id, id)}>${escapeHtml(memLabelEnemy)}</a>${retalBadge}</td>
                 <td>${escapeHtml(m.level != null ? String(m.level) : '—')}</td>
                 <td style="background-color: ${color || 'transparent'};">${ffText}</td>
                 <td class="war-dashboard-respect-col" title="${respectTitle}"><span class="war-dashboard-respect-value ${respectClass}">${respectText}</span></td>
                 <td>${bsText}</td>
-                <td${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(status.actionStatus)}</td>
+                <td class="war-dashboard-action-status"${idleSinceAttr}${statusColor ? ' style="color: ' + statusColor + ';"' : ''}>${escapeHtml(actionStatusDisplay)}</td>
                 ${warDashboardLocationCellOpenTag(status, nowSec)}${escapeHtml(statusDisplay)}</td>
                 <td><input type="text" class="war-dashboard-note-input" data-player-id="${escapeHtml(id)}" value="${noteValue}" placeholder="Note…" maxlength="500" /></td>
             </tr>`;
@@ -3647,6 +4129,8 @@
     function renderEnemyPanels() {
         const container = document.getElementById('war-dashboard-enemies-list');
         if (!container) return;
+        enemyFactionStates = sortEnemyStatesWarFirst(enemyFactionStates);
+        syncPrimaryEnemyFromStates();
         if (!enemyFactionStates.length) {
             container.innerHTML = '<p class="war-dashboard-command-help">Add an enemy faction to compare members.</p>';
             return;
@@ -3654,10 +4138,15 @@
         container.innerHTML = enemyFactionStates.map(function (enemy) {
             const expanded = enemy.expanded !== false;
             const name = enemy.name || ('Faction ' + enemy.id);
+            const warBadge = enemy.warKind
+                ? ' <span class="war-dashboard-enemy-badge">' + (enemy.warKind === 'upcoming' ? 'Upcoming war' : 'War') + '</span>'
+                : (pinnedWarEnemyFactionId && String(enemy.id) === String(pinnedWarEnemyFactionId)
+                    ? ' <span class="war-dashboard-enemy-badge">War</span>'
+                    : '');
             return '<section class="war-dashboard-enemy-panel" data-faction-id="' + escapeHtml(enemy.id) + '">' +
                 '<button type="button" class="war-dashboard-enemy-panel-toggle" data-faction-id="' + escapeHtml(enemy.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' +
                 '<span class="war-dashboard-enemy-panel-arrow" aria-hidden="true">' + (expanded ? '▼' : '▶') + '</span>' +
-                '<span>' + escapeHtml(name) + '</span>' +
+                '<span>' + escapeHtml(name) + warBadge + '</span>' +
                 '<small>ID: ' + escapeHtml(enemy.id) + ' · ' + ((enemy.members || []).length) + ' members</small>' +
                 '</button>' +
                 '<div class="war-dashboard-enemy-panel-body" style="display:' + (expanded ? 'block' : 'none') + ';">' +
@@ -3748,6 +4237,9 @@
         const orange = localStorage.getItem(STORAGE_KEYS.ffOrange);
         const warlordEnabled = localStorage.getItem(STORAGE_KEYS.respectWarlordEnabled);
         const warlordPercent = localStorage.getItem(STORAGE_KEYS.respectWarlordPercent);
+        const recommendedHospitalMax = localStorage.getItem(STORAGE_KEYS.recommendedHospitalMaxMinutes);
+        const retalsEnabledStored = localStorage.getItem(STORAGE_KEYS.retalsEnabled);
+        const retalsPollStored = localStorage.getItem(STORAGE_KEYS.retalsPollInterval);
 
         const idInput = document.getElementById('war-dashboard-enemy-faction-id');
         if (idInput) idInput.value = '';
@@ -3761,6 +4253,18 @@
         if (greenInput && green != null) greenInput.value = green || '3.5';
         const orangeInput = document.getElementById('war-dashboard-ff-orange');
         if (orangeInput && orange != null) orangeInput.value = orange || '4.5';
+        const recommendedHospitalMaxInput = document.getElementById('war-dashboard-recommended-hospital-max');
+        if (recommendedHospitalMaxInput) {
+            const parsed = parseInt(recommendedHospitalMax != null && recommendedHospitalMax !== '' ? recommendedHospitalMax : '10', 10);
+            recommendedHospitalMaxInput.value = String(Number.isFinite(parsed) ? Math.max(0, Math.min(180, parsed)) : 10);
+        }
+        const retalsOn = retalsEnabledStored === '1';
+        setRetalsEnabled(retalsOn);
+        const retalsPollInput = document.getElementById('war-dashboard-retals-poll-interval');
+        if (retalsPollInput) {
+            const parsedPoll = parseInt(retalsPollStored != null && retalsPollStored !== '' ? retalsPollStored : '15', 10);
+            retalsPollInput.value = String(Number.isFinite(parsedPoll) ? Math.max(2, Math.min(60, parsedPoll)) : 15);
+        }
         const warlordEnabledInput = document.getElementById('war-dashboard-respect-warlord-enabled');
         if (warlordEnabledInput && warlordEnabled != null) warlordEnabledInput.checked = warlordEnabled === '1';
         const warlordPercentInput = document.getElementById('war-dashboard-respect-warlord-percent');
@@ -3772,8 +4276,11 @@
     function updateRecommendedLabel() {
         const blue = Number(document.getElementById('war-dashboard-ff-blue')?.value) || 2.5;
         const green = Number(document.getElementById('war-dashboard-ff-green')?.value) || 3.5;
-        const el = document.getElementById('war-dashboard-recommended-ff-range');
-        if (el) el.textContent = 'FF ' + blue + ' – ' + green;
+        const hospMax = getRecommendedHospitalMaxMinutes();
+        const ffEl = document.getElementById('war-dashboard-recommended-ff-range');
+        if (ffEl) ffEl.textContent = 'FF ' + blue + ' – ' + green;
+        const hospEl = document.getElementById('war-dashboard-recommended-hosp-max');
+        if (hospEl) hospEl.textContent = String(hospMax);
     }
 
     function saveSettings() {
@@ -3787,6 +4294,14 @@
         if (blue != null) localStorage.setItem(STORAGE_KEYS.ffBlue, blue);
         if (green != null) localStorage.setItem(STORAGE_KEYS.ffGreen, green);
         if (orange != null) localStorage.setItem(STORAGE_KEYS.ffOrange, orange);
+        const recommendedHospitalMaxInput = document.getElementById('war-dashboard-recommended-hospital-max');
+        if (recommendedHospitalMaxInput) {
+            localStorage.setItem(STORAGE_KEYS.recommendedHospitalMaxMinutes, String(getRecommendedHospitalMaxMinutes()));
+        }
+        try {
+            localStorage.setItem(STORAGE_KEYS.retalsEnabled, getRetalsEnabled() ? '1' : '0');
+            localStorage.setItem(STORAGE_KEYS.retalsPollInterval, String(getRetalsPollIntervalSec()));
+        } catch (e) { /* ignore */ }
         const warlordEnabled = document.getElementById('war-dashboard-respect-warlord-enabled')?.checked;
         const warlordPercent = document.getElementById('war-dashboard-respect-warlord-percent')?.value;
         if (warlordEnabled != null) localStorage.setItem(STORAGE_KEYS.respectWarlordEnabled, warlordEnabled ? '1' : '0');
@@ -3815,15 +4330,80 @@
             const legacy = normalizeEnemyFactionId(localStorage.getItem(STORAGE_KEYS.enemyFactionId) || '');
             if (legacy) ids.push(legacy);
         }
+        return pinWarEnemyIdFirst(ids);
+    }
+
+    function getArchivedEnemyFactionIds() {
+        const ids = [];
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.enemyFactionIdsArchived);
+            if (!raw) return ids;
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return ids;
+            parsed.forEach(function (id) {
+                const clean = normalizeEnemyFactionId(id);
+                if (clean && !ids.includes(clean)) ids.push(clean);
+            });
+        } catch (e) { /* ignore */ }
         return ids;
     }
 
-    function setStoredEnemyFactionIds(ids) {
+    function setArchivedEnemyFactionIds(ids) {
         const clean = [];
-        (ids || []).forEach(id => {
+        (ids || []).forEach(function (id) {
             const normalized = normalizeEnemyFactionId(id);
-            if (normalized && !clean.includes(normalized) && clean.length < MAX_ENEMY_FACTIONS) clean.push(normalized);
+            if (normalized && !clean.includes(normalized)) clean.push(normalized);
         });
+        try {
+            if (clean.length) localStorage.setItem(STORAGE_KEYS.enemyFactionIdsArchived, JSON.stringify(clean));
+            else localStorage.removeItem(STORAGE_KEYS.enemyFactionIdsArchived);
+        } catch (e) { /* ignore */ }
+        return clean;
+    }
+
+    function enemyDisplayName(id, fallbackName) {
+        const state = enemyFactionStates.find(enemy => String(enemy.id) === String(id));
+        return (state && state.name)
+            || fallbackName
+            || getCachedFactionName(id)
+            || ('Faction ' + id);
+    }
+
+    function pinWarEnemyIdFirst(ids) {
+        const clean = [];
+        (ids || []).forEach(function (id) {
+            const normalized = normalizeEnemyFactionId(id);
+            if (normalized && !clean.includes(normalized)) clean.push(normalized);
+        });
+        const warId = normalizeEnemyFactionId(pinnedWarEnemyFactionId);
+        if (!warId || !clean.includes(warId)) return clean;
+        return [warId].concat(clean.filter(function (id) { return id !== warId; }));
+    }
+
+    function sortEnemyStatesWarFirst(states) {
+        const list = Array.isArray(states) ? states.slice() : [];
+        const warId = normalizeEnemyFactionId(pinnedWarEnemyFactionId);
+        if (!warId) {
+            // Prefer any state already marked as ongoing/upcoming war
+            list.sort(function (a, b) {
+                const aWar = a && (a.warKind === 'ongoing' || a.warKind === 'upcoming') ? 0 : 1;
+                const bWar = b && (b.warKind === 'ongoing' || b.warKind === 'upcoming') ? 0 : 1;
+                return aWar - bWar;
+            });
+            return list;
+        }
+        list.sort(function (a, b) {
+            const aId = a && a.id != null ? String(a.id) : '';
+            const bId = b && b.id != null ? String(b.id) : '';
+            if (aId === warId && bId !== warId) return -1;
+            if (bId === warId && aId !== warId) return 1;
+            return 0;
+        });
+        return list;
+    }
+
+    function setStoredEnemyFactionIds(ids) {
+        const clean = pinWarEnemyIdFirst(ids).slice(0, MAX_ENEMY_FACTIONS);
         try {
             localStorage.setItem(STORAGE_KEYS.enemyFactionIds, JSON.stringify(clean));
             if (clean[0]) localStorage.setItem(STORAGE_KEYS.enemyFactionId, clean[0]);
@@ -3838,8 +4418,12 @@
         if (!clean) return { ok: false, message: 'Enter an enemy faction ID.' };
         const ids = getStoredEnemyFactionIds();
         if (ids.includes(clean)) return { ok: true, ids };
-        if (ids.length >= MAX_ENEMY_FACTIONS) return { ok: false, message: 'You can add up to 3 enemy factions.' };
+        if (ids.length >= MAX_ENEMY_FACTIONS) return { ok: false, message: 'You can add up to 3 enemy factions. Remove or archive one first.' };
         ids.push(clean);
+        // If restoring from archive, drop from archived
+        setArchivedEnemyFactionIds(getArchivedEnemyFactionIds().filter(function (existing) {
+            return existing !== clean;
+        }));
         return { ok: true, ids: setStoredEnemyFactionIds(ids) };
     }
 
@@ -3848,22 +4432,201 @@
         setStoredEnemyFactionIds(getStoredEnemyFactionIds().filter(existing => existing !== clean));
     }
 
-    function renderEnemyPickerList() {
-        const listEl = document.getElementById('war-dashboard-enemy-list');
-        if (!listEl) return;
-        const ids = getStoredEnemyFactionIds();
-        if (!ids.length) {
-            listEl.innerHTML = '<p class="war-dashboard-command-help">No enemy factions added. Add up to 3.</p>';
+    function archiveStoredEnemyFactionId(id) {
+        const clean = normalizeEnemyFactionId(id);
+        if (!clean) return;
+        removeStoredEnemyFactionId(clean);
+        const archived = getArchivedEnemyFactionIds();
+        if (!archived.includes(clean)) archived.push(clean);
+        setArchivedEnemyFactionIds(archived);
+        renderEnemyPickerList();
+    }
+
+    function restoreArchivedEnemyFactionId(id) {
+        const clean = normalizeEnemyFactionId(id);
+        if (!clean) return { ok: false, message: 'Invalid faction.' };
+        const result = addStoredEnemyFactionId(clean);
+        if (!result.ok) return result;
+        renderEnemyPickerList();
+        return result;
+    }
+
+    /**
+     * Ensure ongoing/upcoming ranked war enemy is in the active list (pinned first).
+     * If that would exceed 3, auto-archive overflow non-war enemies and optionally open a chooser.
+     */
+    function ensureWarEnemyInActiveList(currentWarEnemy) {
+        if (!currentWarEnemy || !currentWarEnemy.enemyFactionId) {
+            pinnedWarEnemyFactionId = null;
+            return { changed: false, needsChooser: false };
+        }
+        const warId = normalizeEnemyFactionId(currentWarEnemy.enemyFactionId);
+        if (!warId) {
+            pinnedWarEnemyFactionId = null;
+            return { changed: false, needsChooser: false };
+        }
+        pinnedWarEnemyFactionId = warId;
+        if (currentWarEnemy.enemyName) setCachedFactionName(warId, currentWarEnemy.enemyName);
+
+        const beforeActive = getStoredEnemyFactionIds();
+        const beforeArchived = getArchivedEnemyFactionIds();
+        let archived = beforeArchived.filter(function (id) { return id !== warId; });
+        const nonWar = beforeActive.filter(function (id) { return id !== warId; });
+        const maxNonWar = MAX_ENEMY_FACTIONS - 1;
+
+        if (beforeActive.includes(warId) && beforeActive[0] === warId && beforeArchived.indexOf(warId) < 0) {
+            return { changed: false, needsChooser: false, warId: warId };
+        }
+
+        if (nonWar.length <= maxNonWar) {
+            const nextActive = [warId].concat(nonWar);
+            setStoredEnemyFactionIds(nextActive);
+            setArchivedEnemyFactionIds(archived);
+            const changed = nextActive.join(',') !== beforeActive.join(',') || archived.join(',') !== beforeArchived.join(',');
+            return { changed: changed, needsChooser: false, warId: warId };
+        }
+
+        // Over capacity: keep first maxNonWar non-war temporarily; archive the rest.
+        const keepNonWar = nonWar.slice(0, maxNonWar);
+        const overflow = nonWar.slice(maxNonWar);
+        overflow.forEach(function (id) {
+            if (!archived.includes(id)) archived.push(id);
+        });
+        const nextActive = [warId].concat(keepNonWar);
+        setStoredEnemyFactionIds(nextActive);
+        setArchivedEnemyFactionIds(archived);
+        return {
+            changed: true,
+            needsChooser: true,
+            warId: warId,
+            warName: currentWarEnemy.enemyName || enemyDisplayName(warId),
+            warKind: currentWarEnemy.kind || 'ongoing',
+            chooserCandidates: nonWar.slice(),
+            preselectedNonWar: keepNonWar.slice(),
+            slotsAvailable: maxNonWar
+        };
+    }
+
+    let pendingWarEnemyChooser = null;
+
+    function closeWarEnemyChooserModal() {
+        const modal = document.getElementById('war-dashboard-war-enemy-chooser-modal');
+        if (modal) {
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+        }
+        pendingWarEnemyChooser = null;
+    }
+
+    function openWarEnemyChooserModal(payload) {
+        pendingWarEnemyChooser = payload || null;
+        const modal = document.getElementById('war-dashboard-war-enemy-chooser-modal');
+        if (!modal || !payload) return;
+        const msg = document.getElementById('war-dashboard-war-enemy-chooser-msg');
+        const warRow = document.getElementById('war-dashboard-war-enemy-chooser-war');
+        const list = document.getElementById('war-dashboard-war-enemy-chooser-list');
+        const slotsEl = document.getElementById('war-dashboard-war-enemy-chooser-slots');
+        const slots = payload.slotsAvailable != null ? payload.slotsAvailable : (MAX_ENEMY_FACTIONS - 1);
+        const kindLabel = payload.warKind === 'upcoming' ? 'upcoming' : 'ongoing';
+        if (slotsEl) slotsEl.textContent = String(slots);
+        if (msg) {
+            msg.textContent = 'Your ' + kindLabel + ' ranked war enemy was added automatically. You already had ' +
+                MAX_ENEMY_FACTIONS + ' active enemies, so choose which non-war factions stay active (up to ' +
+                slots + '). Unchecked ones stay archived.';
+        }
+        if (warRow) {
+            warRow.innerHTML = '<span>' + escapeHtml(payload.warName || enemyDisplayName(payload.warId)) +
+                ' <small>ID: ' + escapeHtml(String(payload.warId)) + '</small>' +
+                ' <span class="war-dashboard-enemy-badge">War</span></span>' +
+                '<span class="war-dashboard-command-help">Always kept</span>';
+        }
+        const preselected = new Set((payload.preselectedNonWar || []).map(String));
+        if (list) {
+            list.innerHTML = (payload.chooserCandidates || []).map(function (id) {
+                const checked = preselected.has(String(id)) ? ' checked' : '';
+                return '<div class="war-dashboard-enemy-list-row">' +
+                    '<label>' +
+                    '<input type="checkbox" class="war-dashboard-war-enemy-chooser-cb" data-faction-id="' + escapeHtml(id) + '"' + checked + '>' +
+                    '<span>' + escapeHtml(enemyDisplayName(id)) + ' <small>ID: ' + escapeHtml(id) + '</small></span>' +
+                    '</label>' +
+                    '</div>';
+            }).join('');
+        }
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden', 'false');
+    }
+
+    function applyWarEnemyChooserSelection() {
+        if (!pendingWarEnemyChooser || !pendingWarEnemyChooser.warId) {
+            closeWarEnemyChooserModal();
             return;
         }
-        listEl.innerHTML = ids.map(id => {
-            const state = enemyFactionStates.find(enemy => String(enemy.id) === String(id));
-            const label = (state && state.name) || getCachedFactionName(id) || 'Faction ' + id;
-            return '<div class="war-dashboard-enemy-list-row">' +
-                '<span>' + escapeHtml(label) + ' <small>ID: ' + escapeHtml(id) + '</small></span>' +
-                '<button type="button" class="btn war-dashboard-enemy-remove" data-faction-id="' + escapeHtml(id) + '">Remove</button>' +
-                '</div>';
-        }).join('');
+        const warId = normalizeEnemyFactionId(pendingWarEnemyChooser.warId);
+        const slots = pendingWarEnemyChooser.slotsAvailable != null
+            ? pendingWarEnemyChooser.slotsAvailable
+            : (MAX_ENEMY_FACTIONS - 1);
+        const checked = Array.from(document.querySelectorAll('.war-dashboard-war-enemy-chooser-cb:checked'))
+            .map(function (el) { return normalizeEnemyFactionId(el.getAttribute('data-faction-id')); })
+            .filter(Boolean);
+        if (checked.length > slots) {
+            showError('Pick at most ' + slots + ' non-war enemies to keep active.');
+            return;
+        }
+        const candidates = (pendingWarEnemyChooser.chooserCandidates || []).map(normalizeEnemyFactionId).filter(Boolean);
+        const keep = checked.slice(0, slots);
+        const toArchive = candidates.filter(function (id) { return keep.indexOf(id) < 0; });
+        let archived = getArchivedEnemyFactionIds().filter(function (id) { return id !== warId; });
+        toArchive.forEach(function (id) {
+            if (!archived.includes(id)) archived.push(id);
+        });
+        // Drop restored ones from archive
+        archived = archived.filter(function (id) { return keep.indexOf(id) < 0; });
+        setStoredEnemyFactionIds([warId].concat(keep));
+        setArchivedEnemyFactionIds(archived);
+        closeWarEnemyChooserModal();
+        showError('');
+        runDashboard();
+    }
+
+    function renderEnemyPickerList() {
+        const listEl = document.getElementById('war-dashboard-enemy-list');
+        const archivedWrap = document.getElementById('war-dashboard-enemy-archived-wrap');
+        const archivedList = document.getElementById('war-dashboard-enemy-archived-list');
+        const ids = getStoredEnemyFactionIds();
+        const archived = getArchivedEnemyFactionIds().filter(function (id) { return ids.indexOf(id) < 0; });
+        if (listEl) {
+            if (!ids.length) {
+                listEl.innerHTML = '<p class="war-dashboard-command-help">No enemy factions added. Add up to 3. Ranked war enemies are added automatically.</p>';
+            } else {
+                listEl.innerHTML = ids.map(function (id) {
+                    const state = enemyFactionStates.find(enemy => String(enemy.id) === String(id));
+                    const label = enemyDisplayName(id);
+                    const warBadge = state && state.warKind
+                        ? ' <span class="war-dashboard-enemy-badge">' + (state.warKind === 'upcoming' ? 'Upcoming war' : 'War') + '</span>'
+                        : '';
+                    return '<div class="war-dashboard-enemy-list-row">' +
+                        '<span>' + escapeHtml(label) + ' <small>ID: ' + escapeHtml(id) + '</small>' + warBadge + '</span>' +
+                        '<button type="button" class="btn war-dashboard-enemy-remove" data-faction-id="' + escapeHtml(id) + '">Remove</button>' +
+                        '</div>';
+                }).join('');
+            }
+        }
+        if (archivedWrap && archivedList) {
+            if (!archived.length) {
+                archivedWrap.style.display = 'none';
+                archivedList.innerHTML = '';
+            } else {
+                archivedWrap.style.display = 'block';
+                const room = Math.max(0, MAX_ENEMY_FACTIONS - ids.length);
+                archivedList.innerHTML = archived.map(function (id) {
+                    const restoreDisabled = room <= 0 ? ' disabled title="Active list is full (3/3)"' : '';
+                    return '<div class="war-dashboard-enemy-list-row">' +
+                        '<span>' + escapeHtml(enemyDisplayName(id)) + ' <small>ID: ' + escapeHtml(id) + '</small></span>' +
+                        '<button type="button" class="btn war-dashboard-enemy-restore" data-faction-id="' + escapeHtml(id) + '"' + restoreDisabled + '>Restore</button>' +
+                        '</div>';
+                }).join('');
+            }
+        }
     }
 
     function syncPrimaryEnemyFromStates() {
@@ -3984,8 +4747,6 @@
         showError('');
         showLoading(true);
 
-        const enemyFactionIds = getStoredEnemyFactionIds();
-
         try {
             const user = await getUserProfile(apiKey);
             const ourFactionId = user.factionId;
@@ -3997,6 +4758,15 @@
 
             lastOurFactionId = ourFactionId;
             currentUserPlayerId = user.playerId;
+
+            const current = await getCurrentWarEnemy(apiKey, ourFactionId).catch(() => null);
+            const warAuto = ensureWarEnemyInActiveList(current);
+            if (warAuto && warAuto.needsChooser) {
+                // Defer chooser until after first paint so tables can load with temp selection
+                setTimeout(function () { openWarEnemyChooserModal(warAuto); }, 0);
+            }
+
+            const enemyFactionIds = getStoredEnemyFactionIds();
 
             if (!enemyFactionIds.length) {
                 enemyFactionStates = [];
@@ -4051,14 +4821,14 @@
                 updateActivityTrackerUI();
                 syncAllTrackedFactionsToFirestoreThenRefreshStatus();
                 setOurTeamCollapsed(true);
-                showError('Enter an enemy faction ID or click "Add current ranked war" to compare.');
+                showError('No ranked war found and no enemies saved. Add an enemy faction ID, or wait for a ranked war to be auto-added.');
                 fetchChainWatchData(false).catch(function () {});
                 syncChainWatchFromDashboard();
+                if (getRetalsEnabled()) startRetalsPollTimer();
+                else renderRetalsPanel();
                 showLoading(false);
                 return;
             }
-
-            const current = await getCurrentWarEnemy(apiKey, ourFactionId).catch(() => null);
 
             const [ourMembers, ourChainData, loadedEnemies] = await Promise.all([
                 fetchFactionMembers(apiKey, null),
@@ -4086,7 +4856,9 @@
                 ourBS = ourCached.bs || {};
             }
 
-            enemyFactionStates = loadedEnemies;
+            enemyFactionStates = sortEnemyStatesWarFirst(loadedEnemies);
+            // Keep localStorage order in sync (war always first).
+            setStoredEnemyFactionIds(enemyFactionStates.map(function (enemy) { return enemy.id; }));
             syncPrimaryEnemyFromStates();
             updateWarDashboardEnemyLabels();
             lastOurMembers = ourMembers;
@@ -4115,6 +4887,8 @@
             setOurTeamCollapsed(true);
             fetchChainWatchData(false).catch(function () {});
             syncChainWatchFromDashboard();
+            if (getRetalsEnabled()) startRetalsPollTimer();
+            else renderRetalsPanel();
         } catch (err) {
             showError(warDashboardFriendlyError(err));
             console.error('War Dashboard:', err);
@@ -4376,6 +5150,7 @@
         stopRefreshTimer();
         stopChainTick();
         stopChainRefreshTimer();
+        stopRetalsPollTimer();
         if (activityTrackerIntervalId) {
             clearInterval(activityTrackerIntervalId);
             activityTrackerIntervalId = null;
@@ -4404,6 +5179,7 @@
         startRefreshTimer();
         startChainTick();
         startChainRefreshTimer();
+        startRetalsPollTimer();
         if (!activityTrackerIntervalId) {
             activityTrackerIntervalId = setInterval(runActivityTrackerTick, ACTIVITY_INTERVAL_MS);
         }
@@ -4477,6 +5253,8 @@
             updateChainDisplays();
             renderChainBoxes();
             updateLocationStatusTimers();
+            updateIdleStatusTimers();
+            updateRetaliationCountdowns();
         }, 1000);
         renderChainBoxes();
     }
@@ -5580,6 +6358,7 @@
         // Show chains row shell before runDashboard finishes; Chain Watch commands stay in the ribbon.
         showWarDashboardChainsRow();
         updateChainWatchBarVisibility();
+        syncRetalsUiAfterInit();
         runDashboard();
         startWarDashboardTimers();
     }
@@ -5753,10 +6532,9 @@
                 }
                 const idInput = document.getElementById('war-dashboard-enemy-faction-id');
                 if (idInput) idInput.value = '';
-                const result = addStoredEnemyFactionId(current.enemyFactionId);
-                if (!result.ok) {
-                    showError(result.message);
-                    return;
+                const warAuto = ensureWarEnemyInActiveList(current);
+                if (warAuto && warAuto.needsChooser) {
+                    openWarEnemyChooserModal(warAuto);
                 }
                 if (btn) btn.textContent = 'Add current ranked war';
                 runDashboard();
@@ -5779,6 +6557,36 @@
             if (!btn) return;
             removeStoredEnemyFactionId(btn.getAttribute('data-faction-id'));
             runDashboard();
+        });
+
+        document.getElementById('war-dashboard-enemy-archived-list')?.addEventListener('click', function (e) {
+            const btn = e.target && e.target.closest ? e.target.closest('.war-dashboard-enemy-restore') : null;
+            if (!btn || btn.disabled) return;
+            const result = restoreArchivedEnemyFactionId(btn.getAttribute('data-faction-id'));
+            if (!result.ok) {
+                showError(result.message);
+                return;
+            }
+            runDashboard();
+        });
+
+        wireWarDashboardCommandModal('war-dashboard-war-enemy-chooser-modal', 'war-dashboard-war-enemy-chooser-close', closeWarEnemyChooserModal);
+        document.getElementById('war-dashboard-war-enemy-chooser-modal')?.addEventListener('click', function (e) {
+            if (e.target && e.target.id === 'war-dashboard-war-enemy-chooser-modal') closeWarEnemyChooserModal();
+        });
+        document.getElementById('war-dashboard-war-enemy-chooser-apply')?.addEventListener('click', applyWarEnemyChooserSelection);
+        document.getElementById('war-dashboard-war-enemy-chooser-dismiss')?.addEventListener('click', closeWarEnemyChooserModal);
+        document.getElementById('war-dashboard-war-enemy-chooser-list')?.addEventListener('change', function (e) {
+            const cb = e.target;
+            if (!cb || !cb.classList || !cb.classList.contains('war-dashboard-war-enemy-chooser-cb')) return;
+            if (!cb.checked) return;
+            const slots = pendingWarEnemyChooser && pendingWarEnemyChooser.slotsAvailable != null
+                ? pendingWarEnemyChooser.slotsAvailable
+                : (MAX_ENEMY_FACTIONS - 1);
+            const checked = document.querySelectorAll('.war-dashboard-war-enemy-chooser-cb:checked');
+            if (checked.length <= slots) return;
+            cb.checked = false;
+            showError('You can keep at most ' + slots + ' non-war enemies active.');
         });
 
         // Our team collapsible toggle
@@ -5881,6 +6689,11 @@
         document.getElementById('war-dashboard-ff-blue')?.addEventListener('change', () => { updateRecommendedLabel(); runDashboard(); });
         document.getElementById('war-dashboard-ff-green')?.addEventListener('change', () => { updateRecommendedLabel(); runDashboard(); });
         document.getElementById('war-dashboard-ff-orange')?.addEventListener('change', () => runDashboard());
+        document.getElementById('war-dashboard-recommended-hospital-max')?.addEventListener('change', () => {
+            saveSettings();
+            updateRecommendedLabel();
+            if (enemyFactionStates && enemyFactionStates.length) renderEnemyPanels();
+        });
 
         document.getElementById('war-dashboard-activity-tracker-load')?.addEventListener('click', () => {
             const factionId = getActivityTrackerFactionIdFromInputs();

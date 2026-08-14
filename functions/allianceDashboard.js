@@ -1,6 +1,6 @@
 /**
  * Alliance Dashboard: Firestore-backed alliance roster + shared weapon vault.
- * - Alliance creator may add any faction ID (no consent from that faction), rename, remove factions, repair index.
+ * - Alliance creator may add any faction ID (no consent from that faction), rename, remove factions, delete alliance, repair index.
  * - Other leaders/co-leaders may add their own faction only (verified on roster).
  * - allianceFactionMemberships: index so leaders can list alliances their faction was added to.
  * - Vault: any member of an allied faction may add/update rows.
@@ -363,6 +363,62 @@ exports.allianceRemoveFaction = onCall(callableOpts({ maxInstances: 10 }), async
   }
   if (vcount > 0) await vbatch.commit();
   return { ok: true, removedFactionId: fid };
+});
+
+/** Delete an entire collection in batches (subcollections under an alliance). */
+async function deleteCollectionInBatches(collectionRef) {
+  for (;;) {
+    const snap = await collectionRef.limit(450).get();
+    if (snap.empty) return;
+    const batch = getDb().batch();
+    snap.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+  }
+}
+
+/**
+ * Permanently delete an alliance (creator only).
+ * Requires confirmName to match the alliance display name.
+ * Removes membership index rows, vault items, territory docs, then the alliance document.
+ */
+exports.allianceDelete = onCall(callableOpts({ maxInstances: 5 }), async (request) => {
+  const { apiKey, allianceId, confirmName } = request.data || {};
+  const user = await fetchUserFromApiKey(apiKey);
+  const aid = String(allianceId || '').trim();
+  if (!aid) throw new HttpsError('invalid-argument', 'allianceId required');
+  const ref = getDb().collection(ALLIANCES).doc(aid);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Alliance not found.');
+  const d = snap.data() || {};
+  assertAllianceCreator(d, user.playerId);
+  const expectedName = String(d.name || '').trim();
+  if (!expectedName || String(confirmName || '').trim() !== expectedName) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Type the exact alliance display name to confirm deletion.'
+    );
+  }
+
+  const fmap = factionsMapFromAlliance(d);
+  const fids = Object.keys(fmap);
+  let batch = getDb().batch();
+  let ops = 0;
+  for (const fid of fids) {
+    batch.delete(getDb().collection(ALLIANCE_FACTION_MEMBERSHIPS).doc(membershipDocId(aid, fid)));
+    ops++;
+    if (ops >= 450) {
+      await batch.commit();
+      batch = getDb().batch();
+      ops = 0;
+    }
+  }
+  if (ops > 0) await batch.commit();
+
+  await deleteCollectionInBatches(ref.collection(VAULT));
+  await deleteCollectionInBatches(ref.collection(FACTION_TERRITORY));
+  await ref.delete();
+
+  return { ok: true, allianceId: aid };
 });
 
 /** List alliances this player’s faction appears in (Leader / Co-leader only). */

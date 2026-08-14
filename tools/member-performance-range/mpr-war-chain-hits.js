@@ -3,8 +3,34 @@ function mprWcTornFetchUrl(url) {
     return typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
 }
 
+function mprWcProgressOpts(progressEls, prefix) {
+    if (!progressEls) return {};
+    return {
+        progressMessage: progressEls.progressMessage,
+        progressDetails: progressEls.progressDetails,
+        progressPercentage: progressEls.progressPercentage,
+        progressFill: progressEls.progressFill,
+        progressDetailsPrefix: prefix || ''
+    };
+}
+
+/** Countdown in the same progress UI used by fetchWithRateLimit / other tools. */
+async function mprWcCountdownWait(seconds, progressEls, detailPrefix) {
+    const waitSeconds = Math.max(1, Math.ceil(Number(seconds) || 0));
+    const msg = progressEls && progressEls.progressMessage;
+    const det = progressEls && progressEls.progressDetails;
+    if (msg) msg.textContent = 'Waiting for API Limit...';
+    const prefix = detailPrefix || 'API rate limit reached, waiting';
+    for (let j = waitSeconds; j > 0; j--) {
+        if (det) det.textContent = `${prefix} ${j} seconds...`;
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    if (msg) msg.textContent = 'Fetching data...';
+    if (det) det.textContent = 'Resuming data collection...';
+}
+
 /** Same burst + throttle pattern as War & Chain Reporter (`fetchTornApiInChunks` in app.js). */
-async function mprWcFetchTornApiInChunks(apiKey, requests, chunkSize = 10) {
+async function mprWcFetchTornApiInChunks(apiKey, requests, chunkSize = 10, progressEls = null) {
     const batchTornApiCalls = window.batchTornApiCalls;
     if (typeof batchTornApiCalls !== 'function') {
         throw new Error('batchTornApiCalls is not available (load the main app first).');
@@ -14,20 +40,21 @@ async function mprWcFetchTornApiInChunks(apiKey, requests, chunkSize = 10) {
     const firstBurstCount = 50;
     const burstRequests = requests.slice(0, firstBurstCount);
     const throttledRequests = requests.slice(firstBurstCount);
+    const progressOpts = mprWcProgressOpts(progressEls, 'War/chain: ');
 
     if (burstRequests.length > 0) {
         for (let i = 0; i < burstRequests.length; i += chunkSize) {
             const chunk = burstRequests.slice(i, i + chunkSize);
-            Object.assign(allData, await batchTornApiCalls(apiKey, chunk));
+            Object.assign(allData, await batchTornApiCalls(apiKey, chunk, progressOpts));
         }
     }
     if (throttledRequests.length > 0) {
-        await new Promise(r => setTimeout(r, 30000));
+        await mprWcCountdownWait(30, progressEls, 'API rate limit reached, waiting');
     }
     if (throttledRequests.length > 0) {
         for (let i = 0; i < throttledRequests.length; i += chunkSize) {
             const chunk = throttledRequests.slice(i, i + chunkSize);
-            Object.assign(allData, await batchTornApiCalls(apiKey, chunk));
+            Object.assign(allData, await batchTornApiCalls(apiKey, chunk, progressOpts));
             if (i + chunkSize < throttledRequests.length) {
                 await new Promise(r => setTimeout(r, throttleDelay));
             }
@@ -577,9 +604,10 @@ function mprWcMergeWarReportsIntoHits(warReportData, hitsById, ownFactionId) {
 
 /**
  * War hits + chain hits for the same [fromTs, toTs] as consumption (War & Chain Reporter endpoints).
+ * @param {object} [progressEls] Optional MPR progress elements (same shape as fetchWithRateLimit).
  * @returns {{ ok: boolean, hitsById: Object.<string, {war:number, chain:number, outside:number, warRespect:number, outsideRespect:number, chainWarRespect:number, outsideRespectHasChainRespect:boolean, chainBonusExtraWar:number, chainBonusExtraOutside:number}>, warnings: string[], message?: string }}
  */
-async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
+async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs, progressEls = null) {
     const warnings = [];
     const hitsById = {};
     const key = (apiKey || '').trim();
@@ -590,9 +618,19 @@ async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
         return { ok: false, hitsById, warnings, message: 'API batch helper not loaded.' };
     }
 
-    const userUrl = mprWcTornFetchUrl(`https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(key)}`);
-    const userRes = await fetch(userUrl);
-    const userData = await userRes.json();
+    const progressOpts = mprWcProgressOpts(progressEls, 'War/chain: ');
+    const userUrl = `https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(key)}`;
+    let userData;
+    if (typeof window.fetchWithRateLimit === 'function') {
+        userData = await window.fetchWithRateLimit(userUrl, {
+            progressMessage: progressEls && progressEls.progressMessage,
+            progressDetails: progressEls && progressEls.progressDetails,
+            retryOnRateLimit: true
+        });
+    } else {
+        const userRes = await fetch(mprWcTornFetchUrl(userUrl));
+        userData = await userRes.json();
+    }
     if (userData.error) {
         return { ok: false, hitsById, warnings, message: userData.error.error || 'User API error' };
     }
@@ -615,7 +653,7 @@ async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
         url: `https://api.torn.com/v2/faction/${fid}/rankedwars`,
         params: ''
     };
-    const warListData = await window.batchTornApiCalls(key, [warListRequest]);
+    const warListData = await window.batchTornApiCalls(key, [warListRequest], progressOpts);
     const warRoot = warListData.rankedwars;
     if (warRoot && warRoot.error) {
         return { ok: false, hitsById, warnings, message: warRoot.error.error || 'Ranked wars error' };
@@ -635,7 +673,7 @@ async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
         url: `https://api.torn.com/v2/faction/${fid}/chains`,
         params: `limit=100&sort=DESC&to=${toTs}&from=${fromTs}&timestamp=${Math.floor(Date.now() / 1000)}`
     };
-    const chainListData = await window.batchTornApiCalls(key, [chainListRequest]);
+    const chainListData = await window.batchTornApiCalls(key, [chainListRequest], progressOpts);
     const chainRoot = chainListData.chains;
     if (chainRoot && chainRoot.error) {
         return { ok: false, hitsById, warnings, message: chainRoot.error.error || 'Chains list error' };
@@ -649,6 +687,9 @@ async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
     /** Ranked war reports first so chain bonus lines can be matched to enemy defenders. */
     let warReportData = {};
     if (overlapping.length > 0) {
+        if (progressEls && progressEls.progressDetails) {
+            progressEls.progressDetails.textContent = `Loading ${overlapping.length} ranked war report(s)…`;
+        }
         const warReportRequests = overlapping.map((warData, index) => {
             const warId = warData.id || warData.war_id;
             return {
@@ -657,7 +698,7 @@ async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
                 params: ''
             };
         });
-        warReportData = await mprWcFetchTornApiInChunks(key, warReportRequests);
+        warReportData = await mprWcFetchTornApiInChunks(key, warReportRequests, 10, progressEls);
     }
     const enemyMemberIdSet = mprWcCollectEnemyMemberIdsFromWarReports(warReportData, fid);
     if (chainsArray.length > 0 && enemyMemberIdSet.size === 0) {
@@ -665,6 +706,9 @@ async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
     }
 
     if (chainsArray.length > 0) {
+        if (progressEls && progressEls.progressDetails) {
+            progressEls.progressDetails.textContent = `Loading ${chainsArray.length} chain report(s)…`;
+        }
         const chainReportRequests = chainsArray
             .map((chainData, index) => {
                 const tornId = mprWcTornChainReportLookupId(chainData);
@@ -680,7 +724,7 @@ async function mprFetchWarChainHitsForRange(apiKey, fromTs, toTs) {
                 };
             })
             .filter(Boolean);
-        const chainReportData = await mprWcFetchTornApiInChunks(key, chainReportRequests);
+        const chainReportData = await mprWcFetchTornApiInChunks(key, chainReportRequests, 10, progressEls);
         mprWcMergeChainReportsIntoHits(chainReportData, hitsById, enemyMemberIdSet, overlapping);
         const debugWarChain = mprWcBuildWarChainFetchDebug(chainReportData, hitsById);
         try {
