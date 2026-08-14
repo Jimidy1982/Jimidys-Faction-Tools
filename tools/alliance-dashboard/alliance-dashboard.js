@@ -3100,9 +3100,9 @@
                 }
                 if (
                     !confirm(
-                        'Delete alliance “‘ +
+                        'Delete alliance "' +
                             allianceName +
-                            '” permanently?\n\n' +
+                            '" permanently?\n\n' +
                             'This removes the alliance for everyone, including the shared vault and territory data. This cannot be undone.'
                     )
                 ) {
