@@ -1011,9 +1011,17 @@
     }
 
     /**
-     * Same participation scoring as Organised Crime Stats (difficulty × participants/6 per slot).
+     * Same participation scoring as Organised Crime Stats (difficulty × filled slots/6 per slot).
+     * Pass/fail follows crime.status for every participant (hospital/jail/injury ignored).
      * Optional: player / faction $ estimates from successful crime rewards (Organised Crime Stats split).
      */
+    function mprCrimeWasSuccessful(status) {
+        const s = String(status == null ? '' : status)
+            .trim()
+            .toLowerCase();
+        return s === 'successful' || s === 'success';
+    }
+
     function mprProcessCrimeScoresOnly(crimes, playerNames, currentMemberIds, factionCutPercent, itemValues) {
         const cut = Math.min(100, Math.max(0, Number(factionCutPercent)));
         const iv = itemValues && typeof itemValues === 'object' ? itemValues : {};
@@ -1057,15 +1065,15 @@
 
             if (!crime.slots || !Array.isArray(crime.slots)) return;
 
-            const crimeStatus = crime.status == null ? '' : String(crime.status);
+            const crimeSucceeded = mprCrimeWasSuccessful(crime.status);
             // Match Organised Crime Stats: split among every filled slot, not only current roster (ex-members still shared the pool).
             const rewardSplitCount = crime.slots.filter(slot => slot.user && slot.user.id).length;
             const rewardParsed =
-                crimeStatus === 'Successful' && crime.rewards ? mprParseCrimeRewards(crime.rewards) : { money: 0, items: [] };
+                crimeSucceeded && crime.rewards ? mprParseCrimeRewards(crime.rewards) : { money: 0, items: [] };
             const itemDollars = mprRewardItemsDollarValue(rewardParsed.items, iv);
             const totalRewardDollars = (rewardParsed.money || 0) + itemDollars;
             const shareReward =
-                crimeStatus === 'Successful' &&
+                crimeSucceeded &&
                 rewardSplitCount > 0 &&
                 (rewardParsed.money > 0 || (rewardParsed.items && rewardParsed.items.length > 0));
             const playerMoneyMult = shareReward ? (1 - cut / 100) / rewardSplitCount : 0;
@@ -1099,23 +1107,19 @@
                 }
 
                 pm.totalParticipations++;
-                const totalParticipants = crime.slots.length;
+                const totalParticipants = rewardSplitCount > 0 ? rewardSplitCount : crime.slots.length;
                 const participationRatio = totalParticipants / 6;
                 const participationScore = Math.round(difficulty * participationRatio);
                 pm.totalScore += participationScore;
 
                 if (shareReward) {
-                    const oc = slot.user.outcome == null ? '' : String(slot.user.outcome).toLowerCase();
-                    const slotPaid = !oc || oc === 'successful' || oc === 'success';
-                    if (slotPaid) {
-                        pm.ocEarningsEstimate += totalRewardDollars * playerMoneyMult;
-                    }
+                    pm.ocEarningsEstimate += totalRewardDollars * playerMoneyMult;
                     pm.ocFactionCutEstimate += totalRewardDollars * factionMoneyMult;
                 }
 
                 if (pm.difficultyBreakdown[difficulty]) {
                     pm.difficultyBreakdown[difficulty].total++;
-                    if (slot.user.outcome === 'Successful') {
+                    if (crimeSucceeded) {
                         pm.difficultyBreakdown[difficulty].successful++;
                     } else {
                         pm.difficultyBreakdown[difficulty].failed++;
@@ -1130,7 +1134,7 @@
                     pct[crimeTypeKey] = { crimeName, total: 0, successful: 0, failed: 0 };
                 }
                 pct[crimeTypeKey].total++;
-                if (slot.user.outcome === 'Successful') {
+                if (crimeSucceeded) {
                     pct[crimeTypeKey].successful++;
                     pm.successfulParticipations++;
                     const diffNum = parseInt(String(difficulty), 10);

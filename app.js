@@ -4667,7 +4667,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (oldScript) oldScript.remove();
                 // Dynamically load the script
                 const script = document.createElement('script');
-                script.src = 'tools/organised-crime-stats/organised-crime-stats.js';
+                script.src =
+                    'tools/organised-crime-stats/organised-crime-stats.js?v=' +
+                    encodeURIComponent(window.APP_BUILD_VERSION || Date.now());
                 script.id = 'organised-crime-stats-script';
                 script.onload = () => {
                     console.log('[APP] organised-crime-stats/organised-crime-stats.js loaded, calling initOrganisedCrimeStats');

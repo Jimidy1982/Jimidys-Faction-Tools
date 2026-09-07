@@ -26,6 +26,14 @@ function ocStatsTornFetchUrl(url) {
     }
 }
 
+/** Torn crime.status: Successful vs Failure/Expired/… — pass/fail is crime-wide for all slots. */
+function ocStatsCrimeWasSuccessful(status) {
+    const s = String(status == null ? '' : status)
+        .trim()
+        .toLowerCase();
+    return s === 'successful' || s === 'success';
+}
+
 /**
  * Read the visible date filter for a section from the DOM (source of truth for what the user sees).
  * Falls back to ocStatsData.activeFilters if the select is missing (e.g. before first paint).
@@ -1420,7 +1428,7 @@ function ocStatsRenderPlayerCrimeParticipationsTableHtml(player, itemsMap, facti
                                             <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Date</th>
                                             <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Difficulty</th>
                                             <th style="padding: 8px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Crime</th>
-                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);">Your outcome</th>
+                                            <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);" title="Based on the crime result — all participants share Success or Failed. Hospital/jail/injury status is ignored.">Crime result</th>
                                             <th style="padding: 8px; text-align: center; border-bottom: 1px solid var(--border-color); color: var(--accent-color);" title="Your estimated share when this crime paid out (cash + priced items), after faction cut %">Earnings</th>
                                         </tr>
                                     </thead>
@@ -1808,8 +1816,9 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
         }
         
         // Rewards only for successful crimes
+        const crimeSucceeded = ocStatsCrimeWasSuccessful(status);
         const rewardParsed =
-            status === 'Successful' && crime.rewards
+            crimeSucceeded && crime.rewards
                 ? parseCrimeRewards(crime.rewards)
                 : { money: 0, itemCount: 0, items: [], respect: 0 };
         
@@ -1829,7 +1838,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             // Update difficulty stats
             if (difficultyMap[difficulty]) {
                 difficultyMap[difficulty].total++;
-                if (status === 'Successful') {
+                if (crimeSucceeded) {
                     difficultyMap[difficulty].successful++;
                     difficultyMap[difficulty].totalRewardMoney += rewardParsed.money;
                     difficultyMap[difficulty].totalRewardItemCount += rewardParsed.itemCount;
@@ -1866,7 +1875,7 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                 }
                 const ct = difficultyMap[difficulty].crimeTypes[crimeTypeKey];
                 ct.total++;
-                if (status === 'Successful') {
+                if (crimeSucceeded) {
                     ct.successful++;
                     ct.totalRewardMoney += rewardParsed.money;
                     ct.totalRewardItemCount += rewardParsed.itemCount;
@@ -1894,7 +1903,6 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
             crime.slots.forEach(slot => {
                 if (slot.user && slot.user.id) {
                     const playerId = slot.user.id.toString();
-                    const outcome = slot.user.outcome;
                     
                     // Only track if this player is a current member
                     if (currentMemberIds.has(playerId)) {
@@ -1940,16 +1948,12 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                             };
                         }
                         
-                        // Credit this player with their share only if their slot succeeded (crime can succeed while one member is left behind / fails).
-                        const ocOut = outcome == null ? '' : String(outcome).toLowerCase();
-                        const slotGetsPaid =
-                            !ocOut || ocOut === 'successful' || ocOut === 'success';
+                        // Pass/fail follows the crime result for every participant (hospital/jail/injury ignored).
                         const execAt = crime.executed_at != null ? Number(crime.executed_at) : null;
                         let paidCashShare = 0;
                         const paidItemsBreakdown = {};
                         if (
-                            status === 'Successful' &&
-                            slotGetsPaid &&
+                            crimeSucceeded &&
                             (rewardParsed.money > 0 || rewardParsed.items.length > 0)
                         ) {
                             paidCashShare = rewardParsed.money * playerShareMultiplier;
@@ -1968,30 +1972,29 @@ function processCrimeData(crimes, playerNames = {}, currentMemberIds = new Set()
                             difficulty,
                             crimeName,
                             crimeTypeKey,
-                            slotSuccessful: outcome === 'Successful',
+                            slotSuccessful: crimeSucceeded,
                             cashShare: paidCashShare,
                             itemsBreakdown: paidItemsBreakdown,
                             participantsInCrime: participantsInCrime || 1
                         });
                         
-                        const totalParticipants = crime.slots ? crime.slots.length : 0;
+                        const totalParticipants = participantsInCrime > 0 ? participantsInCrime : (crime.slots ? crime.slots.length : 0);
                         const participationRatio = totalParticipants / 6;
                         const participationScore = Math.round(difficulty * participationRatio);
                         playerMap[playerId].totalScore += participationScore;
                         
                         if (playerMap[playerId].difficultyBreakdown[difficulty]) {
                             playerMap[playerId].difficultyBreakdown[difficulty].total++;
-                            if (outcome === 'Successful') {
+                            if (crimeSucceeded) {
                                 playerMap[playerId].difficultyBreakdown[difficulty].successful++;
                             } else {
                                 playerMap[playerId].difficultyBreakdown[difficulty].failed++;
                             }
                         }
                         pct[crimeTypeKey].total++;
-                        if (outcome === 'Successful') pct[crimeTypeKey].successful++; else pct[crimeTypeKey].failed++;
+                        if (crimeSucceeded) pct[crimeTypeKey].successful++; else pct[crimeTypeKey].failed++;
                         
-                        // Count outcome
-                        if (outcome === 'Successful') {
+                        if (crimeSucceeded) {
                             playerMap[playerId].successfulParticipations++;
                             const diffNum = parseInt(String(difficulty), 10);
                             if (diffNum >= 1 && diffNum <= 10) {
@@ -2221,7 +2224,7 @@ function updateOCStatsUI(difficultyStats, playerStats, totalCrimes) {
                             <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                             <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                             <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
-                            <th data-column="highestDifficultySucceeded" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Highest OC difficulty (1–10) where this player had a successful slot outcome in the filtered period.">Highest D. <span class="sort-indicator"></span></th>
+                            <th data-column="highestDifficultySucceeded" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" <title="Highest OC difficulty (1–10) where this player was on a successful crime in the filtered period.">Highest D. <span class="sort-indicator"></span></th>
                             <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes this player participated in">Rewards <span class="sort-indicator"></span></th>
                             <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
                         </tr>
@@ -2523,7 +2526,7 @@ function exportOCStatsToCSV() {
     
     csvContent += '\n\nPLAYER CRIME LOG (one row per participation)\n';
     csvContent +=
-        'Player Name,Player ID,Date completed (month day),Difficulty (of 10 max),Crime,Your outcome,Earnings ($)\n';
+        'Player Name,Player ID,Date completed (month day),Difficulty (of 10 max),Crime,Crime result,Earnings ($)\n';
     const csvItemsMap = ocStatsData.itemsMap || {};
     const csvCutPct = ocStatsFactionCutPercentActive();
     sortedPlayerStats.forEach(player => {
@@ -2863,7 +2866,7 @@ function updatePlayerStatsUI(playerStats) {
                         <th data-column="successfulParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Successful <span class="sort-indicator"></span></th>
                         <th data-column="failedParticipations" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Failed <span class="sort-indicator"></span></th>
                         <th data-column="successRate" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'">Success Rate <span class="sort-indicator"></span></th>
-                        <th data-column="highestDifficultySucceeded" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Highest OC difficulty (1–10) where this player had a successful slot outcome in the filtered period.">Highest D. <span class="sort-indicator"></span></th>
+                        <th data-column="highestDifficultySucceeded" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" <title="Highest OC difficulty (1–10) where this player was on a successful crime in the filtered period.">Highest D. <span class="sort-indicator"></span></th>
                         <th data-column="totalRewardMoney" style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color); cursor: pointer; user-select: none; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--border-color)'" onmouseout="this.style.backgroundColor='var(--secondary-color)'" title="Rewards from successful crimes this player participated in">Rewards <span class="sort-indicator"></span></th>
                         <th style="padding: 12px; text-align: center; background-color: var(--secondary-color); color: var(--accent-color); border-bottom: 1px solid var(--border-color);">Details</th>
                     </tr>
