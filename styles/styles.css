@@ -8494,6 +8494,11 @@ body.alliance-dash-modal-open {
     font-weight: 600;
 }
 
+.alliance-dash-btn-secondary:hover {
+    background: rgba(255, 215, 0, 0.1) !important;
+    filter: none;
+}
+
 .alliance-dash-btn-danger {
     background: #8b1e1e !important;
     color: #fff !important;
@@ -8506,7 +8511,7 @@ body.alliance-dash-modal-open {
     filter: none;
 }
 
-
+.alliance-dash-territory-sync-status {
     font-size: 0.72rem;
     color: #888;
     max-width: 14rem;

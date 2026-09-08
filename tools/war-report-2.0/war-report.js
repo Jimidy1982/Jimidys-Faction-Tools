@@ -933,6 +933,73 @@ function warReportRespectThresholdRatioPoints(player, opts) {
     return cappedTotal;
 }
 
+/**
+ * When respect/hit thresholds are on, keep war/respect share but do not let assists
+ * (or other modifiers) push total above the max-threshold payout ceiling.
+ * Shrinks modifiers first; only trims the base share if still over.
+ */
+function warReportCapThresholdModifierPayouts(player, maxCapPayout) {
+    const cap = Math.max(0, Math.round(Number(maxCapPayout) || 0));
+    const war = Math.round(Number(player.warHitPayout) || 0);
+    const retal = Math.round(Number(player.retalPayout) || 0);
+    const assist = Math.round(Number(player.assistPayout) || 0);
+    const overseas = Math.round(Number(player.overseasPayout) || 0);
+    const outside = Math.round(Number(player.outsideHitsPayout) || 0);
+    const other = Math.round(Number(player.otherAttacksPayout) || 0);
+    const lowFF = Math.round(Number(player.lowFFPayout) || 0);
+    const mods = retal + assist + overseas + outside + other + lowFF;
+    const total = war + mods;
+
+    if (total <= cap) return;
+
+    if (war >= cap) {
+        player.warHitPayout = cap;
+        player.retalPayout = 0;
+        player.assistPayout = 0;
+        player.overseasPayout = 0;
+        player.outsideHitsPayout = 0;
+        player.otherAttacksPayout = 0;
+        player.lowFFPayout = 0;
+        return;
+    }
+
+    const room = cap - war;
+    if (mods <= 0) {
+        player.warHitPayout = Math.min(war, cap);
+        return;
+    }
+    const scale = room / mods;
+    player.retalPayout = Math.round(retal * scale);
+    player.assistPayout = Math.round(assist * scale);
+    player.overseasPayout = Math.round(overseas * scale);
+    player.outsideHitsPayout = Math.round(outside * scale);
+    player.otherAttacksPayout = Math.round(other * scale);
+    player.lowFFPayout = Math.round(lowFF * scale);
+
+    // Fix rounding so war + modifiers never exceeds cap.
+    const modsAfter =
+        (player.retalPayout || 0) +
+        (player.assistPayout || 0) +
+        (player.overseasPayout || 0) +
+        (player.outsideHitsPayout || 0) +
+        (player.otherAttacksPayout || 0) +
+        (player.lowFFPayout || 0);
+    if (war + modsAfter > cap && modsAfter > 0) {
+        const overflow = war + modsAfter - cap;
+        if ((player.assistPayout || 0) >= overflow) {
+            player.assistPayout -= overflow;
+        } else {
+            player.assistPayout = 0;
+            player.retalPayout = 0;
+            player.overseasPayout = 0;
+            player.outsideHitsPayout = 0;
+            player.otherAttacksPayout = 0;
+            player.lowFFPayout = 0;
+            player.warHitPayout = cap;
+        }
+    }
+}
+
 function warReportFormatWarRespectPayoutTooltip(realWarRespect, termedWarRespect, factor) {
     const f = Number.isFinite(factor) && factor > 0 ? factor : 1;
     const real = Math.round(realWarRespect || 0);
@@ -4035,13 +4102,19 @@ function renderPayoutTable() {
                 }
                 
                 // Above threshold: war hit pay uses thresholds only. Retals / overseas / other / low-FF stay off.
-                // Assists stay paid when "Pay assists" is on so assist multiplier still changes totals (was all zeroed before).
+                // Assists stay paid when "Pay assists" is on, but cannot push total above the max-threshold ceiling.
                 player.retalPayout = 0;
                 if (!payAssists) player.assistPayout = 0;
                 player.overseasPayout = 0;
                 player.outsideHitsPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
+
+                const maxThresholdHitPayout =
+                    payoutMode === 'equal'
+                        ? minThreshold * payPerHit
+                        : maxThreshold * payPerHit;
+                warReportCapThresholdModifierPayouts(player, maxThresholdHitPayout);
 
             }
             
@@ -4663,6 +4736,12 @@ function exportPayoutToCSV() {
                 player.outsideHitsPayout = 0;
                 player.otherAttacksPayout = 0;
                 player.lowFFPayout = 0;
+
+                const maxThresholdHitPayout =
+                    payoutMode === 'equal'
+                        ? minThreshold * payPerHit
+                        : maxThreshold * payPerHit;
+                warReportCapThresholdModifierPayouts(player, maxThresholdHitPayout);
             }
             
             player.totalPayout = player.warHitPayout + (player.retalPayout || 0) + (player.assistPayout || 0) + (player.overseasPayout || 0) + (player.outsideHitsPayout || 0) + (player.otherAttacksPayout || 0) + (player.lowFFPayout || 0) + (player.manualBonus || 0);
@@ -5244,7 +5323,7 @@ function renderRespectPayoutTable() {
                 }
             } else {
                 // Above minimum threshold - respect share from pool; retals / overseas / other / low-FF off.
-                // Keep assist when "Pay assists" is on so assist multiplier affects totals.
+                // Assists stay paid when "Pay assists" is on, but cannot push total above the max-threshold ceiling.
                 const adjustedRespect = warReportRespectThresholdRatioPoints(player, thresholdRatioOpts);
                 
                 player.retalPayout = 0;
@@ -5264,6 +5343,28 @@ function renderRespectPayoutTable() {
                     player.warHitPayout = Math.round(respectRatio * availablePayout);
 
                 }
+
+                // Never exceed what max-threshold respect alone would pay (assists/etc. cannot stack above the cap).
+                const maxThresholdPlayerPayout =
+                    payoutMode === 'equal'
+                        ? qualifyingPlayers.length > 0
+                            ? Math.round(availablePayout / qualifyingPlayers.length)
+                            : 0
+                        : window._totalAdjustedRespect > 0
+                          ? Math.round(
+                                (warReportRespectThresholdRatioPoints(
+                                    {
+                                        playerRealWarRespect: maxThreshold,
+                                        playerTermedWarRespect: 0,
+                                        playerOutsideRespect: 0
+                                    },
+                                    thresholdRatioOpts
+                                ) /
+                                    window._totalAdjustedRespect) *
+                                    availablePayout
+                            )
+                          : 0;
+                warReportCapThresholdModifierPayouts(player, maxThresholdPlayerPayout);
             }
             
             // Recalculate total payout
