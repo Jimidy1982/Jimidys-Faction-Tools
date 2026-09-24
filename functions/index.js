@@ -2218,6 +2218,12 @@ exports.chainWatchSignup = chainWatch.chainWatchSignup;
 exports.chainWatchRemoveSelf = chainWatch.chainWatchRemoveSelf;
 exports.chainWatchSyncChain = chainWatch.chainWatchSyncChain;
 
+/** Faction attack grouping (leader / co-leader / generals) — see functions/attackGrouping.js */
+const attackGrouping = require('./attackGrouping');
+exports.attackGroupingGet = attackGrouping.attackGroupingGet;
+exports.attackGroupingSave = attackGrouping.attackGroupingSave;
+exports.attackGroupingSetGenerals = attackGrouping.attackGroupingSetGenerals;
+
 /** Alliance roster + shared vault — see functions/allianceDashboard.js */
 const allianceDashboard = require('./allianceDashboard');
 exports.allianceCreate = allianceDashboard.allianceCreate;

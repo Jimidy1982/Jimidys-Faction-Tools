@@ -4167,6 +4167,7 @@
             });
         });
         warDashboardInjectMemberColumnHeaders();
+        notifyAttackGroupingDashboard();
     }
 
     function escapeHtml(s) {
@@ -6308,6 +6309,136 @@
         });
     }
 
+    function currentWarEnemyState() {
+        const ongoing = enemyFactionStates.find(function (e) { return e && e.warKind === 'ongoing'; });
+        if (ongoing) return ongoing;
+        if (pinnedWarEnemyFactionId) {
+            const pinned = enemyFactionStates.find(function (e) {
+                return e && String(e.id) === String(pinnedWarEnemyFactionId) && e.warKind;
+            });
+            if (pinned) return pinned;
+        }
+        return enemyFactionStates.find(function (e) { return e && e.warKind; }) || null;
+    }
+
+    function notifyAttackGroupingDashboard() {
+        if (typeof window.attackGroupingNotifyDashboardData !== 'function') return;
+        try { window.attackGroupingNotifyDashboardData(); } catch (e) { console.warn('Attack grouping refresh:', e); }
+    }
+
+    async function ensureAttackGroupingStats() {
+        const war = currentWarEnemyState();
+        if (!war || !lastOurFactionId) return;
+        const ourMissing = !lastOurBS || !Object.keys(lastOurBS).length;
+        const enemyMissing = !war.bs || !Object.keys(war.bs).length;
+        if (!ourMissing && !enemyMissing) return;
+        await refreshBattleStatsOnly();
+    }
+
+    function mountAttackGroupingIfReady() {
+        if (typeof window.mountAttackGrouping !== 'function') return;
+        window.mountAttackGrouping({
+            getApiKey: getApiKey,
+            getFunctions: getWarDashboardFunctions,
+            hasVip3: function () { return Number(window.currentVipLevel || 0) >= 3; },
+            openVipInfo: function () {
+                if (typeof window.openVipProgramInfoModal === 'function') window.openVipProgramInfoModal();
+                else alert('Attack Grouping requires VIP 3.');
+            },
+            ensureBattleStats: ensureAttackGroupingStats,
+            refreshWarTargets: async function () {
+                const war = currentWarEnemyState();
+                const apiKey = getApiKey();
+                if (!war || !apiKey) return { ok: false, idle: true };
+                const now = Date.now();
+                const tracker = window.apiCallTracker || (window.apiCallTracker = []);
+                const used = tracker.filter(function (t) { return now - Number(t) < 60000; }).length;
+                const limit = parseInt(localStorage.getItem('tornApiRateLimit') || '90', 10) || 90;
+                if (used >= limit) return { ok: false, limited: true };
+                const noteCall = function () {
+                    tracker.push(Date.now());
+                };
+                const url = 'https://api.torn.com/v2/faction/' + encodeURIComponent(war.id) + '/members?striptags=true&key=' + encodeURIComponent(apiKey);
+                const fetchUrl = typeof window.getTornApiFetchUrl === 'function' ? window.getTornApiFetchUrl(url) : url;
+                try {
+                    const response = await fetch(fetchUrl);
+                    const data = await response.json();
+                    if (data && data.error) {
+                        const msg = typeof data.error === 'object'
+                            ? (data.error.error || JSON.stringify(data.error))
+                            : String(data.error);
+                        const limited = data.code === 5 || /too many requests|rate limit/i.test(msg);
+                        if (limited) noteCall();
+                        return { ok: false, limited: limited };
+                    }
+                    noteCall();
+                    const members = data && data.members
+                        ? (Array.isArray(data.members) ? data.members : Object.values(data.members))
+                        : null;
+                    if (!members) return { ok: false };
+                    war.members = members;
+                    syncPrimaryEnemyFromStates();
+                    if (typeof window.attackGroupingNotifyTargets === 'function') window.attackGroupingNotifyTargets();
+                    else notifyAttackGroupingDashboard();
+                    return { ok: true };
+                } catch (e) {
+                    const msg = e && e.message ? String(e.message) : '';
+                    return { ok: false, limited: /too many requests|rate limit/i.test(msg) };
+                }
+            },
+            getContext: function () {
+                const war = currentWarEnemyState();
+                return {
+                    factionId: lastOurFactionId ? String(lastOurFactionId) : '',
+                    playerId: currentUserPlayerId != null ? String(currentUserPlayerId) : '',
+                    ourMembers: lastOurMembers || [],
+                    ourBs: lastOurBS || {},
+                    ourFf: lastOurFF || {},
+                    warEnemy: war ? {
+                        id: String(war.id),
+                        name: war.name || '',
+                        warKind: war.warKind || '',
+                        members: war.members || [],
+                        ff: war.ff || {},
+                        bs: war.bs || {}
+                    } : null
+                };
+            },
+            describeTarget: function (member, ff, bs) {
+                const nowSec = Math.floor(Date.now() / 1000);
+                const status = statusFromMember(member || {});
+                const blue = Number(document.getElementById('war-dashboard-ff-blue')?.value) || 2.5;
+                const green = Number(document.getElementById('war-dashboard-ff-green')?.value) || 3.5;
+                const orange = Number(document.getElementById('war-dashboard-ff-orange')?.value) || 4.5;
+                const id = member && member.id != null ? member.id : '';
+                return {
+                    id: String(id),
+                    name: (member && member.name) || String(id),
+                    level: member && member.level != null ? String(member.level) : '—',
+                    ffText: ff != null && ff !== '' && !isNaN(Number(ff)) ? Number(ff).toFixed(2) : '—',
+                    ffColor: getFFColor(ff, blue, green, orange) || '',
+                    bsText: bs != null && bs !== '' && !isNaN(Number(bs)) ? Number(bs).toLocaleString() : '—',
+                    bsValue: bs != null && bs !== '' && !isNaN(Number(bs)) ? Number(bs) : null,
+                    actionText: formatActionStatusDisplay(status, nowSec),
+                    actionColor: getStatusColor(status, nowSec) || '',
+                    locationText: formatLocationStatusDisplay(status, nowSec),
+                    locationColor: getLocationStateColor(status, nowSec) || '',
+                    until: status.until != null ? String(status.until) : '',
+                    state: status.state || '',
+                    description: status.description || '',
+                    hospital: !!(isInHospitalStatus(status, nowSec) && status.until != null),
+                    inHospital: isInHospitalStatus(status, nowSec),
+                    abroad: isAbroad(member || {}, nowSec),
+                    online: String(status.actionStatus || '').toLowerCase() === 'online',
+                    idle: String(status.actionStatus || '').toLowerCase() === 'idle',
+                    idleSince: status.lastActionTimestamp != null ? String(status.lastActionTimestamp) : '',
+                    attackUrl: 'https://www.torn.com/page.php?sid=attack&user2ID=' + encodeURIComponent(id),
+                    profileUrl: 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(id)
+                };
+            }
+        });
+    }
+
     function initWarDashboard() {
         if (window.logToolUsage) window.logToolUsage('war-dashboard');
 
@@ -6319,6 +6450,7 @@
             window._warDashboardUiWired = true;
             wireWarDashboardUiOnce();
         }
+        mountAttackGroupingIfReady();
 
         loadSettings();
         Promise.all(getActivityConfig().tracked.filter(function (t) {

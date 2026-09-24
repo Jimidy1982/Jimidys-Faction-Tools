@@ -352,8 +352,22 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     // Function to record an API call
-    const recordApiCall = () => {
-        window.apiCallTracker.push(Date.now());
+    const tornKeyFromUrl = (url) => {
+        const match = String(url || '').match(/[?&]key=([^&]+)/);
+        if (!match) return '';
+        try { return decodeURIComponent(match[1]); } catch (e) { return match[1]; }
+    };
+
+    const recordApiCall = (url) => {
+        const now = Date.now();
+        window.apiCallTracker.push(now);
+        const key = tornKeyFromUrl(url);
+        if (key) {
+            if (!window.apiCallTrackerByKey) window.apiCallTrackerByKey = {};
+            if (!window.apiCallTrackerByKey[key]) window.apiCallTrackerByKey[key] = [];
+            window.apiCallTrackerByKey[key].push(now);
+            window.apiCallTrackerByKey[key] = window.apiCallTrackerByKey[key].filter((t) => (now - t) < 60000);
+        }
         cleanOldCalls();
     };
 
@@ -461,14 +475,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         throw new Error(`API Error after retry: ${retryData.error.error || retryData.error}`);
                     }
                     
-                    recordApiCall();
+                    recordApiCall(url);
                     return retryData;
                 }
                 
                 throw new Error(`API Error: ${data.error.error || data.error}`);
             }
             
-            recordApiCall();
+            recordApiCall(url);
             return data;
         } catch (error) {
             // Re-throw fetch errors
@@ -652,7 +666,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             const error = new Error(`API Error after retry: ${retryData.error.error || retryData.error}`);
                             results[originalIndex] = { success: false, error, data: null, request };
                             if (onError) onError(error, request, originalIndex);
-                            recordApiCall(); // Record retry attempt
+                            recordApiCall(url); // Record retry attempt
                             continue;
                         }
                         
@@ -660,7 +674,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const retryResult = { success: true, data: retryData, request };
                         results[originalIndex] = retryResult;
                         successfulCount++;
-                        recordApiCall();
+                        recordApiCall(url);
                         // Cache the result if caching is enabled
                         if (useCache && cacheSet && request.cacheKey) {
                             cacheSet(request.cacheKey, retryData);
@@ -680,7 +694,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const result = { success: true, data, request };
                 results[originalIndex] = result;
                 successfulCount++;
-                recordApiCall();
+                recordApiCall(url);
                 // Cache the result if caching is enabled
                 if (useCache && cacheSet && request.cacheKey) {
                     cacheSet(request.cacheKey, data);
@@ -4743,21 +4757,35 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 document.head.appendChild(script);
             } else if (page.includes('war-dashboard')) {
-                if (typeof window.initWarDashboard === 'function') {
+                const buildV = (window.APP_BUILD_VERSION || '20260924i');
+                const loadToolScript = (id, src) => new Promise((resolve) => {
+                    if (document.getElementById(id)) {
+                        resolve();
+                        return;
+                    }
+                    const script = document.createElement('script');
+                    script.id = id;
+                    script.src = src + '?v=' + encodeURIComponent(buildV);
+                    script.onload = () => resolve();
+                    script.onerror = () => resolve();
+                    document.head.appendChild(script);
+                });
+                let warDashboardStarted = false;
+                const startWarDashboard = () => {
+                    if (warDashboardStarted || typeof window.initWarDashboard !== 'function') return;
+                    warDashboardStarted = true;
                     window.initWarDashboard();
-                    return;
-                }
-                const oldScript = document.getElementById('war-dashboard-script');
-                if (oldScript) oldScript.remove();
-                const script = document.createElement('script');
-                const buildV = (window.APP_BUILD_VERSION || '20260715b');
-                script.src = 'tools/war-dashboard/war-dashboard.js?v=' + encodeURIComponent(buildV);
-                script.id = 'war-dashboard-script';
-                script.onload = () => {
-                    if (typeof initWarDashboard === 'function') initWarDashboard();
-                    else if (window.initWarDashboard) window.initWarDashboard();
                 };
-                document.head.appendChild(script);
+                loadToolScript('attack-grouping-logic-script', 'tools/war-dashboard/attack-grouping-logic.js')
+                    .then(() => loadToolScript('attack-grouping-script', 'tools/war-dashboard/attack-grouping.js'))
+                    .then(() => {
+                        if (typeof window.initWarDashboard === 'function') {
+                            startWarDashboard();
+                            return null;
+                        }
+                        return loadToolScript('war-dashboard-script', 'tools/war-dashboard/war-dashboard.js');
+                    })
+                    .then(() => startWarDashboard());
             } else if (page.includes('chain-watch')) {
                 const oldScript = document.getElementById('chain-watch-script');
                 if (oldScript) oldScript.remove();
@@ -4850,6 +4878,10 @@ document.addEventListener('DOMContentLoaded', () => {
         setNavActive();
         const hash = window.location.hash.substring(1) || 'home';
         let pageName = `${hash.split('/')[0]}`;
+        if (pageName === 'war-dashboard' && document.getElementById('war-dashboard-tool-container')) {
+            if (typeof window.syncWarDashboardRoute === 'function') window.syncWarDashboardRoute();
+            return;
+        }
         if (pageName === 'member-performance-range') {
             window.location.replace(`${window.location.pathname}${window.location.search}#member-performance`);
             return;
