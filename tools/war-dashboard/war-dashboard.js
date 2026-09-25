@@ -2502,10 +2502,36 @@
         return hms + ' (In ' + place + ')';
     }
 
+    var TRAVEL_PLACE_SHORT = {
+        'united kingdom': 'UK',
+        'south africa': 'SA',
+        'cayman islands': 'Cayman',
+        'united arab emirates': 'UAE',
+        'switzerland': 'Swiss'
+    };
+
+    function shortTravelPlace(name) {
+        const raw = String(name || '').trim();
+        const hit = TRAVEL_PLACE_SHORT[raw.toLowerCase()];
+        return hit || raw;
+    }
+
+    /** "Traveling from United Kingdom to Torn" → "UK to Torn". */
+    function abbreviateTravelState(text) {
+        const s = String(text || '').trim();
+        let m = s.match(/^traveling from (.+) to (.+)$/i);
+        if (m) return shortTravelPlace(m[1]) + ' to ' + shortTravelPlace(m[2]);
+        m = s.match(/^returning to torn from (.+)$/i);
+        if (m) return shortTravelPlace(m[1]) + ' to Torn';
+        m = s.match(/^traveling to (.+)$/i);
+        if (m) return 'to ' + shortTravelPlace(m[1]);
+        return s;
+    }
+
     /** Location column: hospital uses HH:MM:SS (+ country); other timed states use second precision under 1 minute. */
     function formatLocationStatusDisplay(status, nowSec) {
         if (status.until != null && nowSec >= status.until) return 'Okay';
-        const base = (status.description || status.state || '—').trim();
+        const base = abbreviateTravelState((status.description || status.state || '—').trim());
         if (status.until == null || !Number.isFinite(Number(status.until))) return base;
 
         if (isInHospitalStatus(status, nowSec)) {

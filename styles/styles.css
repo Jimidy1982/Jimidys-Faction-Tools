@@ -10717,6 +10717,22 @@ body.newsletter-custom-bg-modal-open {
     margin: 6px 0;
 }
 
+.ag-inline-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: #ffd700;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.ag-inline-link:disabled {
+    color: #888;
+    cursor: default;
+    text-decoration: none;
+}
+
 .attack-grouping .ag-warn {
     color: #ffb74d;
     font-size: 13px;
@@ -10797,19 +10813,63 @@ body.newsletter-custom-bg-modal-open {
     min-width: 0;
 }
 
+.ag-tier-pane .ag-member-table .ag-attack-col {
+    width: 22px;
+    max-width: 22px;
+    padding: 0;
+    text-align: center;
+    overflow: visible;
+}
+
+.ag-attack-col a {
+    text-decoration: none;
+}
+
 .ag-tier-pane .war-dashboard-table th,
 .ag-tier-pane .war-dashboard-table td {
     padding: 8px 6px;
 }
 
-.ag-rapid-btn--on {
-    background: #2e7d32;
-    color: #e8f5e9;
+.ag-speed {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    color: #f2f2f2;
+    font-size: 13px;
+    font-weight: 700;
+}
+.ag-speed select {
+    appearance: none;
+    background: #1a1a1a url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath fill='%23ffd700' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") no-repeat right 8px center;
+    color: #ffd700;
+    border: 1px solid rgba(255, 215, 0, 0.7);
+    border-radius: 4px;
+    padding: 6px 26px 6px 10px;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+.ag-speed select:focus-visible {
+    outline: 2px solid #ffd700;
+    outline-offset: 2px;
 }
 .ag-stat {
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+}
+.ag-state-cell .war-dashboard-location-cell {
+    display: block;
+}
+.ag-state-age {
+    display: block;
+    margin-top: 2px;
+    color: #9a9a9a;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.2;
+    cursor: help;
 }
 .ag-stat-hit {
     background: none;

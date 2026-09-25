@@ -1,4 +1,4 @@
 {
-  "build": "20260925f",
+  "build": "20260925t",
   "note": "Bump build when shipping client changes; app polls this file to prompt users on stale tabs."
 }

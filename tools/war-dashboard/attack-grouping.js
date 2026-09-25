@@ -1,17 +1,19 @@
 /**
  * Attack Grouping panel for the War Dashboard.
- * One faction document, cached locally. A pull sends the cached revision and
- * skips the body when nothing changed. Live target status comes from the
- * dashboard's already-loaded war enemy.
+ * One faction document, cached locally for the day. Opening the page uses that
+ * copy. Refresh groups asks the server again, at most once a minute. Live
+ * target status comes from the dashboard's already-loaded war enemy.
  */
 (function () {
     'use strict';
 
     var CACHE_PREFIX = 'war_dashboard_attack_grouping_v1_';
     var VIEW_PREFIX = 'war_dashboard_attack_grouping_view_v1_';
-    var PULL_MS = 60 * 1000;
-    var RAPID_KEY = 'war_dashboard_attack_grouping_rapid_v1';
-    var RAPID_STEPS = [1000, 1500, 2000, 3000, 5000, 8000];
+    var GROUP_REFRESH_MS = 60 * 1000;
+    var REFRESH_KEY = 'war_dashboard_attack_grouping_refresh_sec_v1';
+    var FILTER_KEY = 'war_dashboard_attack_grouping_filters_v1';
+    var REFRESH_DEFAULT_SEC = 15;
+    var REFRESH_SPEEDS = [0, 30, 15, 10, 5, 2, 1];
     var METHOD_LABELS = {
         equal: 'Equal split',
         statRange: 'Stat range',
@@ -25,15 +27,14 @@
         settingsOpen: false,
         sortBy: 'eststats',
         sortDir: 'desc',
-        rapid: false,
-        rapidStep: 0,
-        rapidAwaiting: false,
-        rapidLocked: false,
+        refreshSec: REFRESH_DEFAULT_SEC,
         spyById: {},
         spyKey: '',
-        rapidTimer: null,
-        rapidBusy: false,
-        rapidHolding: false,
+        stateSeen: {},
+        refreshTimer: null,
+        refreshMeter: null,
+        refreshBusy: false,
+        refreshHolding: false,
         filters: { online: true, offline: true, idle: true, okay: false, hospital: false, abroad: false },
         error: '',
         viewer: null,
@@ -44,7 +45,7 @@
         generalDraft: [],
         generalFilter: '',
         remoteNewer: null,
-        lastPullAt: 0,
+        lastGroupCheckAt: 0,
         pulling: false,
         saving: false
     };
@@ -74,26 +75,50 @@
         return String(msg).replace(/^FirebaseError:\s*/i, '');
     }
 
-    function readCache(factionId) {
+    function todayKey() {
+        var d = new Date();
+        var month = String(d.getMonth() + 1);
+        var day = String(d.getDate());
+        if (month.length < 2) month = '0' + month;
+        if (day.length < 2) day = '0' + day;
+        return d.getFullYear() + '-' + month + '-' + day;
+    }
+
+    function readPack(factionId) {
         if (!factionId) return null;
         try {
             var raw = localStorage.getItem(CACHE_PREFIX + factionId);
             if (!raw) return null;
             var o = JSON.parse(raw);
-            if (!o || !o.revision || !o.grouping) return null;
-            return o.grouping;
+            if (!o || typeof o !== 'object') return null;
+            if (!o.grouping && !o.checkedDay && !o.checkedAt) return null;
+            return {
+                grouping: o.grouping || null,
+                viewer: o.viewer || null,
+                checkedDay: o.checkedDay || '',
+                checkedAt: Number(o.checkedAt) || 0
+            };
         } catch (e) {
             return null;
         }
     }
 
-    function writeCache(factionId, grouping) {
+    function writePack(factionId, patch) {
         if (!factionId) return;
+        var prev = readPack(factionId) || { grouping: null, viewer: null, checkedDay: '', checkedAt: 0 };
+        var next = {
+            grouping: patch && Object.prototype.hasOwnProperty.call(patch, 'grouping') ? patch.grouping : prev.grouping,
+            viewer: patch && Object.prototype.hasOwnProperty.call(patch, 'viewer') ? patch.viewer : prev.viewer,
+            checkedDay: patch && Object.prototype.hasOwnProperty.call(patch, 'checkedDay') ? patch.checkedDay : prev.checkedDay,
+            checkedAt: patch && Object.prototype.hasOwnProperty.call(patch, 'checkedAt') ? patch.checkedAt : prev.checkedAt
+        };
         try {
-            if (!grouping) localStorage.removeItem(CACHE_PREFIX + factionId);
-            else localStorage.setItem(CACHE_PREFIX + factionId, JSON.stringify({
-                revision: grouping.revision,
-                grouping: grouping
+            localStorage.setItem(CACHE_PREFIX + factionId, JSON.stringify({
+                revision: next.grouping && next.grouping.revision ? next.grouping.revision : 0,
+                grouping: next.grouping,
+                viewer: next.viewer,
+                checkedDay: next.checkedDay,
+                checkedAt: next.checkedAt
             }));
         } catch (e) { /* ignore */ }
     }
@@ -290,7 +315,8 @@
         }
         btn.removeAttribute('title');
         var c = ctx();
-        var grouping = AG.published || readCache(c.factionId);
+        var pack = readPack(c.factionId);
+        var grouping = AG.published || (pack && pack.grouping);
         el.textContent = grouping && grouping.tierCount ? (grouping.tierCount + ' tiers') : "This war's tiers";
     }
 
@@ -299,7 +325,7 @@
         if (!grouping && AG.published && Number(AG.published.revision) > 0) return;
         AG.published = grouping;
         var c = ctx();
-        writeCache(c.factionId, grouping);
+        writePack(c.factionId, { grouping: grouping || null });
         if (!keepDraft) {
             AG.draft = grouping ? clone(grouping) : emptyDraft(c.warEnemy ? c.warEnemy.id : '');
             AG.draftDirty = false;
@@ -311,11 +337,40 @@
         updateButtonSummary();
     }
 
-    async function pull(force) {
+    function groupRefreshWaitSec() {
+        var at = AG.lastGroupCheckAt || 0;
+        if (!at) return 0;
+        return Math.max(0, Math.ceil((GROUP_REFRESH_MS - (Date.now() - at)) / 1000));
+    }
+
+    function rememberGroupCheck(at) {
+        AG.lastGroupCheckAt = at;
+        var c = ctx();
+        if (c.factionId) writePack(c.factionId, { checkedAt: at });
+    }
+
+    function markGroupsCheckedToday() {
+        var c = ctx();
+        if (!c.factionId) return;
+        writePack(c.factionId, {
+            viewer: AG.viewer || null,
+            checkedDay: todayKey(),
+            checkedAt: AG.lastGroupCheckAt || Date.now()
+        });
+    }
+
+    async function ensureGroupsForToday() {
         if (!AG.host || !AG.open || AG.pulling) return;
-        if (!force && document.hidden) return;
-        var now = Date.now();
-        if (!force && now - AG.lastPullAt < PULL_MS) return;
+        if (!AG.host.hasVip3()) return;
+        var c = ctx();
+        if (!c.factionId) return;
+        var pack = readPack(c.factionId);
+        if (pack && pack.checkedDay === todayKey()) return;
+        await pullGroups();
+    }
+
+    async function pullGroups() {
+        if (!AG.host || !AG.open || AG.pulling) return;
         var c = ctx();
         if (!c.factionId) return;
         if (!AG.host.hasVip3()) return;
@@ -327,8 +382,10 @@
             return;
         }
         AG.pulling = true;
-        AG.lastPullAt = now;
-        var cached = AG.published || readCache(c.factionId);
+        rememberGroupCheck(Date.now());
+        updateGroupRefreshButtons();
+        var pack = readPack(c.factionId);
+        var cached = (pack && pack.grouping) || AG.published;
         try {
             var res = await fn.httpsCallable('attackGroupingGet')({
                 apiKey: apiKey,
@@ -343,14 +400,15 @@
             } else if (data.grouping) {
                 if ((AG.draftDirty || AG.generalsDirty) && cached && data.grouping.revision !== cached.revision) {
                     AG.remoteNewer = data.grouping;
-                    writeCache(c.factionId, data.grouping);
                     AG.published = data.grouping;
+                    writePack(c.factionId, { grouping: data.grouping });
                 } else {
                     applyServerGrouping(data.grouping, false);
                 }
             } else {
                 applyServerGrouping(null, AG.draftDirty);
             }
+            markGroupsCheckedToday();
         } catch (e) {
             AG.error = callableError(e);
         } finally {
@@ -655,12 +713,13 @@
         return AG.sortDir === 'asc' ? '▲' : '▼';
     }
 
-    function tableHeadHtml() {
+    function tableHeadHtml(attack) {
         function th(column, label) {
             return '<th data-ag="sort" data-column="' + column + '" class="war-dashboard-th-sort">' +
                 label + ' <span class="war-dashboard-sort">' + sortGlyph(column) + '</span></th>';
         }
         return '<thead><tr>' +
+            (attack ? '<th class="ag-attack-col"></th>' : '') +
             th('member', 'Member') + th('level', 'Level') +
             th('eststats', 'Stats') + th('status', 'Status') + th('location', 'State') +
             '</tr></thead>';
@@ -722,13 +781,15 @@
         return '<td style="padding:4px 8px;border:1px solid #ccc;vertical-align:top;">' + esc(text || '—') + '</td>';
     }
 
-    function mailNameCell(view) {
+    function mailNameCell(view, linked) {
         if (!view || view.missing) {
             return '<td style="padding:4px 8px;border:1px solid #ccc;">' + esc(view ? ('Player ' + view.id) : '') + '</td>';
         }
-        var label = memberLabel(view);
-        var href = view.profileUrl || ('https://www.torn.com/profiles.php?XID=' + encodeURIComponent(view.id));
-        return '<td style="padding:4px 8px;border:1px solid #ccc;"><a href="' + esc(href) + '">' + esc(label) + '</a></td>';
+        var label = esc(memberLabel(view));
+        var inner = linked
+            ? '<a href="' + esc(view.profileUrl || ('https://www.torn.com/profiles.php?XID=' + encodeURIComponent(view.id))) + '">' + label + '</a>'
+            : '<b>' + label + '</b>';
+        return '<td style="padding:4px 8px;border:1px solid #ccc;">' + inner + '</td>';
     }
 
     function mailPlainPerson(view) {
@@ -737,8 +798,9 @@
         return [memberLabel(view), view.level || '—', shortStat(view)];
     }
 
-    function mailGapCell() {
-        return '<td style="width:28px;min-width:28px;padding:0;border:none;">&nbsp;</td>';
+    function mailGapCell(label) {
+        return '<td style="width:88px;min-width:88px;padding:4px 10px;border:none;text-align:center;font-weight:700;">' +
+            (label ? esc(label) : '&nbsp;') + '</td>';
     }
 
     function factionMailPack() {
@@ -751,18 +813,18 @@
         var title = 'Attack grouping vs ' + enemyName;
         var th = ' style="background:#f5f5f5;padding:4px 8px;text-align:left;border:1px solid #ccc;"';
         var html = '<div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:14px;color:#111;">' +
-            '<div style="font-size:18px;font-weight:700;margin:0 0 12px 0;">' + esc(title) + '</div>' +
+            '<div style="font-size:28px;font-weight:700;margin:0 0 12px 0;">' + esc(title) + '</div>' +
             '<table style="border-collapse:collapse;font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:12px;color:#111;" cellpadding="4" cellspacing="0">' +
             '<thead><tr>' +
             '<th colspan="3" style="background:#e8f5e9;padding:4px 8px;text-align:left;border:1px solid #ccc;">Your faction</th>' +
-            mailGapCell() +
+            mailGapCell('___Vs___') +
             '<th colspan="3" style="background:#fff3e0;padding:4px 8px;text-align:left;border:1px solid #ccc;">' + esc(enemyName) + '</th>' +
             '</tr><tr>' +
             '<th' + th + '>Member</th><th' + th + '>Level</th><th' + th + '>Stats</th>' +
             mailGapCell() +
             '<th' + th + '>Target</th><th' + th + '>Level</th><th' + th + '>Stats</th>' +
             '</tr></thead><tbody>';
-        var plain = [title, '', ['Member', 'Level', 'Stats', '', 'Target', 'Level', 'Stats'].join('\t')];
+        var plain = [title, '', ['Member', 'Level', 'Stats', '___Vs___', 'Target', 'Level', 'Stats'].join('\t')];
         var count = grouping.tierCount;
         for (var i = 0; i < count; i++) {
             var ourIds = (grouping.our && grouping.our.tiers && grouping.our.tiers[i]) || [];
@@ -771,16 +833,16 @@
             var enemies = mailRows(enemyIds, enemyPack);
             var n = Math.max(ours.length, enemies.length, 1);
             var tierLabel = 'Tier ' + (i + 1);
-            html += '<tr><td colspan="7" style="padding:6px 8px;border:1px solid #ccc;background:#fff8dc;font-weight:700;">' + tierLabel + '</td></tr>';
+            html += '<tr><td colspan="7" style="padding:8px;border:1px solid #ccc;background:#fff8dc;font-weight:700;font-size:18px;">' + tierLabel + '</td></tr>';
             plain.push(tierLabel);
             for (var r = 0; r < n; r++) {
                 var oursView = ours[r];
                 var enemyView = enemies[r];
-                html += '<tr>' + mailNameCell(oursView) +
+                html += '<tr>' + mailNameCell(oursView, false) +
                     mailCell(oursView && !oursView.missing ? oursView.level : '') +
                     mailCell(oursView && !oursView.missing ? shortStat(oursView) : '') +
                     mailGapCell() +
-                    mailNameCell(enemyView) +
+                    mailNameCell(enemyView, true) +
                     mailCell(enemyView && !enemyView.missing ? enemyView.level : '') +
                     mailCell(enemyView && !enemyView.missing ? shortStat(enemyView) : '') +
                     '</tr>';
@@ -791,7 +853,12 @@
         return { html: html, plain: plain.join('\n') };
     }
 
+    function canCopyFactionMail() {
+        return !!(AG.viewer && AG.viewer.canEdit && AG.published && AG.published.tierCount);
+    }
+
     function copyFactionMail(button) {
+        if (!canCopyFactionMail()) return;
         var pack = factionMailPack();
         if (!pack) return;
         var done = function () {
@@ -949,14 +1016,192 @@
         }).catch(function () {});
     }
 
+    var TRAVEL_SEEN_KEY = 'war_dashboard_attack_grouping_travel_seen_v1';
+
+    function normCountry(name) {
+        var s = String(name || '').trim().toLowerCase().replace(/^the\s+/, '');
+        if (!s || s === 'torn' || s === 'torn city') return 'torn';
+        var aliases = {
+            uk: 'united kingdom',
+            'u.k.': 'united kingdom',
+            uae: 'united arab emirates',
+            cayman: 'cayman islands',
+            swiss: 'switzerland'
+        };
+        return aliases[s] || s;
+    }
+
+    function parseFlight(view) {
+        var desc = String(view && view.description || '').trim();
+        var matched = desc.match(/^traveling from (.+) to (.+)$/i);
+        if (matched) return { from: normCountry(matched[1]), to: normCountry(matched[2]) };
+        matched = desc.match(/^returning to torn from (.+)$/i);
+        if (matched) return { from: normCountry(matched[1]), to: 'torn' };
+        matched = desc.match(/^traveling to (.+)$/i);
+        if (matched) return { from: '', to: normCountry(matched[1]) };
+        return null;
+    }
+
+    function statusStillRunning(view) {
+        if (!view || view.until == null || view.until === '') return true;
+        var until = Number(view.until);
+        if (!Number.isFinite(until)) return true;
+        return until > Math.floor(Date.now() / 1000);
+    }
+
+    function flightOf(view) {
+        var flight = parseFlight(view);
+        if (!flight || !statusStillRunning(view)) return null;
+        return flight;
+    }
+
+    function countryOf(view) {
+        var flight = parseFlight(view);
+        if (flight) return statusStillRunning(view) ? '' : (flight.to || 'torn');
+        var desc = String(view && view.description || '').trim();
+        var state = String(view && view.state || '').toLowerCase();
+        var lower = desc.toLowerCase();
+        var matched;
+        if (state.includes('hospital') || lower.includes('hospital')) {
+            matched = desc.match(/\bin\s+(?:an?\s+)?(.+?)\s+hospital\b/i) || desc.match(/hospital(?:ized)?\s+in\s+(.+?)(?:\s+for\b|$)/i);
+            return matched ? normCountry(matched[1]) : 'torn';
+        }
+        if (state.includes('jail') || lower.includes('jail')) {
+            matched = desc.match(/\bin\s+(?:an?\s+)?(.+?)\s+jail\b/i);
+            return matched ? normCountry(matched[1]) : 'torn';
+        }
+        if (state.includes('abroad') || /^in\s+/i.test(desc)) {
+            var place = desc.replace(/^in\s+/i, '').replace(/^abroad\s*[-–:]?\s*/i, '').trim();
+            if (place && !/^okay$/i.test(place)) return normCountry(place);
+        }
+        return 'torn';
+    }
+
+    function readTravelSeen() {
+        try {
+            var raw = localStorage.getItem(TRAVEL_SEEN_KEY);
+            var parsed = raw ? JSON.parse(raw) : null;
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function writeTravelSeen(map) {
+        try { localStorage.setItem(TRAVEL_SEEN_KEY, JSON.stringify(map)); } catch (e) { /* ignore */ }
+    }
+
+    function noteStateSeen(view) {
+        var id = String(view.id);
+        var flight = flightOf(view);
+        var map = readTravelSeen();
+        if (!flight) {
+            if (map[id]) {
+                delete map[id];
+                writeTravelSeen(map);
+            }
+            delete AG.stateSeen[id];
+            return 0;
+        }
+        var sig = flight.from + '>' + flight.to;
+        var prev = map[id];
+        if (!prev || prev.sig !== sig) {
+            map[id] = { sig: sig, at: Date.now() };
+            writeTravelSeen(map);
+        }
+        AG.stateSeen[id] = map[id];
+        return map[id].at;
+    }
+
+    function viewerPlace() {
+        var c = ctx();
+        var id = String(c.playerId || '');
+        if (!id || !AG.host || !AG.host.describeTarget) return null;
+        var members = c.ourMembers || [];
+        for (var i = 0; i < members.length; i++) {
+            if (members[i] && String(members[i].id) === id) return AG.host.describeTarget(members[i], null, null);
+        }
+        return null;
+    }
+
+    function canAttackEnemy(target, viewer) {
+        if (!viewer) return false;
+        var mine = countryOf(viewer);
+        if (!mine) return false;
+        var theirs = countryOf(target);
+        if (theirs && theirs === mine) return true;
+        var flight = flightOf(target);
+        return !!(flight && flight.to === mine);
+    }
+
+    function formatStateAge(at) {
+        var sec = Math.max(0, Math.floor((Date.now() - Number(at)) / 1000));
+        if (sec < 5) return 'just now';
+        if (sec < 60) return sec + 's';
+        var mins = Math.floor(sec / 60);
+        if (mins < 60) return mins + 'm';
+        var hours = Math.floor(mins / 60);
+        var rem = mins % 60;
+        if (hours < 48) return rem ? (hours + 'h ' + rem + 'm') : (hours + 'h');
+        return Math.floor(hours / 24) + 'd';
+    }
+
+    function tickStateAges() {
+        if (!AG.open) return;
+        var nodes = document.querySelectorAll('#attack-grouping-root .ag-state-age');
+        for (var i = 0; i < nodes.length; i++) {
+            var label = nodes[i].previousElementSibling ? nodes[i].previousElementSibling.textContent : '';
+            if (!/\sto\s|^to\s/i.test(String(label || '').trim())) {
+                nodes[i].hidden = true;
+                continue;
+            }
+            nodes[i].hidden = false;
+            var at = Number(nodes[i].getAttribute('data-state-at'));
+            if (!Number.isFinite(at)) continue;
+            nodes[i].textContent = '(' + formatStateAge(at) + ')';
+        }
+        updateGroupRefreshButtons();
+    }
+
+    function groupRefreshLabel(inline) {
+        var left = groupRefreshWaitSec();
+        var busy = !!AG.pulling;
+        if (inline) {
+            if (busy) return 'or refreshing…';
+            if (left > 0) return 'or try refreshing (' + left + 's)';
+            return 'or try refreshing';
+        }
+        if (busy) return 'Refreshing groups…';
+        if (left > 0) return 'Refresh groups · ' + left + 's';
+        return 'Refresh groups';
+    }
+
+    function groupRefreshButtonHtml() {
+        var wait = groupRefreshWaitSec() > 0 || AG.pulling;
+        return '<button type="button" class="btn" data-ag="refresh-groups"' + (wait ? ' disabled' : '') +
+            ' title="Check for a newer grouping from your leaders. Once a minute. Today’s copy stays on this browser until then.">' +
+            esc(groupRefreshLabel(false)) + '</button>';
+    }
+
+    function updateGroupRefreshButtons() {
+        var buttons = document.querySelectorAll('[data-ag="refresh-groups"]');
+        for (var i = 0; i < buttons.length; i++) {
+            var inline = buttons[i].classList.contains('ag-inline-link');
+            var label = groupRefreshLabel(inline);
+            buttons[i].disabled = groupRefreshWaitSec() > 0 || !!AG.pulling;
+            if (buttons[i].textContent !== label) buttons[i].textContent = label;
+        }
+    }
+
     function memberTable(ids, pack, attack) {
         if (!ids || !ids.length) return '<p class="ag-empty">Nobody in this tier.</p>';
         var c = ctx();
         var rows = rowsFor(ids, pack);
         if (!rows.length) return '<p class="ag-empty">Nobody in this tier matches the filters.</p>';
+        var viewer = attack ? viewerPlace() : null;
         var html = rows.map(function (view) {
             if (view.missing) {
-                return '<tr class="ag-missing"><td colspan="5">Player ' + esc(view.id) + ' is not in the current ' +
+                return '<tr class="ag-missing"><td colspan="' + (attack ? '6' : '5') + '">Player ' + esc(view.id) + ' is not in the current ' +
                     (attack ? 'war' : 'faction') + '.</td></tr>';
             }
             var you = String(view.id) === String(c.playerId);
@@ -964,10 +1209,14 @@
             if (window.toolsMemberLinkAttrs) {
                 try { linkAttrs = window.toolsMemberLinkAttrs(view.name, view.id) || ''; } catch (e2) { linkAttrs = ''; }
             }
-            var nameCell = (attack
-                ? '<a href="' + esc(view.attackUrl) + '" target="_blank" rel="noopener" title="Attack">🎯</a> '
-                : '') +
-                '<a href="' + esc(view.profileUrl) + '" target="_blank" rel="noopener" style="color:#FFD700;"' + linkAttrs + '>' +
+            var attackCell = '';
+            if (attack) {
+                var attackIcon = canAttackEnemy(view, viewer)
+                    ? '<a href="' + esc(view.attackUrl) + '" target="_blank" rel="noopener" title="Attack">🎯</a>'
+                    : '';
+                attackCell = '<td class="ag-attack-col">' + attackIcon + '</td>';
+            }
+            var nameCell = '<a href="' + esc(view.profileUrl) + '" target="_blank" rel="noopener" style="color:#FFD700;"' + linkAttrs + '>' +
                 esc(memberLabel(view)) + '</a>';
             var idleAttr = view.idle && view.idleSince ? ' data-idle-since="' + esc(view.idleSince) + '"' : '';
             var locStyle = view.hospital ? '' : ' style="color:' + esc(view.locationColor || '') + ';"';
@@ -975,6 +1224,9 @@
             var locAttrs = view.until
                 ? ' data-status-until="' + esc(view.until) + '" data-status-desc="' + esc(view.description || '') + '" data-status-state="' + esc(view.state || '') + '"'
                 : '';
+            var seenAt = noteStateSeen(view);
+            var showAge = seenAt > 0;
+            var ageTip = 'How long this browser has shown this state. The clock starts when a refresh here first spots it, or spots a change. It is not Torn\'s own time.';
             var statTip = statTitle(view);
             var spy = spyFor(view.id);
             var statInner = esc(shortStat(view));
@@ -982,17 +1234,23 @@
                 statInner = '<button type="button" class="ag-stat-hit" data-ag="stat-tip" data-id="' + esc(view.id) + '" title="Detailed stats">' + statInner + '</button>';
             }
             return '<tr' + (you ? ' class="ag-row-you"' : '') + '>' +
+                attackCell +
                 '<td>' + nameCell + '</td>' +
                 '<td>' + esc(view.level) + '</td>' +
                 '<td class="ag-stat"' + (view.ffColor ? ' style="color:' + esc(view.ffColor) + ';"' : '') +
                 (!spy && statTip ? ' title="' + esc(statTip) + '"' : '') + '>' + statInner + '</td>' +
                 '<td class="war-dashboard-action-status"' + idleAttr + (view.actionColor ? ' style="color:' + esc(view.actionColor) + ';"' : '') + '>' + esc(view.actionText) + '</td>' +
-                '<td class="' + locClass + '"' + locStyle + locAttrs + '>' + esc(view.locationText) + '</td>' +
+                '<td class="ag-state-cell"><div class="' + locClass + '"' + locStyle + locAttrs + '>' + esc(view.locationText) + '</div>' +
+                (showAge
+                    ? '<div class="ag-state-age" data-state-at="' + seenAt + '" title="' + esc(ageTip) + '">(' + esc(formatStateAge(seenAt)) + ')</div>'
+                    : '') +
+                '</td>' +
                 '</tr>';
         }).join('');
         return '<div class="table-scroll-wrapper"><table class="war-dashboard-table war-dashboard-enemy-table ag-member-table">' +
-            '<colgroup><col style="width:32%"><col style="width:12%"><col style="width:14%"><col style="width:18%"><col style="width:24%"></colgroup>' +
-            tableHeadHtml() + '<tbody>' + html + '</tbody></table></div>';
+            '<colgroup>' + (attack ? '<col class="ag-attack-col" style="width:22px">' : '') +
+            '<col style="width:32%"><col style="width:12%"><col style="width:14%"><col style="width:18%"><col style="width:24%"></colgroup>' +
+            tableHeadHtml(attack) + '<tbody>' + html + '</tbody></table></div>';
     }
 
     function tierControls(index, mine, order) {
@@ -1076,139 +1334,108 @@
         return Math.max(1000, blocking + 60000 - now + 250);
     }
 
-    function dialRapidBack() {
-        AG.rapidHolding = false;
-        if (AG.rapidStep < RAPID_STEPS.length - 1) AG.rapidStep += 1;
+    function siteCallsLastMinute() {
+        var now = Date.now();
+        return (window.apiCallTracker || []).filter(function (t) { return now - Number(t) < 60000; }).length;
     }
 
-    function rapidNote() {
-        if (!AG.rapid) return '';
-        if (AG.rapidHolding) return 'Waiting for API room';
-        if (AG.rapidLocked) return 'Holding ' + rapidLabel();
-        if (AG.rapidAwaiting) return 'Trying ' + rapidLabel();
-        return '';
+    function apiUseText() {
+        var n = siteCallsLastMinute();
+        return n + ' Torn API call' + (n === 1 ? '' : 's') + ' from this site in the last minute';
     }
 
-    function rapidLabel() {
-        var ms = RAPID_STEPS[AG.rapidStep] || 1000;
-        if (ms % 1000 === 0) return (ms / 1000) + 's';
-        return (ms / 1000).toFixed(1) + 's';
+    function stopApiMeter() {
+        if (AG.refreshMeter) clearInterval(AG.refreshMeter);
+        AG.refreshMeter = null;
     }
 
-    function rapidButtonText() {
-        if (!AG.rapid) return 'Rapid update';
-        if (AG.rapidHolding) return 'Rapid · waiting';
-        return 'Rapid · ' + rapidLabel();
+    function updateApiUseLine() {
+        var el = document.getElementById('ag-api-use');
+        if (!el) return;
+        el.textContent = apiUseText();
     }
 
-    function rapidButtonTitle() {
-        if (!AG.rapid) return 'Refresh war targets about every second, slowing down if your API key cannot keep up. Normal refresh stays 30s.';
-        if (AG.rapidHolding) return 'Paused so this page keeps some calls free. Resumes when older calls drop out of the last minute.';
-        if (AG.rapidLocked) return 'Staying at ' + rapidLabel() + '. Use Try 1s again if you have paused your other tools.';
-        return 'War targets refresh about every ' + rapidLabel() + '. A failed call slows the pace once, then it stays there.';
+    function startApiMeter() {
+        stopApiMeter();
+        if (!AG.open) return;
+        AG.refreshMeter = setInterval(function () {
+            if (!AG.open || document.hidden) return;
+            updateApiUseLine();
+        }, 1000);
     }
 
-    function rapidControlHtml() {
-        var on = !!AG.rapid;
-        var retry = '<button type="button" class="btn" id="ag-rapid-retry" data-ag="rapid-retry"' + (on && AG.rapidLocked ? '' : ' hidden') + '>Try 1s again</button>';
-        var note = rapidNote();
-        return '<button type="button" class="btn ag-rapid-btn' + (on ? ' ag-rapid-btn--on' : '') + '" data-ag="rapid-toggle" aria-pressed="' + (on ? 'true' : 'false') + '" title="' + esc(rapidButtonTitle()) + '">' + esc(rapidButtonText()) + '</button>' +
-            retry +
-            '<span class="ag-toolbar-status" id="ag-rapid-note"' + (note ? '' : ' hidden') + '>' + esc(note) + '</span>';
+    function refreshControlHtml() {
+        var options = REFRESH_SPEEDS.map(function (sec) {
+            var label = sec ? (sec + 's') : 'Off';
+            return '<option value="' + sec + '"' + (AG.refreshSec === sec ? ' selected' : '') + '>' + label + '</option>';
+        }).join('');
+        var wait = AG.refreshHolding ? '' : ' hidden';
+        return '<label class="ag-speed">Refresh <select id="ag-refresh-speed" data-ag="refresh-speed" title="How often to refresh war targets. Off does not add calls. The dashboard still refreshes about every 30s.">' +
+            options + '</select></label>' +
+            '<span class="ag-toolbar-status" id="ag-refresh-wait"' + wait + '>Waiting for a free API call</span>';
     }
 
-    function stopRapidTimer() {
-        if (AG.rapidTimer) clearTimeout(AG.rapidTimer);
-        AG.rapidTimer = null;
+    function stopRefreshTimer() {
+        if (AG.refreshTimer) clearTimeout(AG.refreshTimer);
+        AG.refreshTimer = null;
     }
 
-    function scheduleRapid(delay) {
-        stopRapidTimer();
-        if (!AG.rapid || !AG.open || document.hidden) return;
-        var wait = typeof delay === 'number' ? delay : RAPID_STEPS[AG.rapidStep];
-        AG.rapidTimer = setTimeout(runRapid, wait);
+    function scheduleRefresh(delay) {
+        stopRefreshTimer();
+        if (!AG.refreshSec || !AG.open || document.hidden) return;
+        var wait = typeof delay === 'number' ? delay : AG.refreshSec * 1000;
+        AG.refreshTimer = setTimeout(runRefresh, wait);
     }
 
-    async function runRapid() {
-        AG.rapidTimer = null;
-        if (!AG.rapid || !AG.open || document.hidden) return;
-        if (AG.rapidBusy) {
-            scheduleRapid();
+    function updateRefreshWait() {
+        var note = document.getElementById('ag-refresh-wait');
+        if (!note) return;
+        note.hidden = !AG.refreshHolding;
+    }
+
+    function setRefreshSec(sec) {
+        var n = parseInt(sec, 10);
+        if (REFRESH_SPEEDS.indexOf(n) < 0) n = REFRESH_DEFAULT_SEC;
+        AG.refreshSec = n;
+        AG.refreshHolding = false;
+        try { localStorage.setItem(REFRESH_KEY, String(n)); } catch (e) { /* ignore */ }
+        if (n && AG.open) scheduleRefresh(250);
+        else stopRefreshTimer();
+        updateRefreshWait();
+    }
+
+    async function runRefresh() {
+        AG.refreshTimer = null;
+        if (!AG.refreshSec || !AG.open || document.hidden) return;
+        if (AG.refreshBusy) {
+            scheduleRefresh();
             return;
         }
         var waitMs = rapidRoom();
         if (waitMs > 0) {
-            AG.rapidHolding = true;
-            updateRapidButton();
-            scheduleRapid(waitMs);
+            AG.refreshHolding = true;
+            updateRefreshWait();
+            scheduleRefresh(waitMs);
             return;
         }
-        AG.rapidBusy = true;
+        AG.refreshBusy = true;
         var result = { ok: false };
         try {
             if (AG.host && AG.host.refreshWarTargets) result = await AG.host.refreshWarTargets();
         } catch (e) {
             result = { ok: false, limited: /too many requests|rate limit/i.test((e && e.message) || '') };
         }
-        AG.rapidBusy = false;
-        if (!AG.rapid || !AG.open) return;
-        if (!result || !result.ok) {
-            if ((!result || !result.idle) && !AG.rapidAwaiting && !AG.rapidLocked) {
-                dialRapidBack();
-                AG.rapidAwaiting = true;
-            }
-        } else {
-            AG.rapidHolding = false;
-            if (AG.rapidAwaiting) {
-                AG.rapidAwaiting = false;
-                AG.rapidLocked = true;
-            }
-        }
-        updateRapidButton();
-        scheduleRapid();
-    }
-
-    function updateRapidButton() {
-        var btn = document.querySelector('#attack-grouping-root [data-ag="rapid-toggle"]');
-        if (!btn) return;
-        var on = !!AG.rapid;
-        btn.classList.toggle('ag-rapid-btn--on', on);
-        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-        btn.textContent = rapidButtonText();
-        btn.title = rapidButtonTitle();
-        var retry = document.getElementById('ag-rapid-retry');
-        if (AG.rapid && AG.rapidLocked && !retry) {
-            renderBoard();
+        AG.refreshBusy = false;
+        if (!AG.refreshSec || !AG.open) return;
+        if (result && result.limited) {
+            AG.refreshHolding = true;
+            updateRefreshWait();
+            scheduleRefresh(Math.max(AG.refreshSec * 1000, 5000));
             return;
         }
-        if (retry) retry.hidden = !(AG.rapid && AG.rapidLocked);
-        var note = document.getElementById('ag-rapid-note');
-        if (note) {
-            var status = rapidNote();
-            note.textContent = status;
-            note.hidden = !status;
-        }
-    }
-
-    function retryRapidFromStart() {
-        AG.rapidStep = 0;
-        AG.rapidAwaiting = false;
-        AG.rapidLocked = false;
-        AG.rapidHolding = false;
-        if (AG.rapid && AG.open) scheduleRapid(250);
-        updateRapidButton();
-    }
-
-    function setRapid(on) {
-        AG.rapid = !!on;
-        AG.rapidStep = 0;
-        AG.rapidAwaiting = false;
-        AG.rapidLocked = false;
-        AG.rapidHolding = false;
-        try { localStorage.setItem(RAPID_KEY, AG.rapid ? '1' : '0'); } catch (e) { /* ignore */ }
-        if (AG.rapid && AG.open) scheduleRapid(250);
-        else stopRapidTimer();
-        updateRapidButton();
+        AG.refreshHolding = false;
+        updateRefreshWait();
+        scheduleRefresh();
     }
 
     function filterBox(key, label, checked) {
@@ -1233,19 +1460,18 @@
             }).join(', ')) + '</span>';
         }
         var published = publishedLine();
-        var meta = (generals || published)
-            ? '<div class="ag-toolbar-meta">' + generals +
-              (published ? '<span class="ag-toolbar-meta-item">' + esc(published) + '</span>' : '') +
-              '</div>'
-            : '';
+        var meta = '<div class="ag-toolbar-meta">' + generals +
+            (published ? '<span class="ag-toolbar-meta-item">' + esc(published) + '</span>' : '') +
+            '<span class="ag-toolbar-meta-item" id="ag-api-use" title="Torn calls this browser recorded in the last 60 seconds. Other websites are not included.">' + esc(apiUseText()) + '</span>' +
+            '</div>';
         var settings = showSettingsButton()
             ? '<button type="button" class="btn" data-ag="open-settings">Settings</button>'
             : '';
-        var mail = AG.published && AG.published.tierCount
+        var mail = canCopyFactionMail()
             ? '<button type="button" class="btn" data-ag="copy-mail" title="Copy every tier as a table for faction mail">Copy for faction mail</button>'
             : '';
         return '<div class="ag-toolbar">' +
-            '<div class="ag-toolbar-actions">' + rapidControlHtml() + settings + mail + '</div>' +
+            '<div class="ag-toolbar-actions">' + refreshControlHtml() + groupRefreshButtonHtml() + settings + mail + '</div>' +
             '<div class="ag-toolbar-filters" aria-label="Show players">' +
             filterBox('online', 'Online', f.online) + filterBox('offline', 'Offline', f.offline) + filterBox('idle', 'Idle', f.idle) +
             '<span class="ag-toolbar-split" aria-hidden="true"></span>' +
@@ -1261,10 +1487,15 @@
     }
 
     function settingsButtonHtml() {
-        var settings = showSettingsButton()
-            ? '<button type="button" class="btn" data-ag="open-settings">Settings</button>'
-            : '';
-        return '<div class="ag-board-actions">' + settings + rapidControlHtml() + '</div>';
+        if (!showSettingsButton()) return '';
+        return '<div class="ag-board-actions"><button type="button" class="btn" data-ag="open-settings">Settings</button></div>';
+    }
+
+    function noGroupingHtml() {
+        var wait = groupRefreshWaitSec() > 0 || AG.pulling;
+        return '<p class="ag-help">No grouping has been published yet. Leaders, co-leaders, and generals can build it in Settings, ' +
+            '<button type="button" class="ag-inline-link" data-ag="refresh-groups"' + (wait ? ' disabled' : '') + '>' +
+            esc(groupRefreshLabel(true)) + '</button>.</p>';
     }
 
     function boardHtml() {
@@ -1278,8 +1509,8 @@
             return '<div id="ag-board">' + settingsBtn + '<p class="ag-warn">Attack Grouping follows the current ranked war. There is not one on the dashboard yet.</p></div>';
         }
         if (!grouping || !grouping.tierCount) {
-            return '<div id="ag-board">' + settingsBtn +
-                '<p class="ag-help">No grouping has been published yet. Leaders, co-leaders, and generals can build it in Settings.</p></div>';
+            if (AG.pulling) return '<div id="ag-board"><p class="ag-help">Loading grouping…</p></div>';
+            return '<div id="ag-board">' + settingsBtn + noGroupingHtml() + '</div>';
         }
         var stale = grouping.warEnemyFactionId && grouping.warEnemyFactionId !== String(c.warEnemy.id);
         var order = cardOrder(grouping, c.playerId, readView(c.factionId, c.playerId));
@@ -1350,7 +1581,7 @@
     function openSettings() {
         if (!AG.viewer) {
             AG.openAfterLoad = true;
-            pull(true);
+            pullGroups();
             return;
         }
         if (!AG.viewer.canEdit) return;
@@ -1431,15 +1662,13 @@
             openSettings();
             return;
         }
-        if (act === 'rapid-toggle') {
-            setRapid(!AG.rapid);
-            return;
-        }
-        if (act === 'rapid-retry') {
-            retryRapidFromStart();
+        if (act === 'refresh-groups') {
+            if (groupRefreshWaitSec() > 0 || AG.pulling) return;
+            pullGroups();
             return;
         }
         if (act === 'copy-mail') {
+            if (!canCopyFactionMail()) return;
             copyFactionMail(btn);
             return;
         }
@@ -1505,10 +1734,15 @@
         var el = e.target;
         if (!el || !el.getAttribute) return;
         var act = el.getAttribute('data-ag');
+        if (act === 'refresh-speed') {
+            setRefreshSec(el.value);
+            return;
+        }
         if (act === 'filter') {
             var key = el.getAttribute('data-key');
             if (key && Object.prototype.hasOwnProperty.call(AG.filters, key)) {
                 AG.filters[key] = !!el.checked;
+                try { localStorage.setItem(FILTER_KEY, JSON.stringify(AG.filters)); } catch (e) { /* ignore */ }
                 renderBoard();
             }
             return;
@@ -1611,22 +1845,28 @@
         AG.open = route;
         if (!route) {
             closeSettings();
-            stopRapidTimer();
+            stopRefreshTimer();
+            stopApiMeter();
         }
         updateButtonSummary();
         if (!route) return;
-        if (AG.rapid && !AG.rapidTimer) scheduleRapid(250);
+        if (AG.refreshSec && !AG.refreshTimer) scheduleRefresh(250);
+        startApiMeter();
         if (opening) window.scrollTo(0, 0);
         if (!opening) return;
         var c = ctx();
-        var cached = readCache(c.factionId);
-        if (cached && !AG.published) applyServerGrouping(cached, false);
+        var pack = readPack(c.factionId);
+        if (pack) {
+            if (pack.viewer) AG.viewer = pack.viewer;
+            if (pack.checkedAt) AG.lastGroupCheckAt = pack.checkedAt;
+            if (pack.grouping && !AG.published) applyServerGrouping(pack.grouping, false);
+        }
         ensureDraft();
         render();
         if (typeof AG.host.ensureBattleStats === 'function') {
             AG.host.ensureBattleStats().then(function () { if (AG.open) renderBoard(); }).catch(function () {});
         }
-        pull(true);
+        ensureGroupsForToday();
     }
 
     function wire() {
@@ -1635,7 +1875,22 @@
         var btn = document.getElementById('war-dashboard-attack-grouping-command');
         if (!section || !btn) return;
         AG.wired = true;
-        try { AG.rapid = localStorage.getItem(RAPID_KEY) === '1'; } catch (e) { AG.rapid = false; }
+        try {
+            var savedRaw = localStorage.getItem(REFRESH_KEY);
+            var savedSpeed = savedRaw == null ? NaN : parseInt(savedRaw, 10);
+            if (REFRESH_SPEEDS.indexOf(savedSpeed) < 0) {
+                savedSpeed = localStorage.getItem('war_dashboard_attack_grouping_rapid_v1') === '1' ? 1 : REFRESH_DEFAULT_SEC;
+            }
+            AG.refreshSec = savedSpeed;
+        } catch (e) { AG.refreshSec = REFRESH_DEFAULT_SEC; }
+        try {
+            var savedFilters = JSON.parse(localStorage.getItem(FILTER_KEY) || 'null');
+            if (savedFilters && typeof savedFilters === 'object') {
+                Object.keys(AG.filters).forEach(function (key) {
+                    if (typeof savedFilters[key] === 'boolean') AG.filters[key] = savedFilters[key];
+                });
+            }
+        } catch (e2) { /* ignore */ }
         ensureSettingsShell();
         btn.addEventListener('click', function (e) {
             if (!AG.host || !AG.host.hasVip3()) {
@@ -1669,7 +1924,7 @@
         });
         window.addEventListener('tornToolsVipChanged', function () {
             updateButtonSummary();
-            if (AG.open && AG.host && AG.host.hasVip3() && !AG.viewer) pull(true);
+            if (AG.open && AG.host && AG.host.hasVip3() && !AG.viewer) ensureGroupsForToday();
             syncRoute();
         });
         window.addEventListener('keydown', function (e) {
@@ -1678,10 +1933,11 @@
                 if (AG.settingsOpen) closeSettings();
             }
         });
+        setInterval(tickStateAges, 1000);
         document.addEventListener('visibilitychange', function () {
-            if (!AG.rapid) return;
-            if (document.hidden) stopRapidTimer();
-            else if (AG.open) scheduleRapid(250);
+            if (!AG.refreshSec) return;
+            if (document.hidden) stopRefreshTimer();
+            else if (AG.open) scheduleRefresh(250);
         });
     }
 
@@ -1692,8 +1948,11 @@
 
     window.attackGroupingNotifyDashboardData = function () {
         if (!AG.open) return;
+        var c = ctx();
+        var pack = c.factionId ? readPack(c.factionId) : null;
+        if (pack && pack.grouping && !AG.published) applyServerGrouping(pack.grouping, false);
         renderBoard();
-        pull(false);
+        ensureGroupsForToday();
     };
 
     window.syncWarDashboardRoute = syncRoute;
