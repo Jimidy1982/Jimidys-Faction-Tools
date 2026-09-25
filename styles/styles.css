@@ -10654,11 +10654,44 @@ body.newsletter-custom-bg-modal-open {
 .ag-toolbar-filters label {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     margin: 0;
-    color: #ddd;
+    color: #f2f2f2;
     font-size: 13px;
     white-space: nowrap;
+    cursor: pointer;
+}
+
+.ag-toolbar-filters input[type="checkbox"] {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    border: 1px solid rgba(255, 215, 0, 0.7);
+    border-radius: 3px;
+    background: #1a1a1a;
+    cursor: pointer;
+    display: grid;
+    place-content: center;
+}
+
+.ag-toolbar-filters input[type="checkbox"]:checked {
+    background: var(--accent-color, #ffd700);
+    border-color: var(--accent-color, #ffd700);
+}
+
+.ag-toolbar-filters input[type="checkbox"]:checked::after {
+    content: "";
+    width: 4px;
+    height: 8px;
+    border: solid #1a1a1a;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.ag-toolbar-filters input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--accent-color, #ffd700);
+    outline-offset: 2px;
 }
 
 .ag-toolbar-split {
