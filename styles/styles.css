@@ -10619,7 +10619,62 @@ body.newsletter-custom-bg-modal-open {
 }
 
 .attack-grouping-head h2 {
-    margin: 0 0 4px;
+    margin: 0 0 10px;
+}
+
+.ag-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 215, 0, 0.16);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.ag-toolbar-actions,
+.ag-toolbar-filters,
+.ag-toolbar-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+}
+
+.ag-toolbar-actions {
+    flex: 0 0 auto;
+}
+
+.ag-toolbar-filters {
+    flex: 1 1 280px;
+}
+
+.ag-toolbar-filters label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0;
+    color: #ddd;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.ag-toolbar-split {
+    width: 1px;
+    height: 16px;
+    background: rgba(255, 215, 0, 0.28);
+}
+
+.ag-toolbar-status,
+.ag-toolbar-meta {
+    color: #999;
+    font-size: 12px;
+}
+
+.ag-toolbar-meta {
+    flex: 1 1 100%;
 }
 
 .attack-grouping .ag-help,
@@ -10722,6 +10777,45 @@ body.newsletter-custom-bg-modal-open {
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+}
+.ag-stat-hit {
+    background: none;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+.ag-stat-popover {
+    position: fixed;
+    z-index: 80;
+    width: 230px;
+    padding: 8px 10px;
+    background: #1a1a1a;
+    color: #f2f2f2;
+    border: 1px solid #ffd700;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.35;
+}
+.ag-stat-popover-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.ag-stat-popover-row span:last-child {
+    color: #ffd700;
+}
+.ag-stat-popover-age {
+    margin: 6px 0 0;
+    color: #aaa;
+    font-size: 12px;
 }
 
 .ag-row-you > td:first-child {

@@ -14,7 +14,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-functions-compat.js"></script>
-    <script src="firebase-config.js?v=20260924i"></script>
+    <script src="firebase-config.js?v=20260925f"></script>
 </head>
 <body>
     <button class="mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle navigation menu">☰</button>
@@ -108,9 +108,9 @@
                     <p class="api-settings-help">Used for FFScouter estimates. If blank, tools use your Torn key as before.</p>
                 </div>
                 <div class="api-settings-field">
-                    <label for="apiSettingsTornStatsKey">TornStats API Key</label>
-                    <input type="text" id="apiSettingsTornStatsKey" placeholder="Optional TornStats key" autocomplete="off">
-                    <p class="api-settings-help">Used for importing recent spy stats in tools such as Faction Battle Stats.</p>
+                    <label for="apiSettingsTornStatsKey">Torn Stats API Key</label>
+                    <input type="text" id="apiSettingsTornStatsKey" placeholder="TS_…" autocomplete="off">
+                    <p class="api-settings-help">From tornstats.com → General Settings, copy <strong>Torn Stats API Key</strong> (starts with TS_). Used to import recent spy stats in Faction Battle Stats. Leave the Torn API Key (Limited Access) on that page; it is a Torn key, not this one.</p>
                 </div>
                 <p id="apiSettingsStatus" class="api-settings-status" aria-live="polite"></p>
                 <div class="app-modal-actions">
@@ -132,6 +132,6 @@
             Questions or feedback? <a href="#" id="contactProfileLink" target="_blank" rel="noopener noreferrer">Contact Jimidy on Torn</a>
         </p>
     </footer>
-    <script src="app.js?v=20260924i"></script>
+    <script src="app.js?v=20260925f"></script>
 </body>
 </html> 

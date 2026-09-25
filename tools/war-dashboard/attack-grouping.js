@@ -29,6 +29,8 @@
         rapidStep: 0,
         rapidAwaiting: false,
         rapidLocked: false,
+        spyById: {},
+        spyKey: '',
         rapidTimer: null,
         rapidBusy: false,
         rapidHolding: false,
@@ -693,12 +695,123 @@
             var bv = by === 'member' ? b.name : (by === 'status' ? b.actionText : b.locationText);
             return String(av || '').localeCompare(String(bv || '')) * (AG.sortDir === 'desc' ? -1 : 1);
         }
-        var an = by === 'level' ? parseNum(a.level) : (a.bsValue != null ? Number(a.bsValue) : parseNum(a.bsText));
-        var bn = by === 'level' ? parseNum(b.level) : (b.bsValue != null ? Number(b.bsValue) : parseNum(b.bsText));
+        var an = by === 'level' ? parseNum(a.level) : statNumber(a);
+        var bn = by === 'level' ? parseNum(b.level) : statNumber(b);
         if (an == null && bn == null) return 0;
         if (an == null) return 1;
         if (bn == null) return -1;
         return (an - bn) * (AG.sortDir === 'asc' ? 1 : -1);
+    }
+
+    function mailRows(ids, pack) {
+        var rows = [];
+        (ids || []).forEach(function (id) {
+            var member = memberById(pack, id);
+            if (!member) {
+                rows.push({ missing: true, id: String(id) });
+                return;
+            }
+            if (!AG.host || !AG.host.describeTarget) return;
+            rows.push(AG.host.describeTarget(member, ffOf(pack, id), bsOf(pack, id)));
+        });
+        rows.sort(compareViews);
+        return rows;
+    }
+
+    function mailCell(text) {
+        return '<td style="padding:4px 8px;border:1px solid #ccc;vertical-align:top;">' + esc(text || '—') + '</td>';
+    }
+
+    function mailNameCell(view) {
+        if (!view || view.missing) {
+            return '<td style="padding:4px 8px;border:1px solid #ccc;">' + esc(view ? ('Player ' + view.id) : '') + '</td>';
+        }
+        var label = memberLabel(view);
+        var href = view.profileUrl || ('https://www.torn.com/profiles.php?XID=' + encodeURIComponent(view.id));
+        return '<td style="padding:4px 8px;border:1px solid #ccc;"><a href="' + esc(href) + '">' + esc(label) + '</a></td>';
+    }
+
+    function mailPlainPerson(view) {
+        if (!view) return ['', '', ''];
+        if (view.missing) return ['Player ' + view.id, '', ''];
+        return [memberLabel(view), view.level || '—', shortStat(view)];
+    }
+
+    function mailGapCell() {
+        return '<td style="width:28px;min-width:28px;padding:0;border:none;">&nbsp;</td>';
+    }
+
+    function factionMailPack() {
+        var c = ctx();
+        var grouping = AG.published;
+        if (!grouping || !grouping.tierCount) return null;
+        var enemyName = (c.warEnemy && c.warEnemy.name) || 'War enemy';
+        var ourPack = sidePack(c, 'our');
+        var enemyPack = sidePack(c, 'targets');
+        var title = 'Attack grouping vs ' + enemyName;
+        var th = ' style="background:#f5f5f5;padding:4px 8px;text-align:left;border:1px solid #ccc;"';
+        var html = '<div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:14px;color:#111;">' +
+            '<div style="font-size:18px;font-weight:700;margin:0 0 12px 0;">' + esc(title) + '</div>' +
+            '<table style="border-collapse:collapse;font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:12px;color:#111;" cellpadding="4" cellspacing="0">' +
+            '<thead><tr>' +
+            '<th colspan="3" style="background:#e8f5e9;padding:4px 8px;text-align:left;border:1px solid #ccc;">Your faction</th>' +
+            mailGapCell() +
+            '<th colspan="3" style="background:#fff3e0;padding:4px 8px;text-align:left;border:1px solid #ccc;">' + esc(enemyName) + '</th>' +
+            '</tr><tr>' +
+            '<th' + th + '>Member</th><th' + th + '>Level</th><th' + th + '>Stats</th>' +
+            mailGapCell() +
+            '<th' + th + '>Target</th><th' + th + '>Level</th><th' + th + '>Stats</th>' +
+            '</tr></thead><tbody>';
+        var plain = [title, '', ['Member', 'Level', 'Stats', '', 'Target', 'Level', 'Stats'].join('\t')];
+        var count = grouping.tierCount;
+        for (var i = 0; i < count; i++) {
+            var ourIds = (grouping.our && grouping.our.tiers && grouping.our.tiers[i]) || [];
+            var enemyIds = (grouping.targets && grouping.targets.tiers && grouping.targets.tiers[i]) || [];
+            var ours = mailRows(ourIds, ourPack);
+            var enemies = mailRows(enemyIds, enemyPack);
+            var n = Math.max(ours.length, enemies.length, 1);
+            var tierLabel = 'Tier ' + (i + 1);
+            html += '<tr><td colspan="7" style="padding:6px 8px;border:1px solid #ccc;background:#fff8dc;font-weight:700;">' + tierLabel + '</td></tr>';
+            plain.push(tierLabel);
+            for (var r = 0; r < n; r++) {
+                var oursView = ours[r];
+                var enemyView = enemies[r];
+                html += '<tr>' + mailNameCell(oursView) +
+                    mailCell(oursView && !oursView.missing ? oursView.level : '') +
+                    mailCell(oursView && !oursView.missing ? shortStat(oursView) : '') +
+                    mailGapCell() +
+                    mailNameCell(enemyView) +
+                    mailCell(enemyView && !enemyView.missing ? enemyView.level : '') +
+                    mailCell(enemyView && !enemyView.missing ? shortStat(enemyView) : '') +
+                    '</tr>';
+                plain.push(mailPlainPerson(oursView).concat(['']).concat(mailPlainPerson(enemyView)).join('\t'));
+            }
+        }
+        html += '</tbody></table></div>';
+        return { html: html, plain: plain.join('\n') };
+    }
+
+    function copyFactionMail(button) {
+        var pack = factionMailPack();
+        if (!pack) return;
+        var done = function () {
+            if (!button) return;
+            var previous = button.textContent;
+            button.textContent = 'Copied';
+            setTimeout(function () { button.textContent = previous; }, 1600);
+        };
+        var writeHtml = navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem !== 'undefined'
+            ? navigator.clipboard.write([
+                new ClipboardItem({
+                    'text/html': new Blob([pack.html], { type: 'text/html' }),
+                    'text/plain': new Blob([pack.plain], { type: 'text/plain' })
+                })
+            ])
+            : Promise.reject(new Error('no html clipboard'));
+        writeHtml.then(done).catch(function () {
+            if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+            navigator.clipboard.writeText(pack.plain).then(done).catch(function () {});
+        });
     }
 
     function rowsFor(ids, pack) {
@@ -731,11 +844,24 @@
         return label;
     }
 
+    var TORNSTATS_FRESH_SEC = 30 * 24 * 60 * 60;
+
+    function statNumber(view) {
+        var spy = view && spyFor(view.id);
+        var now = Math.floor(Date.now() / 1000);
+        var age = spy && spy.timestamp != null ? now - Number(spy.timestamp) : Infinity;
+        if (spy && spy.total != null && Number.isFinite(Number(spy.total)) && age >= 0 && age <= TORNSTATS_FRESH_SEC) {
+            return Number(spy.total);
+        }
+        if (view && view.bsValue != null && Number.isFinite(Number(view.bsValue))) return Number(view.bsValue);
+        return view ? parseNum(view.bsText) : null;
+    }
+
     function shortStat(view) {
         var logic = L();
-        var n = view.bsValue != null ? Number(view.bsValue) : parseNum(view.bsText);
+        var n = statNumber(view);
         if (logic && n != null && Number.isFinite(n)) return logic.formatStat(n);
-        return view.bsText || '—';
+        return (view && view.bsText) || '—';
     }
 
     function statTitle(view) {
@@ -743,6 +869,84 @@
         if (view.bsText && view.bsText !== '—') parts.push(view.bsText);
         if (view.ffText && view.ffText !== '—') parts.push('FF ' + view.ffText);
         return parts.join(' · ');
+    }
+
+    function spyFor(id) {
+        return (AG.spyById && AG.spyById[String(id)]) || null;
+    }
+
+    function spyLine(label, value) {
+        if (value == null || !Number.isFinite(Number(value))) return '';
+        return '<div class="ag-stat-popover-row"><span>' + esc(label) + '</span><span>' + esc(Number(value).toLocaleString()) + '</span></div>';
+    }
+
+    function spyTipHtml(spy) {
+        if (!spy) return '';
+        var rows = spyLine('Strength', spy.strength) + spyLine('Defence', spy.defense) +
+            spyLine('Speed', spy.speed) + spyLine('Dexterity', spy.dexterity) +
+            spyLine('Total', spy.total);
+        var age = '';
+        if (spy.timestamp) {
+            var when = new Date(Number(spy.timestamp) * 1000);
+            if (!isNaN(when.getTime())) age = '<p class="ag-stat-popover-age">Spied ' + esc(when.toLocaleString()) + '</p>';
+        }
+        return rows + age;
+    }
+
+    function hideStatTip() {
+        var tip = document.getElementById('ag-stat-popover');
+        if (!tip) return;
+        tip.hidden = true;
+        tip.removeAttribute('data-pin');
+    }
+
+    function showStatTip(anchor, pin) {
+        var spy = spyFor(anchor.getAttribute('data-id'));
+        var html = spyTipHtml(spy);
+        if (!html) return;
+        var tip = document.getElementById('ag-stat-popover');
+        if (!tip) {
+            tip = document.createElement('div');
+            tip.id = 'ag-stat-popover';
+            tip.className = 'ag-stat-popover';
+            tip.setAttribute('role', 'tooltip');
+            document.body.appendChild(tip);
+        }
+        tip.innerHTML = html;
+        tip.hidden = false;
+        if (pin) tip.setAttribute('data-pin', '1');
+        else tip.removeAttribute('data-pin');
+        var rect = anchor.getBoundingClientRect();
+        var width = 230;
+        var left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+        tip.style.left = left + 'px';
+        tip.style.top = (rect.bottom + 6) + 'px';
+    }
+
+    function groupedPlayerIds() {
+        var grouping = AG.published;
+        if (!grouping) return [];
+        var ids = [];
+        ['our', 'targets'].forEach(function (side) {
+            var tiers = grouping[side] && grouping[side].tiers;
+            (tiers || []).forEach(function (tier) {
+                (tier || []).forEach(function (id) { ids.push(String(id)); });
+            });
+        });
+        return ids;
+    }
+
+    function ensureSpies() {
+        var ids = groupedPlayerIds();
+        var key = ids.slice().sort().join(',');
+        if (!ids.length || AG.spyKey === key) return;
+        AG.spyKey = key;
+        if (typeof window.getCachedTornStatsSpies !== 'function') return;
+        window.getCachedTornStatsSpies(ids).then(function (map) {
+            if (!AG.open || AG.spyKey !== key) return;
+            AG.spyById = map || {};
+            renderBoard();
+        }).catch(function () {});
     }
 
     function memberTable(ids, pack, attack) {
@@ -772,11 +976,16 @@
                 ? ' data-status-until="' + esc(view.until) + '" data-status-desc="' + esc(view.description || '') + '" data-status-state="' + esc(view.state || '') + '"'
                 : '';
             var statTip = statTitle(view);
+            var spy = spyFor(view.id);
+            var statInner = esc(shortStat(view));
+            if (spy) {
+                statInner = '<button type="button" class="ag-stat-hit" data-ag="stat-tip" data-id="' + esc(view.id) + '" title="Detailed stats">' + statInner + '</button>';
+            }
             return '<tr' + (you ? ' class="ag-row-you"' : '') + '>' +
                 '<td>' + nameCell + '</td>' +
                 '<td>' + esc(view.level) + '</td>' +
                 '<td class="ag-stat"' + (view.ffColor ? ' style="color:' + esc(view.ffColor) + ';"' : '') +
-                (statTip ? ' title="' + esc(statTip) + '"' : '') + '>' + esc(shortStat(view)) + '</td>' +
+                (!spy && statTip ? ' title="' + esc(statTip) + '"' : '') + '>' + statInner + '</td>' +
                 '<td class="war-dashboard-action-status"' + idleAttr + (view.actionColor ? ' style="color:' + esc(view.actionColor) + ';"' : '') + '>' + esc(view.actionText) + '</td>' +
                 '<td class="' + locClass + '"' + locStyle + locAttrs + '>' + esc(view.locationText) + '</td>' +
                 '</tr>';
@@ -873,11 +1082,11 @@
     }
 
     function rapidNote() {
-        if (!AG.rapid) return 'Normal refresh is 30s.';
-        if (AG.rapidHolding) return 'Paused so this page keeps some calls free. Resumes when older calls drop out of the last minute.';
-        if (AG.rapidLocked) return 'Staying at ' + rapidLabel() + '. That is the fastest pace that got through.';
-        if (AG.rapidAwaiting) return 'Trying ' + rapidLabel() + ' until a call succeeds, then staying there.';
-        return 'Refreshing targets about every ' + rapidLabel() + '.';
+        if (!AG.rapid) return '';
+        if (AG.rapidHolding) return 'Waiting for API room';
+        if (AG.rapidLocked) return 'Holding ' + rapidLabel();
+        if (AG.rapidAwaiting) return 'Trying ' + rapidLabel();
+        return '';
     }
 
     function rapidLabel() {
@@ -902,9 +1111,10 @@
     function rapidControlHtml() {
         var on = !!AG.rapid;
         var retry = '<button type="button" class="btn" id="ag-rapid-retry" data-ag="rapid-retry"' + (on && AG.rapidLocked ? '' : ' hidden') + '>Try 1s again</button>';
+        var note = rapidNote();
         return '<button type="button" class="btn ag-rapid-btn' + (on ? ' ag-rapid-btn--on' : '') + '" data-ag="rapid-toggle" aria-pressed="' + (on ? 'true' : 'false') + '" title="' + esc(rapidButtonTitle()) + '">' + esc(rapidButtonText()) + '</button>' +
             retry +
-            '<p class="war-dashboard-command-help" id="ag-rapid-note">' + esc(rapidNote()) + '</p>';
+            '<span class="ag-toolbar-status" id="ag-rapid-note"' + (note ? '' : ' hidden') + '>' + esc(note) + '</span>';
     }
 
     function stopRapidTimer() {
@@ -973,7 +1183,11 @@
         }
         if (retry) retry.hidden = !(AG.rapid && AG.rapidLocked);
         var note = document.getElementById('ag-rapid-note');
-        if (note) note.textContent = rapidNote();
+        if (note) {
+            var status = rapidNote();
+            note.textContent = status;
+            note.hidden = !status;
+        }
     }
 
     function retryRapidFromStart() {
@@ -1001,40 +1215,43 @@
         return '<label><input type="checkbox" data-ag="filter" data-key="' + key + '"' + (checked ? ' checked' : '') + '> ' + label + '</label>';
     }
 
+    function publishedLine() {
+        if (!AG.published || !AG.published.updatedAt) return '';
+        var when = new Date(AG.published.updatedAt);
+        if (isNaN(when.getTime())) return '';
+        var text = when.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        if (AG.published.updatedByName) text += ' · ' + AG.published.updatedByName;
+        return text;
+    }
+
     function boardToolbar(c) {
         var f = AG.filters;
-        var generalNames = '';
+        var generals = '';
         if (AG.published && AG.published.generalPlayerIds && AG.published.generalPlayerIds.length) {
-            generalNames = '<div class="war-dashboard-filter-group"><p class="war-dashboard-command-section-title">Generals</p>' +
-                '<p class="war-dashboard-command-help">' + esc(AG.published.generalPlayerIds.map(function (id) {
-                    return nameOf(c.ourMembers, id);
-                }).join(', ')) + '</p></div>';
+            generals = '<span class="ag-toolbar-meta-item">Generals ' + esc(AG.published.generalPlayerIds.map(function (id) {
+                return nameOf(c.ourMembers, id);
+            }).join(', ')) + '</span>';
         }
-        var settings = showSettingsButton()
-            ? '<div class="war-dashboard-filter-group"><p class="war-dashboard-command-section-title">Grouping</p>' +
-              '<button type="button" class="btn" data-ag="open-settings">Settings</button>' +
-              '<p class="war-dashboard-command-help">Tiers, methods, and who can edit.</p></div>'
+        var published = publishedLine();
+        var meta = (generals || published)
+            ? '<div class="ag-toolbar-meta">' + generals +
+              (published ? '<span class="ag-toolbar-meta-item">' + esc(published) + '</span>' : '') +
+              '</div>'
             : '';
-        var updated = '';
-        if (AG.published && AG.published.updatedAt) {
-            updated = 'Published ' + new Date(AG.published.updatedAt).toLocaleString() +
-                (AG.published.updatedByName ? ' by ' + AG.published.updatedByName : '');
-        }
-        return '<div class="war-dashboard-filter-strip" aria-label="Attack grouping filters">' +
-            '<div class="war-dashboard-filter-group"><p class="war-dashboard-command-section-title">Targets</p>' +
-            rapidControlHtml() +
-            '</div>' +
-            '<div class="war-dashboard-filter-group"><p class="war-dashboard-command-section-title">Activity</p>' +
-            '<div class="war-dashboard-filter-options">' +
+        var settings = showSettingsButton()
+            ? '<button type="button" class="btn" data-ag="open-settings">Settings</button>'
+            : '';
+        var mail = AG.published && AG.published.tierCount
+            ? '<button type="button" class="btn" data-ag="copy-mail" title="Copy every tier as a table for faction mail">Copy for faction mail</button>'
+            : '';
+        return '<div class="ag-toolbar">' +
+            '<div class="ag-toolbar-actions">' + rapidControlHtml() + settings + mail + '</div>' +
+            '<div class="ag-toolbar-filters" aria-label="Show players">' +
             filterBox('online', 'Online', f.online) + filterBox('offline', 'Offline', f.offline) + filterBox('idle', 'Idle', f.idle) +
-            '</div></div>' +
-            '<div class="war-dashboard-filter-group"><p class="war-dashboard-command-section-title">Status</p>' +
-            '<div class="war-dashboard-filter-options">' +
+            '<span class="ag-toolbar-split" aria-hidden="true"></span>' +
             filterBox('okay', 'Okay', f.okay) + filterBox('hospital', 'Hospital', f.hospital) + filterBox('abroad', 'Abroad', f.abroad) +
-            '</div><p class="war-dashboard-command-help">Leave all unchecked to show everyone.</p></div>' +
-            generalNames +
-            settings +
-            (updated ? '<div class="war-dashboard-filter-group"><p class="war-dashboard-command-section-title">Last save</p><p class="war-dashboard-command-help">' + esc(updated) + '</p></div>' : '') +
+            '</div>' +
+            meta +
             '</div>';
     }
 
@@ -1189,6 +1406,7 @@
             if (again) again.focus();
         }
         updateButtonSummary();
+        ensureSpies();
     }
 
     function onClick(e) {
@@ -1219,6 +1437,23 @@
         }
         if (act === 'rapid-retry') {
             retryRapidFromStart();
+            return;
+        }
+        if (act === 'copy-mail') {
+            copyFactionMail(btn);
+            return;
+        }
+        if (act === 'stat-tip') {
+            e.preventDefault();
+            var open = document.getElementById('ag-stat-popover');
+            var same = open && !open.hidden && open.getAttribute('data-pin') === '1' && open.getAttribute('data-for') === btn.getAttribute('data-id');
+            if (same) hideStatTip();
+            else {
+                showStatTip(btn, true);
+                if (open || document.getElementById('ag-stat-popover')) {
+                    document.getElementById('ag-stat-popover').setAttribute('data-for', btn.getAttribute('data-id'));
+                }
+            }
             return;
         }
         if (act === 'close-settings') {
@@ -1414,13 +1649,34 @@
         section.addEventListener('dragstart', onDragStart);
         section.addEventListener('dragover', onDragOver);
         section.addEventListener('drop', onDrop);
+        section.addEventListener('mouseover', function (e) {
+            var hit = e.target.closest ? e.target.closest('[data-ag="stat-tip"]') : null;
+            if (!hit) return;
+            var tip = document.getElementById('ag-stat-popover');
+            if (tip && tip.getAttribute('data-pin') === '1') return;
+            showStatTip(hit, false);
+        });
+        section.addEventListener('mouseout', function (e) {
+            var hit = e.target.closest ? e.target.closest('[data-ag="stat-tip"]') : null;
+            if (!hit) return;
+            var tip = document.getElementById('ag-stat-popover');
+            if (tip && tip.getAttribute('data-pin') === '1') return;
+            hideStatTip();
+        });
+        document.addEventListener('click', function (e) {
+            if (e.target.closest && e.target.closest('[data-ag="stat-tip"], #ag-stat-popover')) return;
+            hideStatTip();
+        });
         window.addEventListener('tornToolsVipChanged', function () {
             updateButtonSummary();
             if (AG.open && AG.host && AG.host.hasVip3() && !AG.viewer) pull(true);
             syncRoute();
         });
         window.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape' && AG.settingsOpen) closeSettings();
+            if (e.key === 'Escape') {
+                hideStatTip();
+                if (AG.settingsOpen) closeSettings();
+            }
         });
         document.addEventListener('visibilitychange', function () {
             if (!AG.rapid) return;

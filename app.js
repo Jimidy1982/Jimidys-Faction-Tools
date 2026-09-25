@@ -4757,7 +4757,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 document.head.appendChild(script);
             } else if (page.includes('war-dashboard')) {
-                const buildV = (window.APP_BUILD_VERSION || '20260924i');
+                const buildV = (window.APP_BUILD_VERSION || '20260925f');
                 const loadToolScript = (id, src) => new Promise((resolve) => {
                     if (document.getElementById(id)) {
                         resolve();
@@ -5070,7 +5070,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateBattleStatsApiSettingsSummary() {
         const summary = document.getElementById('battleStatsApiSettingsSummary');
         if (!summary) return;
-        const hasTornStats = typeof window.getApiSettingsTornStatsKey === 'function' && !!window.getApiSettingsTornStatsKey();
+        const hasTornStats = typeof window.getApiSettingsTornStatsApiKey === 'function' && !!window.getApiSettingsTornStatsApiKey();
         summary.textContent = hasTornStats ? ' TornStats key saved locally.' : ' TornStats key not set.';
     }
 
@@ -6086,6 +6086,25 @@ document.addEventListener('DOMContentLoaded', () => {
         return spy;
     }
 
+    window.getCachedTornStatsSpies = async function (ids) {
+        const want = {};
+        (Array.isArray(ids) ? ids : []).forEach(function (id) {
+            if (id != null && String(id) !== '') want[String(id)] = true;
+        });
+        const keys = Object.keys(want);
+        if (!keys.length) return {};
+        const out = {};
+        await Promise.all(keys.map(async function (id) {
+            try {
+                const spy = await getBattleStatsTornStatsSpyCache(id);
+                if (!spy) return;
+                if (spy.strength == null && spy.defense == null && spy.speed == null && spy.dexterity == null) return;
+                out[id] = spy;
+            } catch (e) { /* skip */ }
+        }));
+        return out;
+    };
+
     async function getBattleStatsTornStatsSpyCache(pid) {
         const id = String(pid);
         try {
@@ -6665,10 +6684,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (importTornStatsBtn) {
                 importTornStatsBtn.addEventListener('click', async () => {
                     const tornStatsApiKey =
-                        typeof window.getApiSettingsTornStatsKey === 'function' ? window.getApiSettingsTornStatsKey() : '';
+                        typeof window.getApiSettingsTornStatsApiKey === 'function' ? window.getApiSettingsTornStatsApiKey() : '';
                     if (!tornStatsApiKey) {
                         showBattleStatsStyledModal('TornStats API Key Needed', [
-                            'Add your TornStats API key in API Settings, then try the import again.',
+                            'Add your Torn Stats API Key in API Settings, then try the import again. On tornstats.com, open General Settings and copy Torn Stats API Key (it starts with TS_).',
                             {
                                 html: window.apiSettingsLinkHtml
                                     ? window.apiSettingsLinkHtml('Open API Settings')
