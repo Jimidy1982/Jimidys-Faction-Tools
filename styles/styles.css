@@ -10765,6 +10765,12 @@ body.newsletter-custom-bg-modal-open {
     cursor: default;
 }
 
+.ag-tier-faction {
+    display: none;
+    font-weight: 500;
+    color: #cfcfcf;
+}
+
 .ag-tier-pane-mine {
     border-color: rgba(129, 199, 132, 0.65);
 }
@@ -10823,6 +10829,13 @@ body.newsletter-custom-bg-modal-open {
 
 .ag-attack-col a {
     text-decoration: none;
+}
+
+.ag-attack-unavailable {
+    opacity: 0.35;
+    filter: grayscale(1);
+    cursor: default;
+    user-select: none;
 }
 
 .ag-tier-pane .war-dashboard-table th,
@@ -11047,5 +11060,154 @@ body.newsletter-custom-bg-modal-open {
     .ag-columns-head,
     .ag-tier-row {
         grid-template-columns: 1fr;
+    }
+
+    .ag-columns-head {
+        display: none;
+    }
+
+    .ag-tier-faction {
+        display: inline;
+    }
+}
+
+/* Phones: the site-wide 44px button/select rule stretches these compact controls,
+   and a single nowrap header row squishes the tier name, actions, and counts together. */
+@media (max-width: 768px) {
+    .attack-grouping .ag-toolbar-actions,
+    .attack-grouping .ag-toolbar-filters {
+        flex: 1 1 100%;
+        max-width: 100%;
+    }
+
+    .attack-grouping .ag-toolbar-split {
+        flex: 1 1 100%;
+        width: auto;
+        height: 1px;
+    }
+
+    .attack-grouping .ag-speed select {
+        min-height: 36px;
+        padding: 6px 26px 6px 10px;
+        font-size: 14px;
+    }
+
+    .attack-grouping .ag-toolbar-actions .btn {
+        min-height: 40px;
+        padding: 8px 12px;
+        font-size: 14px;
+    }
+
+    .attack-grouping .ag-stat-hit,
+    .attack-grouping .ag-inline-link {
+        min-height: 0;
+        padding: 0;
+        font-size: inherit;
+        line-height: inherit;
+    }
+
+    .ag-tier-pane > .ag-tier-head,
+    .attack-grouping .ag-tier-idle {
+        flex-wrap: wrap;
+        align-items: center;
+        row-gap: 4px;
+    }
+
+    .ag-tier-pane > .ag-tier-head > span,
+    .attack-grouping .ag-tier-idle > span {
+        flex: 0 0 auto;
+        white-space: nowrap;
+    }
+
+    .ag-tier-pane > .ag-tier-head > .ag-tier-title,
+    .attack-grouping .ag-tier-idle > .ag-tier-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .ag-tier-pane > .ag-tier-head .ag-you-pill,
+    .ag-tier-pane > .ag-tier-head .ag-card-actions {
+        margin-left: auto;
+    }
+
+    .ag-tier-pane > .ag-tier-head small,
+    .attack-grouping .ag-tier-idle small {
+        flex: 1 1 100%;
+        margin-left: 0;
+        padding-left: 22px;
+        white-space: normal;
+    }
+
+    .attack-grouping .ag-card-actions .btn {
+        min-height: 34px;
+        padding: 4px 10px;
+        font-size: 13px;
+    }
+
+    .attack-grouping .table-scroll-wrapper {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        max-width: 100%;
+    }
+
+    .attack-grouping .ag-member-table {
+        min-width: 0;
+        width: 100%;
+        font-size: 12px;
+    }
+
+    .attack-grouping .ag-tier-pane .ag-member-table th,
+    .attack-grouping .ag-tier-pane .ag-member-table td {
+        padding: 6px 2px;
+    }
+
+    .attack-grouping .ag-member-table th {
+        font-size: 11px;
+    }
+
+    .attack-grouping .ag-member-table:not(:has(col.ag-attack-col)) col:nth-child(1) { width: 30% !important; }
+    .attack-grouping .ag-member-table:not(:has(col.ag-attack-col)) col:nth-child(2) { width: 16% !important; }
+    .attack-grouping .ag-member-table:not(:has(col.ag-attack-col)) col:nth-child(3) { width: 16% !important; }
+    .attack-grouping .ag-member-table:not(:has(col.ag-attack-col)) col:nth-child(4) { width: 18% !important; }
+    .attack-grouping .ag-member-table:not(:has(col.ag-attack-col)) col:nth-child(5) { width: 20% !important; }
+
+    .attack-grouping .ag-member-table:has(col.ag-attack-col) col.ag-attack-col { width: 8% !important; max-width: none; }
+    .attack-grouping .ag-member-table:has(col.ag-attack-col) col:nth-child(2) { width: 24% !important; }
+    .attack-grouping .ag-member-table:has(col.ag-attack-col) col:nth-child(3) { width: 16% !important; }
+    .attack-grouping .ag-member-table:has(col.ag-attack-col) col:nth-child(4) { width: 16% !important; }
+    .attack-grouping .ag-member-table:has(col.ag-attack-col) col:nth-child(5) { width: 18% !important; }
+    .attack-grouping .ag-member-table:has(col.ag-attack-col) col:nth-child(6) { width: 18% !important; }
+
+    .ag-settings-modal {
+        max-width: calc(100vw - 24px);
+    }
+
+    .ag-settings-modal .ag-tier-step {
+        width: 36px;
+        height: 36px;
+        min-width: 36px;
+        min-height: 36px;
+        padding: 0;
+        font-size: 16px;
+    }
+
+    .ag-settings-modal .ag-inline-link {
+        min-height: 0;
+        padding: 0;
+        font-size: inherit;
+    }
+
+    .ag-settings-modal .ag-range-table {
+        table-layout: fixed;
+        width: 100%;
+    }
+
+    .ag-settings-modal .ag-range-table input {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
     }
 }

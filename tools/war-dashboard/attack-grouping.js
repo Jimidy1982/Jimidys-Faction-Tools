@@ -1146,6 +1146,21 @@
         return !!(flight && flight.to === mine);
     }
 
+    function attackUnavailableTitle(target, viewer) {
+        if (!viewer) return 'Your location is not loaded yet';
+        if (!countryOf(viewer)) return 'You are in the air';
+        var flight = flightOf(target);
+        if (flight) return 'Flying somewhere else';
+        return 'Not in your country';
+    }
+
+    function attackIconHtml(view, viewer) {
+        if (canAttackEnemy(view, viewer)) {
+            return '<a class="ag-attack-link" href="' + esc(view.attackUrl) + '" target="_blank" rel="noopener" title="Attack">🎯</a>';
+        }
+        return '<span class="ag-attack-unavailable" title="' + esc(attackUnavailableTitle(view, viewer)) + '" aria-disabled="true">🎯</span>';
+    }
+
     function formatStateAge(at) {
         var sec = Math.max(0, Math.floor((Date.now() - Number(at)) / 1000));
         if (sec < 5) return 'just now';
@@ -1274,10 +1289,7 @@
             }
             var attackCell = '';
             if (attack) {
-                var attackIcon = canAttackEnemy(view, viewer)
-                    ? '<a class="ag-attack-link" href="' + esc(view.attackUrl) + '" target="_blank" rel="noopener" title="Attack">🎯</a>'
-                    : '';
-                attackCell = '<td class="ag-attack-col">' + attackIcon + '</td>';
+                attackCell = '<td class="ag-attack-col">' + attackIconHtml(view, viewer) + '</td>';
             }
             var nameCell = '<a href="' + esc(view.profileUrl) + '" target="_blank" rel="noopener" style="color:#FFD700;"' + linkAttrs + '>' +
                 esc(memberLabel(view)) + '</a>';
@@ -1330,6 +1342,19 @@
             '</span>';
     }
 
+    function sideLabel(c, sideKey) {
+        if (sideKey !== 'targets') return 'Your faction';
+        var enemy = c && c.warEnemy;
+        if (enemy && enemy.name) return enemy.name;
+        if (enemy && enemy.id) return 'Faction ' + enemy.id;
+        return 'Enemy';
+    }
+
+    function tierTitleHtml(index, sideName) {
+        return '<span class="ag-tier-title">Tier ' + (index + 1) +
+            '<span class="ag-tier-faction"> · ' + esc(sideName) + '</span></span>';
+    }
+
     function activePane(index, mine, grouping, c, sideKey, order) {
         var ids = ((sideKey === 'our' ? grouping.our : grouping.targets).tiers[index] || []).slice();
         var pack = sidePack(c, sideKey);
@@ -1340,7 +1365,7 @@
         return '<section class="war-dashboard-enemy-panel ag-tier-pane' + (mine ? ' ag-tier-pane-mine' : '') + '">' +
             '<div class="war-dashboard-enemy-panel-toggle ag-tier-head">' +
             '<span class="war-dashboard-enemy-panel-arrow" aria-hidden="true">▼</span>' +
-            '<span>Tier ' + (index + 1) + '</span>' +
+            tierTitleHtml(index, sideLabel(c, sideKey)) +
             controls +
             '<small>' + meta + '</small>' +
             '</div>' +
@@ -1357,7 +1382,7 @@
             ' · ' + bits.online + ' online · ' + bits.hospital + ' hospital';
         return '<button type="button" class="war-dashboard-enemy-panel war-dashboard-enemy-panel-toggle ag-tier-idle" data-ag="show-tier" data-tier="' + index + '">' +
             '<span class="war-dashboard-enemy-panel-arrow" aria-hidden="true">▶</span>' +
-            '<span>Tier ' + (index + 1) + '</span>' +
+            tierTitleHtml(index, sideLabel(c, sideKey)) +
             '<small>' + meta + ' · Show</small>' +
             '</button>';
     }
