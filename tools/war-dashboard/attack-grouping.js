@@ -362,13 +362,22 @@
         });
     }
 
+    function hydrateViewerFromCache() {
+        if (AG.viewer) return;
+        var c = ctx();
+        if (!c.factionId) return;
+        var pack = readPack(c.factionId);
+        if (pack && pack.viewer) AG.viewer = pack.viewer;
+    }
+
     async function ensureGroupsForToday() {
         if (!AG.host || !AG.open || AG.pulling) return;
         if (!AG.host.hasVip3()) return;
         var c = ctx();
         if (!c.factionId) return;
+        hydrateViewerFromCache();
         var pack = readPack(c.factionId);
-        if (pack && pack.checkedDay === todayKey()) return;
+        if (pack && pack.checkedDay === todayKey() && (AG.viewer || pack.viewer)) return;
         await pullGroups();
     }
 
@@ -1906,8 +1915,13 @@
         if (!route) return;
         if (AG.refreshSec && !AG.refreshTimer) scheduleRefresh(250);
         startApiMeter();
+        var hadViewer = !!AG.viewer;
+        hydrateViewerFromCache();
         if (opening) window.scrollTo(0, 0);
-        if (!opening) return;
+        if (!opening) {
+            if (!hadViewer && AG.viewer) render();
+            return;
+        }
         var c = ctx();
         var pack = readPack(c.factionId);
         if (pack) {
@@ -2005,6 +2019,7 @@
         if (!AG.open) return;
         var c = ctx();
         var pack = c.factionId ? readPack(c.factionId) : null;
+        if (pack && pack.viewer && !AG.viewer) AG.viewer = pack.viewer;
         if (pack && pack.grouping && !AG.published) applyServerGrouping(pack.grouping, false);
         renderBoard();
         ensureGroupsForToday();
