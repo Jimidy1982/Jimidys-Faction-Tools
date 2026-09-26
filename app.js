@@ -4757,7 +4757,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 document.head.appendChild(script);
             } else if (page.includes('war-dashboard')) {
-                const buildV = (window.APP_BUILD_VERSION || '20260925t');
+                const buildV = (window.APP_BUILD_VERSION || '20260926d');
                 const loadToolScript = (id, src) => new Promise((resolve) => {
                     if (document.getElementById(id)) {
                         resolve();

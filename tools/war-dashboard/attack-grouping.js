@@ -14,6 +14,9 @@
     var FILTER_KEY = 'war_dashboard_attack_grouping_filters_v1';
     var REFRESH_DEFAULT_SEC = 15;
     var REFRESH_SPEEDS = [0, 30, 15, 10, 5, 2, 1];
+    var ATTACK_WINDOW_NAME = 'jft-attack';
+    var ATTACK_PHONE_WIDTH = 460;
+    var ATTACK_PHONE_HEIGHT = 844;
     var METHOD_LABELS = {
         equal: 'Equal split',
         statRange: 'Stat range',
@@ -1193,6 +1196,57 @@
         }
     }
 
+    function useAttackPopup() {
+        try {
+            if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches) return false;
+        } catch (e) {
+            if (window.innerWidth && window.innerWidth < 900) return false;
+        }
+        try {
+            if (window.screen) {
+                var shortSide = Math.min(window.screen.width || 0, window.screen.height || 0);
+                if (shortSide && shortSide < 500) return false;
+            }
+        } catch (e2) { /* a desktop screen still gets the side window */ }
+        return true;
+    }
+
+    function openAttackPopup(url) {
+        var width = ATTACK_PHONE_WIDTH;
+        var height = ATTACK_PHONE_HEIGHT;
+        var left = 0;
+        var top = 0;
+        try {
+            if (window.screen) {
+                left = window.screen.availLeft || 0;
+                top = window.screen.availTop || 0;
+                if (window.screen.availHeight && height > window.screen.availHeight) height = window.screen.availHeight;
+            }
+        } catch (e) { /* keep the phone size */ }
+        var features = 'popup=yes,resizable=yes,scrollbars=yes,width=' + width + ',height=' + height +
+            ',left=' + left + ',top=' + top + ',screenX=' + left + ',screenY=' + top;
+        var opened = null;
+        try {
+            opened = window.open(url, ATTACK_WINDOW_NAME, features);
+        } catch (e2) {
+            opened = null;
+        }
+        if (!opened) {
+            try { window.open(url, '_blank', 'noopener'); } catch (e3) { /* leave the link unused */ }
+            return;
+        }
+        try { opened.focus(); } catch (e4) { /* already in front */ }
+    }
+
+    function onAttackLinkClick(e) {
+        var link = e.target && e.target.closest ? e.target.closest('a.ag-attack-link') : null;
+        if (!link || !link.getAttribute('href')) return;
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        if (!useAttackPopup()) return;
+        e.preventDefault();
+        openAttackPopup(link.href);
+    }
+
     function memberTable(ids, pack, attack) {
         if (!ids || !ids.length) return '<p class="ag-empty">Nobody in this tier.</p>';
         var c = ctx();
@@ -1212,7 +1266,7 @@
             var attackCell = '';
             if (attack) {
                 var attackIcon = canAttackEnemy(view, viewer)
-                    ? '<a href="' + esc(view.attackUrl) + '" target="_blank" rel="noopener" title="Attack">🎯</a>'
+                    ? '<a class="ag-attack-link" href="' + esc(view.attackUrl) + '" target="_blank" rel="noopener" title="Attack">🎯</a>'
                     : '';
                 attackCell = '<td class="ag-attack-col">' + attackIcon + '</td>';
             }
@@ -1898,6 +1952,7 @@
                 if (AG.host) AG.host.openVipInfo();
             }
         });
+        section.addEventListener('click', onAttackLinkClick);
         section.addEventListener('click', onClick);
         section.addEventListener('change', onChange);
         section.addEventListener('input', onInput);
