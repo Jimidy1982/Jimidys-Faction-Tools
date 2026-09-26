@@ -40,7 +40,11 @@ assert.strictEqual(L.parseStatInput('nope'), null);
 assert.strictEqual(L.formatStat(1.5e9), '1.5b');
 assert.strictEqual(L.formatStat(3.24e9), '3.2b');
 assert.strictEqual(L.formatStat(320.4e6), '320m');
-assert.strictEqual(L.formatStat(1500), '2k');
+assert.strictEqual(L.formatStat(2.24e6), '2.2m');
+assert.strictEqual(L.formatStat(2e6), '2.0m');
+assert.strictEqual(L.formatStat(45.4e6), '45m');
+assert.strictEqual(L.formatStat(1500), '1.5k');
+assert.strictEqual(L.formatStat(11.14e9), '11.1b');
 assert.strictEqual(L.clampTierCount(99), 10);
 assert.strictEqual(L.clampTierCount(0), 1);
 

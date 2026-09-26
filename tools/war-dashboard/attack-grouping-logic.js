@@ -185,11 +185,31 @@
         }
         const big = precise ? 2 : 1;
         const small = precise ? 2 : 0;
-        if (abs >= 1e12) return trim(v / 1e12, big) + 't';
-        if (abs >= 1e9) return trim(v / 1e9, big) + 'b';
-        if (abs >= 1e6) return trim(v / 1e6, small) + 'm';
-        if (abs >= 1e3) return trim(v / 1e3, small) + 'k';
-        return String(Math.round(v));
+        let scaled = v;
+        let suffix = '';
+        let places = 0;
+        if (abs >= 1e12) {
+            scaled = v / 1e12;
+            suffix = 't';
+            places = big;
+        } else if (abs >= 1e9) {
+            scaled = v / 1e9;
+            suffix = 'b';
+            places = big;
+        } else if (abs >= 1e6) {
+            scaled = v / 1e6;
+            suffix = 'm';
+            places = small;
+        } else if (abs >= 1e3) {
+            scaled = v / 1e3;
+            suffix = 'k';
+            places = small;
+        } else {
+            return String(Math.round(v));
+        }
+        const oneDecimal = Math.round(scaled * 10) / 10;
+        if (!precise && Math.abs(oneDecimal) < 10) return oneDecimal.toFixed(1) + suffix;
+        return trim(scaled, places) + suffix;
     }
 
     function formatStatInput(n) {
