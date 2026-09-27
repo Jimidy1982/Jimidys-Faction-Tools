@@ -1137,7 +1137,8 @@
     }
 
     function canAttackEnemy(target, viewer) {
-        if (!viewer) return false;
+        if (!viewer || !target) return false;
+        if (target.inHospital) return false;
         var mine = countryOf(viewer);
         if (!mine) return false;
         var theirs = countryOf(target);
@@ -1147,6 +1148,7 @@
     }
 
     function attackUnavailableTitle(target, viewer) {
+        if (target && target.inHospital) return 'In hospital';
         if (!viewer) return 'Your location is not loaded yet';
         if (!countryOf(viewer)) return 'You are in the air';
         var flight = flightOf(target);
