@@ -4797,6 +4797,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     else if (window.initChainWatchPage) window.initChainWatchPage();
                 };
                 document.head.appendChild(script);
+            } else if (page.includes('racing-tournaments')) {
+                const oldScript = document.getElementById('racing-tournaments-script');
+                if (oldScript) oldScript.remove();
+                const script = document.createElement('script');
+                script.src =
+                    'tools/racing-tournaments/racing-tournaments.js?v=' +
+                    encodeURIComponent(window.APP_BUILD_VERSION || Date.now());
+                script.id = 'racing-tournaments-script';
+                script.onload = () => {
+                    if (typeof window.initRacingTournaments === 'function') window.initRacingTournaments();
+                };
+                document.head.appendChild(script);
             } else if (page.includes('alliance-dashboard')) {
                 const oldScript = document.getElementById('alliance-dashboard-script');
                 if (oldScript) oldScript.remove();

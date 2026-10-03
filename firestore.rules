@@ -65,5 +65,25 @@ service cloud.firestore {
     match /allianceFactionMemberships/{docId} {
       allow read, write: if false;
     }
+    // Racing tournaments. Anyone with the share link can read standings.
+    // Writes go through callables (VIP 3 to create, owner/admin to submit).
+    match /racingLeagues/{leagueId} {
+      allow read: if true;
+      allow write: if false;
+      match /rounds/{roundId} {
+        allow read: if true;
+        allow write: if false;
+      }
+      match /seasons/{seasonId} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+    match /racingLeagueRoles/{docId} {
+      allow read, write: if false;
+    }
+    match /racingDriverNames/{playerId} {
+      allow read, write: if false;
+    }
   }
 }

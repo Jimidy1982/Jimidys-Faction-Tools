@@ -2237,3 +2237,25 @@ exports.allianceVaultUpsert = allianceDashboard.allianceVaultUpsert;
 exports.allianceVaultDelete = allianceDashboard.allianceVaultDelete;
 exports.allianceTerritorySyncFromApi = allianceDashboard.allianceTerritorySyncFromApi;
 exports.allianceTerritorySetManualTileCodes = allianceDashboard.allianceTerritorySetManualTileCodes;
+
+/** Racing tournaments — VIP 3 owners, public join links. See functions/racingTournaments.js */
+const racingTournaments = require('./racingTournaments');
+exports.racingListMine = racingTournaments.racingListMine;
+exports.racingCreateLeague = racingTournaments.racingCreateLeague;
+exports.racingUpdateLeague = racingTournaments.racingUpdateLeague;
+exports.racingDeleteLeague = racingTournaments.racingDeleteLeague;
+exports.racingJoinLeague = racingTournaments.racingJoinLeague;
+exports.racingLeaveLeague = racingTournaments.racingLeaveLeague;
+exports.racingAddAdmin = racingTournaments.racingAddAdmin;
+exports.racingRemoveAdmin = racingTournaments.racingRemoveAdmin;
+exports.racingArchiveSeason = racingTournaments.racingArchiveSeason;
+exports.racingSetJoinLock = racingTournaments.racingSetJoinLock;
+exports.racingInviteDriver = racingTournaments.racingInviteDriver;
+exports.racingRemoveDriver = racingTournaments.racingRemoveDriver;
+exports.racingCreateRound = racingTournaments.racingCreateRound;
+exports.racingUpdateRound = racingTournaments.racingUpdateRound;
+exports.racingDeleteRound = racingTournaments.racingDeleteRound;
+exports.racingOpenRound = racingTournaments.racingOpenRound;
+exports.racingClearRound = racingTournaments.racingClearRound;
+exports.racingSubmitRace = racingTournaments.racingSubmitRace;
+exports.racingSuggestRaces = racingTournaments.racingSuggestRaces;
