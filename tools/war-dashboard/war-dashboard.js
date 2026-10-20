@@ -3859,7 +3859,7 @@
 
     function chainWatchShareUrl(fid) {
         const base = location.origin + location.pathname;
-        return base + '#chain-watch/' + encodeURIComponent(String(fid));
+        return base + '#war-dashboard/chain-watch/' + encodeURIComponent(String(fid));
     }
 
     function navigateToChainWatchPage() {
@@ -3872,7 +3872,7 @@
             alert('Set your Torn API key in the sidebar first.');
             return;
         }
-        window.location.hash = 'chain-watch/' + String(fid);
+        window.location.hash = 'war-dashboard/chain-watch/' + String(fid);
     }
 
     function showChainWatchCreateModal() {
@@ -5449,6 +5449,10 @@
         if (!button) return;
         button.classList.toggle('war-dashboard-command-btn--vip-locked', !unlocked);
         button.setAttribute('aria-disabled', unlocked ? 'false' : 'true');
+        if (button.id === 'war-dashboard-chain-watch-command') {
+            if (unlocked) button.setAttribute('href', '#war-dashboard/chain-watch');
+            else button.removeAttribute('href');
+        }
         if (unlocked) {
             button.removeAttribute('title');
         } else {
@@ -5501,18 +5505,27 @@
         container._warDashboardCommandRibbonWired = true;
         container.addEventListener('click', function (e) {
             const button = e.target && e.target.closest
-                ? e.target.closest('#war-dashboard-enemy-command, #war-dashboard-activity-tracker-command, #war-dashboard-chain-watch-command')
+                ? e.target.closest('#war-dashboard-enemy-command, #war-dashboard-activity-tracker-command')
                 : null;
             if (!button || !container.contains(button)) return;
             e.preventDefault();
             if (button.matches('[data-war-dashboard-vip2-command]') && !hasWarDashboardVip2Access()) {
-                showWarDashboardVip2GateMessage(button.id === 'war-dashboard-chain-watch-command' ? 'Chain Watch' : 'Activity Tracker');
+                showWarDashboardVip2GateMessage('Activity Tracker');
                 return;
             }
             if (button.id === 'war-dashboard-enemy-command') openWarDashboardEnemyModal();
             else if (button.id === 'war-dashboard-activity-tracker-command') openWarDashboardActivityTrackerModal();
-            else if (button.id === 'war-dashboard-chain-watch-command') openWarDashboardChainWatchCommandModal();
         });
+        const chainWatchLink = document.getElementById('war-dashboard-chain-watch-command');
+        if (chainWatchLink && !chainWatchLink.dataset.cwNavWired) {
+            chainWatchLink.dataset.cwNavWired = '1';
+            chainWatchLink.addEventListener('click', function (e) {
+                if (!hasWarDashboardVip2Access()) {
+                    e.preventDefault();
+                    showWarDashboardVip2GateMessage('Chain Watch');
+                }
+            });
+        }
     }
 
     /** Run one 5-min tick: for each enabled tracked faction (with lastVisit within 2 days), fetch members and append sample. */
@@ -6361,6 +6374,94 @@
         await refreshBattleStatsOnly();
     }
 
+    function warDashboardHashParts() {
+        return (window.location.hash || '').replace(/^#/, '').split('/').filter(Boolean);
+    }
+
+    function isChainWatchDashboardRoute() {
+        const parts = warDashboardHashParts();
+        return parts[0] === 'war-dashboard' && parts[1] === 'chain-watch';
+    }
+
+    function updateWarDashboardHomeTab() {
+        const home = document.getElementById('war-dashboard-home-command');
+        if (!home) return;
+        const parts = warDashboardHashParts();
+        const onHome = parts[0] === 'war-dashboard' && !parts[1];
+        home.classList.toggle('war-dashboard-command-btn--current', onHome);
+        if (onHome) home.setAttribute('aria-current', 'page');
+        else home.removeAttribute('aria-current');
+    }
+
+    function closeEmbeddedChainWatchModals() {
+        ['chain-watch-archives-modal', 'chain-watch-settings-modal', 'chain-watch-rewards-modal'].forEach(function (id) {
+            const overlay = document.getElementById(id);
+            if (!overlay) return;
+            overlay.style.display = 'none';
+            overlay.setAttribute('aria-hidden', 'true');
+        });
+    }
+
+    function syncChainWatchRoute() {
+        const section = document.getElementById('war-dashboard-chain-watch');
+        const container = document.getElementById('war-dashboard-tool-container');
+        const cwBtn = document.getElementById('war-dashboard-chain-watch-command');
+        if (!section || !container) return;
+        const route = isChainWatchDashboardRoute();
+        if (route && window.vipLevelKnown === true && !hasWarDashboardVip2Access()) {
+            showWarDashboardVip2GateMessage('Chain Watch');
+            if (window.location.hash !== '#war-dashboard') window.location.hash = 'war-dashboard';
+            return;
+        }
+        container.classList.toggle('war-dashboard-tool-container--chain-watch', route);
+        section.hidden = !route;
+        if (cwBtn) {
+            const unlocked = hasWarDashboardVip2Access();
+            cwBtn.classList.toggle('war-dashboard-command-btn--current', route && unlocked);
+            cwBtn.setAttribute('aria-expanded', route ? 'true' : 'false');
+        }
+        if (!route) {
+            closeEmbeddedChainWatchModals();
+            return;
+        }
+        if (typeof window.enterChainWatchRoute === 'function') {
+            window.enterChainWatchRoute();
+            return;
+        }
+        const root = document.getElementById('chain-watch-root');
+        if (root) {
+            root.innerHTML = '<p style="color:#f44336;">Chain Watch failed to load. Refresh the page.</p>';
+        }
+    }
+
+    function installWarDashboardRouteSync() {
+        const chainWatchLink = document.getElementById('war-dashboard-chain-watch-command');
+        if (chainWatchLink && !chainWatchLink.dataset.cwNavWired) {
+            chainWatchLink.dataset.cwNavWired = '1';
+            chainWatchLink.addEventListener('click', function (e) {
+                if (!hasWarDashboardVip2Access()) {
+                    e.preventDefault();
+                    showWarDashboardVip2GateMessage('Chain Watch');
+                }
+            });
+        }
+        updateWarDashboardHomeTab();
+        if (!window._warDashboardRouteSyncInstalled) {
+            window._warDashboardRouteSyncInstalled = true;
+            const groupingSync = window.syncWarDashboardRoute;
+            window.syncWarDashboardRoute = function () {
+                if (typeof groupingSync === 'function') groupingSync();
+                updateWarDashboardHomeTab();
+                syncChainWatchRoute();
+            };
+            window.addEventListener('tornToolsVipChanged', function () {
+                updateWarDashboardHomeTab();
+                syncChainWatchRoute();
+            });
+        }
+        if (typeof window.syncWarDashboardRoute === 'function') window.syncWarDashboardRoute();
+    }
+
     function mountAttackGroupingIfReady() {
         if (typeof window.mountAttackGrouping !== 'function') return;
         window.mountAttackGrouping({
@@ -6477,6 +6578,7 @@
             wireWarDashboardUiOnce();
         }
         mountAttackGroupingIfReady();
+        installWarDashboardRouteSync();
 
         loadSettings();
         Promise.all(getActivityConfig().tracked.filter(function (t) {
@@ -6614,7 +6716,7 @@
                 if (linkWrap) linkWrap.style.display = 'block';
                 if (msg) msg.textContent = 'Created. Opening chain watch page…';
                 closeChainWatchCreateModal();
-                window.location.hash = 'chain-watch/' + String(fid);
+                window.location.hash = 'war-dashboard/chain-watch/' + String(fid);
             } catch (e) {
                 if (msg) msg.textContent = (e && e.message) ? String(e.message) : 'Create failed';
             } finally {

@@ -12,6 +12,10 @@
         </div>
 
         <div class="war-dashboard-command-ribbon" aria-label="War Dashboard commands">
+            <a href="#war-dashboard" id="war-dashboard-home-command" class="btn war-dashboard-command-btn war-dashboard-command-btn--current" aria-current="page">
+                <span class="war-dashboard-command-title">Dashboard</span>
+                <span class="war-dashboard-command-summary">Enemies and chains</span>
+            </a>
             <button type="button" id="war-dashboard-enemy-command" class="btn war-dashboard-command-btn">
                 <span id="war-dashboard-enemy-command-title" class="war-dashboard-command-title">Enemies</span>
                 <span id="war-dashboard-enemy-picker-summary" class="war-dashboard-command-summary">Choose up to 3</span>
@@ -24,10 +28,10 @@
                 <span class="war-dashboard-command-title">Settings</span>
                 <span class="war-dashboard-command-summary">Refresh, chains, respect</span>
             </button>
-            <button type="button" id="war-dashboard-chain-watch-command" class="btn war-dashboard-command-btn" data-war-dashboard-vip2-command>
+            <a href="#war-dashboard/chain-watch" id="war-dashboard-chain-watch-command" class="btn war-dashboard-command-btn" data-war-dashboard-vip2-command aria-expanded="false">
                 <span class="war-dashboard-command-title">Chain Watch</span>
-                <span id="war-dashboard-chain-watch-summary" class="war-dashboard-command-summary">Schedule tools</span>
-            </button>
+                <span id="war-dashboard-chain-watch-summary" class="war-dashboard-command-summary">Hour signups</span>
+            </a>
             <a href="#war-dashboard/attack-grouping" id="war-dashboard-attack-grouping-command" class="btn war-dashboard-command-btn" data-war-dashboard-vip3-command aria-expanded="false">
                 <span class="war-dashboard-command-title">Attack Grouping</span>
                 <span id="war-dashboard-attack-grouping-summary" class="war-dashboard-command-summary">This war's tiers</span>
@@ -40,6 +44,74 @@
                 <h2>Attack Grouping</h2>
             </div>
             <div id="attack-grouping-root"></div>
+        </section>
+
+        <section id="war-dashboard-chain-watch" class="chain-watch-page" hidden>
+            <header class="chain-watch-page-header">
+                <div class="chain-watch-header-top">
+                    <div class="chain-watch-page-heading">
+                        <h1 id="chain-watch-page-title">Chain watch</h1>
+                        <p id="chain-watch-page-subtitle"></p>
+                    </div>
+                    <div class="chain-watch-header-actions">
+                        <button type="button" id="chain-watch-rewards-open" class="btn">Rewards owed</button>
+                        <button type="button" id="chain-watch-past-open" class="btn chain-watch-header-btn">Past chain watches</button>
+                        <button type="button" id="chain-watch-back-active" class="btn chain-watch-header-btn" hidden>Current chain watch</button>
+                    </div>
+                </div>
+                <div class="chain-watch-main-columns">
+                    <div class="chain-watch-col chain-watch-col--chain">
+                        <div id="chain-watch-our-chain-box" class="war-dashboard-chain-box chain-watch-our-chain-box" style="display: none;" aria-hidden="true"></div>
+                    </div>
+                    <div class="chain-watch-col chain-watch-col--settings">
+                        <div class="chain-watch-settings-panel-head">
+                            <span class="chain-watch-settings-panel-title">Schedule</span>
+                            <button type="button" id="chain-watch-settings-open" class="btn chain-watch-settings-open-btn" hidden>Settings</button>
+                        </div>
+                        <div id="chain-watch-header-summary" class="chain-watch-header-summary" aria-live="polite"></div>
+                        <div class="chain-watch-schedule-share">
+                            <span class="chain-watch-schedule-share-label">Share link</span>
+                            <div class="chain-watch-schedule-share-value">
+                                <input type="text" id="chain-watch-share-link" readonly class="chain-watch-share-input" title="Faction members only">
+                                <button type="button" id="chain-watch-copy-link" class="chain-watch-copy-icon-btn" aria-label="Copy share link" title="Copy link (faction members only)">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                                </button>
+                                <span id="chain-watch-copy-msg" class="chain-watch-copy-msg" aria-live="polite"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </header>
+            <main id="chain-watch-root" class="war-dashboard-chain-watch-modal-body chain-watch-root" aria-live="polite">
+                <p style="color: #888;">Loading…</p>
+            </main>
+            <div id="chain-watch-archives-modal" class="war-dashboard-settings-overlay war-dashboard-chain-watch-overlay" aria-hidden="true" style="display: none;">
+                <div class="war-dashboard-settings-modal war-dashboard-chain-watch-rewards-inner" role="dialog" aria-labelledby="chain-watch-archives-title" style="max-width: 480px;">
+                    <div class="war-dashboard-settings-modal-header">
+                        <h2 id="chain-watch-archives-title">Past chain watches</h2>
+                        <button type="button" id="chain-watch-archives-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+                    </div>
+                    <div id="chain-watch-archives-body" class="war-dashboard-settings-modal-body"></div>
+                </div>
+            </div>
+            <div id="chain-watch-settings-modal" class="war-dashboard-settings-overlay war-dashboard-chain-watch-overlay" aria-hidden="true" style="display: none;">
+                <div class="war-dashboard-settings-modal war-dashboard-chain-watch-rewards-inner" role="dialog" aria-labelledby="chain-watch-settings-title" style="max-width: 560px;">
+                    <div class="war-dashboard-settings-modal-header">
+                        <h2 id="chain-watch-settings-title">Schedule settings</h2>
+                        <button type="button" id="chain-watch-settings-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+                    </div>
+                    <div id="chain-watch-settings-body" class="war-dashboard-settings-modal-body"></div>
+                </div>
+            </div>
+            <div id="chain-watch-rewards-modal" class="war-dashboard-settings-overlay war-dashboard-chain-watch-overlay" aria-hidden="true" style="display: none;">
+                <div class="war-dashboard-settings-modal war-dashboard-chain-watch-rewards-inner" role="dialog" aria-labelledby="chain-watch-rewards-title" style="max-width: 520px;">
+                    <div class="war-dashboard-settings-modal-header">
+                        <h2 id="chain-watch-rewards-title">Rewards owed</h2>
+                        <button type="button" id="chain-watch-rewards-close" class="war-dashboard-settings-close" aria-label="Close">×</button>
+                    </div>
+                    <div id="chain-watch-rewards-body" class="war-dashboard-settings-modal-body"></div>
+                </div>
+            </div>
         </section>
 
         <div id="war-dashboard-loading" class="loading-bar" style="display: none;">

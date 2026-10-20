@@ -9,6 +9,7 @@
     const CHAIN_WATCH_CACHE_PREFIX = 'chain_watch_page_v2_';
 
     let factionId = null;
+    let factionDisplayName = '';
     let chainWatchPayload = null;
     let chainWatchLastFetchMs = 0;
     let chainWatchLastError = '';
@@ -177,8 +178,19 @@
     let chainTickIntervalId = null;
     let chainRefreshTimer = null;
 
+    function chainWatchHashRoute() {
+        const parts = (location.hash || '').replace(/^#/, '').split('/').filter(Boolean);
+        if (parts[0] === 'chain-watch') {
+            return { on: true, factionId: parts[1] ? String(parts[1]).trim() : '' };
+        }
+        if (parts[0] === 'war-dashboard' && parts[1] === 'chain-watch') {
+            return { on: true, factionId: parts[2] ? String(parts[2]).trim() : '' };
+        }
+        return { on: false, factionId: '' };
+    }
+
     function isOnChainWatchPage() {
-        return (location.hash || '').replace('#', '').split('/')[0] === 'chain-watch';
+        return chainWatchHashRoute().on;
     }
 
     function getTrackOurChain() {
@@ -711,8 +723,15 @@
         const docExists = p.exists === true;
         const dh = utcDateHourFromUnix(start);
         const bc = Math.min(3, Math.max(1, Number(settings.backupColumns) || 1));
+        const chainNameValue =
+            settings.chainName != null ? String(settings.chainName).trim().slice(0, 80) : '';
         let html = '<div class="war-dashboard-cw-setup">';
         html += '<div class="war-dashboard-cw-setup-grid">';
+        html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-name">Chain name</label>';
+        html +=
+            '<input type="text" id="war-dashboard-cw-name" maxlength="80" placeholder="e.g. Weekend war chain" value="' +
+            escapeHtml(chainNameValue) +
+            '"></div>';
         html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-start-date">Chain start (UTC / TCT)</label>';
         html += '<input type="date" id="war-dashboard-cw-start-date" value="' + escapeHtml(dh.date) + '"></div>';
         html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-start-hour">Hour (UTC)</label>';
@@ -806,6 +825,8 @@
                 if (!apiKey || !fn || !factionId) return;
                 const dateEl = document.getElementById('war-dashboard-cw-start-date');
                 const hourEl = document.getElementById('war-dashboard-cw-start-hour');
+                const nameEl = document.getElementById('war-dashboard-cw-name');
+                const chainName = nameEl ? String(nameEl.value || '').trim().slice(0, 80) : '';
                 let unix = unixFromUtcDateHour(dateEl && dateEl.value, hourEl && hourEl.value);
                 const curSettings = chainWatchPayload && chainWatchPayload.settings;
                 if (unix == null && curSettings && curSettings.chainStartUnix != null) {
@@ -815,6 +836,7 @@
                     apiKey: apiKey,
                     factionId: String(factionId),
                     settings: {
+                        chainName: chainName,
                         chainStartUnix: unix,
                         chainTarget: Number(document.getElementById('war-dashboard-cw-target').value),
                         backupColumns: Number(document.getElementById('war-dashboard-cw-backup').value),
@@ -2066,13 +2088,13 @@
 
     function chainWatchShareUrl(fid) {
         const base = location.origin + location.pathname;
-        return base + '#chain-watch/' + encodeURIComponent(String(fid));
+        return base + '#war-dashboard/chain-watch/' + encodeURIComponent(String(fid));
     }
 
     async function resolveFactionIdFromHash() {
-        const parts = (location.hash || '').replace(/^#/, '').split('/').filter(Boolean);
-        if (parts[0] !== 'chain-watch') return null;
-        if (parts[1]) return String(parts[1]).trim();
+        const route = chainWatchHashRoute();
+        if (!route.on) return null;
+        if (route.factionId) return route.factionId;
         const apiKey = getApiKey();
         if (!apiKey || apiKey.length !== 16) return null;
         const data = await fetchJson(
@@ -2088,6 +2110,70 @@
                     ? fac.id
                     : null;
         return raw != null ? String(raw) : null;
+    }
+
+    const FACTION_NAME_CACHE_PREFIX = 'war_dashboard_faction_name_';
+
+    function readCachedFactionName(fid) {
+        try {
+            const raw = localStorage.getItem(FACTION_NAME_CACHE_PREFIX + String(fid || '').trim());
+            if (!raw) return '';
+            const parsed = JSON.parse(raw);
+            const name = parsed && parsed.name ? String(parsed.name).trim() : '';
+            if (!name || name === String(fid) || name === 'Faction ' + String(fid)) return '';
+            return name;
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function writeCachedFactionName(fid, name) {
+        const value = String(name || '').trim();
+        if (!fid || !value || value === String(fid)) return;
+        try {
+            localStorage.setItem(
+                FACTION_NAME_CACHE_PREFIX + String(fid).trim(),
+                JSON.stringify({ name: value, cachedAt: Date.now() })
+            );
+        } catch (e) { /* ignore */ }
+    }
+
+    function chainWatchFactionLabel() {
+        const name = factionDisplayName || readCachedFactionName(factionId);
+        return name || ('Faction ' + factionId);
+    }
+
+    async function ensureFactionDisplayName() {
+        const fid = factionId;
+        if (!fid) return;
+        const cached = readCachedFactionName(fid);
+        if (cached) {
+            if (factionDisplayName !== cached) {
+                factionDisplayName = cached;
+                updateChainWatchPageChrome();
+            }
+            return;
+        }
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+        try {
+            const data = await fetchJson(
+                'https://api.torn.com/v2/faction/' +
+                    encodeURIComponent(String(fid)) +
+                    '?key=' +
+                    encodeURIComponent(apiKey)
+            );
+            const raw = data && data.faction ? data.faction : data;
+            const name =
+                (data && data.basic && data.basic.name) ||
+                (raw && raw.basic && raw.basic.name) ||
+                (raw && raw.name) ||
+                (raw && raw.faction_name);
+            if (!name || String(factionId) !== String(fid)) return;
+            factionDisplayName = String(name).trim();
+            writeCachedFactionName(fid, factionDisplayName);
+            updateChainWatchPageChrome();
+        } catch (e) { /* keep the faction id until a name is available */ }
     }
 
     function updateChainWatchPageChrome() {
@@ -2112,11 +2198,12 @@
                   : 'New chain watch';
         if (titleEl) titleEl.textContent = name;
         if (subEl) {
+            const factionLabel = chainWatchFactionLabel();
             if (viewingArchiveId) {
-                subEl.textContent = 'Archived chain watch · Faction ' + factionId;
+                subEl.textContent = 'Archived chain watch · ' + factionLabel;
             } else {
                 subEl.textContent =
-                    'Faction ' + factionId + (p && p.viewer && p.viewer.isOwner ? ' · You are the owner' : '');
+                    factionLabel + (p && p.viewer && p.viewer.isOwner ? ' · You are the owner' : '');
             }
         }
         if (titleEl && viewingArchiveId) {
@@ -2271,36 +2358,61 @@
         });
     }
 
-    window.initChainWatchPage = async function initChainWatchPage() {
-        wireChainWatchPageChrome();
-        wireChainWatchArchiveUi();
-        if (!window._chainWatchHelpDocClose) {
-            window._chainWatchHelpDocClose = true;
-            document.addEventListener('click', function (e) {
-                if (e.target.closest('.chain-watch-help')) return;
-                document.querySelectorAll('.chain-watch-help.is-visible').forEach(function (el) {
-                    el.classList.remove('is-visible');
+    window.enterChainWatchRoute = async function enterChainWatchRoute() {
+        const root = document.getElementById('chain-watch-root');
+        if (!root || !isOnChainWatchPage()) return;
+        if (!root.dataset.cwPageWired) {
+            root.dataset.cwPageWired = '1';
+            wireChainWatchPageChrome();
+            wireChainWatchArchiveUi();
+            if (!window._chainWatchHelpDocClose) {
+                window._chainWatchHelpDocClose = true;
+                document.addEventListener('click', function (e) {
+                    if (e.target.closest && e.target.closest('.chain-watch-help')) return;
+                    document.querySelectorAll('.chain-watch-help.is-visible').forEach(function (el) {
+                        el.classList.remove('is-visible');
+                    });
                 });
-            });
+            }
+            if (!window._chainWatchPagePollId) {
+                window._chainWatchPagePollId = setInterval(function () {
+                    if (!isOnChainWatchPage()) return;
+                    if (viewingArchiveId) return;
+                    fetchChainWatchData(false).then(function () {
+                        if (chainWatchPayload) renderChainWatchPage().catch(function () {});
+                    }).catch(function () {});
+                }, CHAIN_WATCH_POLL_MS);
+            }
         }
         startChainWatchChainTick();
+        let nextId = null;
         try {
-            factionId = await resolveFactionIdFromHash();
+            nextId = await resolveFactionIdFromHash();
         } catch (e) {
-            const root = document.getElementById('chain-watch-root');
-            if (root) root.innerHTML = '<p style="color:#f44336;">' + escapeHtml(e.message || 'Could not load profile') + '</p>';
+            root.innerHTML = '<p style="color:#f44336;">' + escapeHtml(e.message || 'Could not load profile') + '</p>';
             return;
         }
-        void refreshOurFactionChain();
-        await refreshChainWatchPage();
-        if (!window._chainWatchPagePollId) {
-            window._chainWatchPagePollId = setInterval(function () {
-                if ((location.hash || '').replace('#', '').split('/')[0] !== 'chain-watch') return;
-                if (viewingArchiveId) return;
-                fetchChainWatchData(false).then(function () {
-                    if (chainWatchPayload) renderChainWatchPage().catch(function () {});
-                }).catch(function () {});
-            }, CHAIN_WATCH_POLL_MS);
+        if (!isOnChainWatchPage()) return;
+        if (String(nextId || '') !== String(factionId || '')) {
+            factionDisplayName = readCachedFactionName(nextId);
         }
+        if (chainWatchPayload && factionId && String(nextId || '') === String(factionId)) {
+            void refreshOurFactionChain();
+            void ensureFactionDisplayName();
+            updateChainWatchPageChrome();
+            if (root.dataset.cwRendered !== '1') {
+                await renderChainWatchPage();
+                root.dataset.cwRendered = '1';
+            }
+            return;
+        }
+        factionId = nextId;
+        viewingArchiveId = null;
+        root.dataset.cwRendered = '';
+        void refreshOurFactionChain();
+        void ensureFactionDisplayName();
+        await refreshChainWatchPage();
+        if (chainWatchPayload) root.dataset.cwRendered = '1';
     };
+    window.initChainWatchPage = window.enterChainWatchRoute;
 })();

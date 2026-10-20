@@ -4778,6 +4778,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 loadToolScript('attack-grouping-logic-script', 'tools/war-dashboard/attack-grouping-logic.js')
                     .then(() => loadToolScript('attack-grouping-script', 'tools/war-dashboard/attack-grouping.js'))
+                    .then(() => loadToolScript('chain-watch-script', 'tools/chain-watch/chain-watch.js'))
                     .then(() => {
                         if (typeof window.initWarDashboard === 'function') {
                             startWarDashboard();
@@ -4890,6 +4891,11 @@ document.addEventListener('DOMContentLoaded', () => {
         setNavActive();
         const hash = window.location.hash.substring(1) || 'home';
         let pageName = `${hash.split('/')[0]}`;
+        if (pageName === 'chain-watch') {
+            const tail = hash.split('/').slice(1).filter(Boolean);
+            window.location.hash = 'war-dashboard/chain-watch' + (tail.length ? '/' + tail.join('/') : '');
+            return;
+        }
         if (pageName === 'war-dashboard' && document.getElementById('war-dashboard-tool-container')) {
             if (typeof window.syncWarDashboardRoute === 'function') window.syncWarDashboardRoute();
             return;

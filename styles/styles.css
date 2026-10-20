@@ -856,6 +856,10 @@ header.app-site-header .app-site-header-title {
     display: none !important;
 }
 
+.war-dashboard-tool-container--chain-watch > :not(#war-dashboard-chain-watch):not(.war-dashboard-command-ribbon):not(#war-dashboard-loading):not(#war-dashboard-error) {
+    display: none !important;
+}
+
 .war-dashboard-command-title {
     color: var(--accent-color, #FFD700);
     font-weight: 700;
