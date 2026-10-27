@@ -1515,7 +1515,7 @@
         return max;
     }
 
-    /** Past hours with signups stay visible even when completed rows are collapsed. */
+    /** Finished hours stay off the table until Show completed rows is on. The hour still in progress stays. */
     function chainWatchSelectSlotIndices(startSec, slots, rowCount, nowSec, showCompletedRows) {
         let hasCompletedHours = false;
         let hasHiddenEmptyCompleted = false;
@@ -1523,9 +1523,8 @@
         for (let i = 0; startSec != null && i < rowCount; i++) {
             const slotEndSec = startSec + (i + 1) * 3600;
             const hourCompleted = nowSec >= slotEndSec;
-            const hasSignups = ((slots[String(i)] || []).length) > 0;
             if (hourCompleted) hasCompletedHours = true;
-            if (!showCompletedRows && hourCompleted && !hasSignups) {
+            if (!showCompletedRows && hourCompleted) {
                 hasHiddenEmptyCompleted = true;
                 continue;
             }
@@ -1899,7 +1898,7 @@
             html +=
                 '<tr><td colspan="' +
                 slotTableColCount +
-                '" style="color:#888;">Past hours with no signups are hidden. Use <strong>Show completed rows</strong> above to see them, or check upcoming hours below.</td></tr>';
+                '" style="color:#888;">Finished hours are hidden. Use <strong>Show completed rows</strong> above to see them.</td></tr>';
         }
         if (start != null && showAddDay) {
             html += '<tr class="war-dashboard-cw-add-day-row">';
