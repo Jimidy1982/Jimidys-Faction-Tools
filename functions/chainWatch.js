@@ -1346,16 +1346,6 @@ function signedUpSlots(settings, slots, nowSec) {
     .sort((a, b) => a.start - b.start);
 }
 
-function mentionLine(watchers, byTornId) {
-  return watchers
-    .map((w) => {
-      const discordId = byTornId.get(String(w.playerId));
-      if (discordId) return '<@' + discordId + '>';
-      return w.name ? String(w.name) : String(w.playerId);
-    })
-    .join(', ');
-}
-
 function pruneDiscordNudged(nudged, nowSec) {
   const out = {};
   Object.keys(nudged || {}).forEach((key) => {
@@ -1434,14 +1424,72 @@ exports.chainWatchSaveDiscord = onCall(callableOpts({ maxInstances: 10 }), async
   return { success: true, discord: discordClientView({ discord }) };
 });
 
-function discordPreviewLine(watchers, byTornId) {
-  return watchers
-    .map((w) => {
-      const name = w.name ? String(w.name) : String(w.playerId);
-      return byTornId.get(String(w.playerId)) ? name + ' (ping ready)' : name + ' (no Discord match)';
-    })
-    .join(', ')
-    .slice(0, 1000);
+const CHAIN_WATCH_MARK_URL = 'https://jimidy1982.github.io/Jimidys-Faction-Tools/chain-watch-mark.png';
+
+function chainWatchPageUrl(factionId) {
+  return (
+    'https://jimidy1982.github.io/Jimidys-Faction-Tools/#war-dashboard/chain-watch/' +
+    encodeURIComponent(factionId)
+  );
+}
+
+function discordSubtext(text) {
+  return String(text || '')
+    .split('\n')
+    .map((line) => (line ? '-# ' + line : line))
+    .join('\n');
+}
+
+function chainWatchSignupRow(factionId) {
+  return {
+    type: 1,
+    components: [
+      {
+        type: 2,
+        style: 5,
+        label: 'Sign up for this chain',
+        url: chainWatchPageUrl(factionId),
+      },
+    ],
+  };
+}
+
+function escapeDiscordMarkdown(text) {
+  return String(text || '').replace(/([\\*_`~|])/g, '\\$1');
+}
+
+function discordWatcherLabel(watcher, byTornId, preview) {
+  const name = watcher.name ? String(watcher.name) : String(watcher.playerId);
+  const discordId = byTornId.get(String(watcher.playerId));
+  if (!preview) return discordId ? '<@' + discordId + '>' : escapeDiscordMarkdown(name);
+  return discordId ? '**' + escapeDiscordMarkdown(name) + '**' : escapeDiscordMarkdown(name) + ' · *no match*';
+}
+
+function discordShiftBlock(slot, byTornId, preview) {
+  const when = '`' + formatTctRange(slot.start, slot.end) + '` · <t:' + slot.start + ':t>';
+  const names = slot.watchers.map((w) => discordWatcherLabel(w, byTornId, preview)).join('  ·  ');
+  return when + '\n' + (names || '—');
+}
+
+function chainWatchDiscordCard({ factionId, chainName, title, intro, sections, footer, timestampSec }) {
+  const lines = [];
+  if (intro) lines.push(intro);
+  sections.forEach((section) => {
+    if (!section || !section.body) return;
+    const level = section.level === 1 ? '# ' : section.level === 2 ? '## ' : '### ';
+    lines.push(level + section.heading + '\n' + section.body);
+  });
+  const card = {
+    author: { name: chainName ? String(chainName).slice(0, 80) : 'Chain watch' },
+    title,
+    url: chainWatchPageUrl(factionId),
+    description: lines.join('\n\n').slice(0, 4000),
+    color: 0xf5c518,
+    thumbnail: { url: CHAIN_WATCH_MARK_URL },
+    footer: { text: footer },
+  };
+  if (timestampSec) card.timestamp = new Date(timestampSec * 1000).toISOString();
+  return card;
 }
 
 /** Posts a sample in the saved channel. Does not ping the signed-up watchers or mark an hour as sent. */
@@ -1477,41 +1525,43 @@ exports.chainWatchDiscordTest = onCall(callableOpts({ maxInstances: 5 }), async 
   const next = upcoming[0] || null;
   const later = upcoming.slice(1, 4);
   const testerDiscord = byTornId.get(String(user.playerId)) || '';
-  const fields = [];
-  if (next) {
-    fields.push({
-      name: 'Next hour',
-      value: formatTctRange(next.start, next.end) + ' — ' + discordPreviewLine(next.watchers, byTornId),
-    });
-  } else {
-    fields.push({ name: 'Next hour', value: 'Nobody is signed up for a future hour yet.' });
-  }
-  fields.push({
-    name: 'Following shifts',
-    value: later.length
-      ? later
-          .map((row) => formatTctRange(row.start, row.end) + ' — ' + discordPreviewLine(row.watchers, byTornId))
-          .join('\n')
-          .slice(0, 1000)
-      : 'No further shifts with signups.',
-  });
+  const chainName = norm.settings && norm.settings.chainName ? String(norm.settings.chainName) : '';
+  const sections = [
+    {
+      heading: 'Coming up',
+      level: 1,
+      body: next ? discordShiftBlock(next, byTornId, true) : discordSubtext('Nobody is signed up for a future hour yet.'),
+    },
+    {
+      heading: 'Following shifts',
+      level: 3,
+      body: later.length
+        ? discordSubtext(later.map((row) => discordShiftBlock(row, byTornId, true)).join('\n\n'))
+        : discordSubtext('No further shifts with signups.'),
+    },
+  ];
 
   try {
     await discordApi('/channels/' + discord.channelId + '/messages', {
       method: 'POST',
       body: {
-        content: testerDiscord
-          ? 'Chain Watch test <@' + testerDiscord + '>'
-          : 'Chain Watch test. Nobody was pinged.',
+        content: testerDiscord ? '<@' + testerDiscord + '>' : '',
         embeds: [
-          {
-            title: 'Chain Watch test',
-            description:
-              'The bot can post in this channel. Signed-up watchers are not pinged by a test. A real nudge still goes out about five minutes before an hour.',
-            color: 0xffd700,
-            fields,
-          },
+          chainWatchDiscordCard({
+            factionId: fid,
+            chainName,
+            title: 'Test message',
+            intro: discordSubtext(
+              testerDiscord
+                ? 'You were pinged so you can find this. Signed-up watchers were not. A real nudge still goes out about five minutes before an hour. Bold names are ready to ping.'
+                : 'Nobody was pinged. A real nudge still goes out about five minutes before an hour. Bold names are ready to ping.'
+            ),
+            sections,
+            footer: 'Test only',
+            timestampSec: next ? next.start : nowSec,
+          }),
         ],
+        components: [chainWatchSignupRow(fid)],
         allowed_mentions: { parse: [], users: testerDiscord ? [testerDiscord] : [] },
       },
     });
@@ -1549,6 +1599,7 @@ exports.chainWatchDiscordNudge = onSchedule(
       } catch (e) {
         console.warn('chainWatchDiscord members', doc.id, e.message);
       }
+      const chainName = norm.settings && norm.settings.chainName ? String(norm.settings.chainName) : '';
       for (const slot of fresh) {
         const later = upcoming.filter((row) => row.start > slot.start).slice(0, 3);
         const mentionIds = [];
@@ -1556,28 +1607,42 @@ exports.chainWatchDiscordNudge = onSchedule(
           const id = byTornId.get(String(w.playerId));
           if (id) mentionIds.push(id);
         });
-        const nextValue = later.length
-          ? later
-              .map((row) => formatTctRange(row.start, row.end) + ' — ' + mentionLine(row.watchers, byTornId))
-              .join('\n')
-              .slice(0, 1000)
-          : 'No one is signed up after this hour yet.';
-        const page =
-          'https://jimidy1982.github.io/Jimidys-Faction-Tools/#war-dashboard/chain-watch/' +
-          encodeURIComponent(doc.id);
         try {
           await discordApi('/channels/' + discord.channelId + '/messages', {
             method: 'POST',
             body: {
-              content: mentionLine(slot.watchers, byTornId),
+              content: mentionIds.length ? mentionIds.map((id) => '<@' + id + '>').join(' ') : '',
               embeds: [
-                {
-                  title: 'Chain watch in 5 minutes',
-                  description: formatTctRange(slot.start, slot.end) + '\n[Open the schedule](' + page + ')',
-                  color: 0xffd700,
-                  fields: [{ name: 'Next watchers', value: nextValue }],
-                },
+                chainWatchDiscordCard({
+                  factionId: doc.id,
+                  chainName,
+                  title: 'Starts in 5 minutes',
+                  intro: '<t:' + slot.start + ':R>',
+                  sections: [
+                    {
+                      heading: 'Coming up',
+                      level: 1,
+                      body:
+                        '`' +
+                        formatTctRange(slot.start, slot.end) +
+                        '` · <t:' +
+                        slot.start +
+                        ':t>\n' +
+                        slot.watchers.map((w) => discordWatcherLabel(w, byTornId, false)).join('  ·  '),
+                    },
+                    {
+                      heading: 'Following shifts',
+                      level: 3,
+                      body: later.length
+                        ? discordSubtext(later.map((row) => discordShiftBlock(row, byTornId, false)).join('\n\n'))
+                        : discordSubtext('No one is signed up after this hour yet.'),
+                    },
+                  ],
+                  footer: 'TCT',
+                  timestampSec: slot.start,
+                }),
               ],
+              components: [chainWatchSignupRow(doc.id)],
               allowed_mentions: { parse: [], users: mentionIds.slice(0, 100) },
             },
           });
