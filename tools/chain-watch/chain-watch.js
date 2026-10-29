@@ -809,6 +809,45 @@
         } else if (docExists && ownerLabel) {
             html += '<p style="margin-top:12px;font-size:12px;color:#9e9e9e;">Owner: <strong>' + ownerLabel + '</strong></p>';
         }
+        const discord = p.discord || {};
+        const discordChannel = discord.channelId ? String(discord.channelId) : '';
+        const discordName = discord.channelName ? String(discord.channelName) : '';
+        const inviteUrl = discord.inviteUrl ? String(discord.inviteUrl) : '';
+        html +=
+            '<div class="war-dashboard-cw-discord" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-color,#444);width:100%;">';
+        html += '<div style="font-weight:bold;font-size:13px;margin-bottom:8px;color:var(--accent-color,#ffd700);">Discord nudges</div>';
+        html +=
+            '<p style="margin:0 0 10px 0;color:#b0b0b0;font-size:12px;line-height:1.45;">Five minutes before a watch hour, the bot pings that hour in this faction’s channel and lists the next three shifts. Install the bot once on the server, then give each faction its own channel.</p>';
+        if (inviteUrl) {
+            html +=
+                '<p style="margin:0 0 10px 0;"><a class="btn" href="' +
+                escapeHtml(inviteUrl) +
+                '" target="_blank" rel="noopener">Add the bot to your server</a></p>';
+        } else {
+            html +=
+                '<p style="margin:0 0 10px 0;color:#e0c080;font-size:12px;">The install link appears after the Discord application id is configured.</p>';
+        }
+        html += '<div class="war-dashboard-cw-field"><label for="war-dashboard-cw-discord-channel">Channel ID</label>';
+        html +=
+            '<input type="text" id="war-dashboard-cw-discord-channel" inputmode="numeric" placeholder="Right-click the channel, Copy Channel ID" value="' +
+            escapeHtml(discordChannel) +
+            '" style="width:100%;max-width:280px;"></div>';
+        html +=
+            '<p style="margin:0 0 8px 0;color:#9e9e9e;font-size:12px;">Discord → Settings → Advanced → Developer Mode. Each faction pastes its own channel.</p>';
+        if (discordName) {
+            html +=
+                '<p style="margin:0 0 8px 0;color:#b0b0b0;font-size:12px;">Nudges go to <strong>#' +
+                escapeHtml(discordName) +
+                '</strong>.</p>';
+        }
+        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">';
+        html += '<button type="button" class="btn" id="war-dashboard-cw-discord-save">Save Discord channel</button>';
+        if (discordChannel) {
+            html += '<button type="button" class="btn" id="war-dashboard-cw-discord-clear">Turn off</button>';
+        }
+        html += '</div>';
+        html += '<p id="war-dashboard-cw-discord-msg" style="font-size:12px;color:#888;margin:8px 0 0 0;"></p>';
+        html += '</div>';
         html += '</div>';
         return html;
     }
@@ -864,6 +903,66 @@
             });
         }
         if (canManageOrganizers) wireChainWatchOrganizers();
+        wireChainWatchDiscordForm();
+    }
+
+    function wireChainWatchDiscordForm() {
+        const saveBtn = document.getElementById('war-dashboard-cw-discord-save');
+        const clearBtn = document.getElementById('war-dashboard-cw-discord-clear');
+        async function saveDiscordChannel(channelId) {
+            const msg = document.getElementById('war-dashboard-cw-discord-msg');
+            const apiKey = getApiKey();
+            const fn = getChainWatchFunctions();
+            if (!apiKey || !fn || !factionId) return;
+            if (saveBtn) saveBtn.disabled = true;
+            if (clearBtn) clearBtn.disabled = true;
+            if (msg) msg.textContent = 'Saving…';
+            try {
+                const res = await fn.httpsCallable('chainWatchSaveDiscord')({
+                    apiKey: apiKey,
+                    factionId: String(factionId),
+                    channelId: channelId,
+                });
+                if (chainWatchPayload) {
+                    chainWatchPayload.discord = res && res.data && res.data.discord ? res.data.discord : chainWatchPayload.discord;
+                }
+                await fetchChainWatchData(true);
+                const body = document.getElementById('chain-watch-settings-body');
+                const v = (chainWatchPayload && chainWatchPayload.viewer) || {};
+                if (body && chainWatchPayload) {
+                    const p = chainWatchPayload;
+                    const organizerIds = Array.isArray(p.organizerPlayerIds) ? p.organizerPlayerIds.map(String) : [];
+                    body.innerHTML = buildChainWatchSettingsFormHtml(
+                        p,
+                        organizerIds,
+                        chainWatchOwnerLabel(p),
+                        v.canManageOrganizers === true
+                    );
+                    wireChainWatchSettingsForm(p.exists === true, v.canEdit === true, v.canManageOrganizers === true);
+                    wireChainWatchHelpIcons(body);
+                }
+                const nextMsg = document.getElementById('war-dashboard-cw-discord-msg');
+                if (nextMsg) nextMsg.textContent = channelId ? 'Discord channel saved.' : 'Discord nudges turned off.';
+                updateChainWatchPageChrome();
+            } catch (e) {
+                if (msg) msg.textContent = (e && e.message) ? String(e.message) : 'Could not save Discord channel';
+                if (saveBtn) saveBtn.disabled = false;
+                if (clearBtn) clearBtn.disabled = false;
+            }
+        }
+        if (saveBtn && !saveBtn.dataset.cwWired) {
+            saveBtn.dataset.cwWired = '1';
+            saveBtn.addEventListener('click', function () {
+                const input = document.getElementById('war-dashboard-cw-discord-channel');
+                void saveDiscordChannel(input ? String(input.value || '').trim() : '');
+            });
+        }
+        if (clearBtn && !clearBtn.dataset.cwWired) {
+            clearBtn.dataset.cwWired = '1';
+            clearBtn.addEventListener('click', function () {
+                void saveDiscordChannel('');
+            });
+        }
     }
 
     function refreshChainWatchModals(p, canEdit, organizerIds, ownerLabel, canManageOrganizers) {
@@ -2215,6 +2314,12 @@
         }
         if (settingsBtn) {
             settingsBtn.hidden = !canEdit;
+        }
+        const installBtn = document.getElementById('chain-watch-discord-install');
+        if (installBtn) {
+            const url = p && p.discord && p.discord.inviteUrl ? String(p.discord.inviteUrl) : '';
+            installBtn.hidden = !(canEdit && url && !viewingArchiveId);
+            if (url) installBtn.href = url;
         }
         syncChainWatchHeaderButtons(p);
         renderChainWatchOurChainBox();

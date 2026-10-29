@@ -406,6 +406,31 @@ function buildArchivedGetResponse(snap, user) {
   };
 }
 
+/** View channel, send messages, embed links, read message history. */
+const DISCORD_BOT_PERMISSIONS = '84992';
+
+function discordInviteUrl() {
+  const id = String(process.env.DISCORD_CLIENT_ID || '').trim();
+  if (!/^\d{17,20}$/.test(id)) return null;
+  return (
+    'https://discord.com/oauth2/authorize?client_id=' +
+    encodeURIComponent(id) +
+    '&permissions=' +
+    DISCORD_BOT_PERMISSIONS +
+    '&scope=bot'
+  );
+}
+
+function discordClientView(raw) {
+  const d = raw && raw.discord && typeof raw.discord === 'object' ? raw.discord : {};
+  const channelId = d.channelId != null ? String(d.channelId).trim() : '';
+  return {
+    channelId: /^\d{17,20}$/.test(channelId) ? channelId : '',
+    channelName: d.channelName ? String(d.channelName).slice(0, 100) : '',
+    inviteUrl: discordInviteUrl(),
+  };
+}
+
 /**
  * @param {FirebaseFirestore.DocumentSnapshot} snap
  * @param {{ playerId: string, name: string, factionId: string|null }} user
@@ -445,6 +470,7 @@ async function buildGetResponse(snap, user, factionId, opts) {
       viewer,
       chainTargets: CHAIN_TARGETS,
       maxHourSlots: MAX_HOUR_SLOTS,
+      discord: discordClientView(null),
     };
   }
 
@@ -462,6 +488,7 @@ async function buildGetResponse(snap, user, factionId, opts) {
     viewer,
     chainTargets: CHAIN_TARGETS,
     maxHourSlots: MAX_HOUR_SLOTS,
+    discord: discordClientView(raw),
   };
 }
 
@@ -1222,3 +1249,260 @@ exports.chainWatchSyncChain = onCall(callableOpts({ maxInstances: 30 }), async (
 
   return { success: true, wrote: wrote === true };
 });
+
+const DISCORD_API = 'https://discord.com/api/v10';
+const DISCORD_NUDGE_WINDOW_SEC = 5 * 60;
+const guildMemberCache = new Map();
+
+function discordBotToken() {
+  return String(process.env.DISCORD_BOT_TOKEN || '').trim();
+}
+
+async function discordApi(path, options) {
+  const token = discordBotToken();
+  if (!token) throw new Error('DISCORD_BOT_TOKEN is not set');
+  const res = await fetch(DISCORD_API + path, {
+    method: options && options.method ? options.method : 'GET',
+    headers: {
+      Authorization: 'Bot ' + token,
+      'Content-Type': 'application/json',
+    },
+    body: options && options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const text = await res.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch (e) {
+    body = null;
+  }
+  if (!res.ok) {
+    const msg = body && body.message ? String(body.message) : 'Discord request failed';
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+function tornIdFromDiscordMember(member) {
+  const user = member && member.user ? member.user : {};
+  const labels = [member && member.nick, user.global_name, user.username];
+  for (let i = 0; i < labels.length; i++) {
+    const matches = String(labels[i] || '').match(/\[(\d{3,12})\]/g);
+    if (!matches || !matches.length) continue;
+    const last = matches[matches.length - 1].match(/(\d+)/);
+    if (last) return last[1];
+  }
+  return null;
+}
+
+async function discordMembersByTornId(guildId) {
+  const cached = guildMemberCache.get(guildId);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.map;
+  const byTornId = new Map();
+  let after = '0';
+  for (let page = 0; page < 10; page++) {
+    const members = await discordApi('/guilds/' + encodeURIComponent(guildId) + '/members?limit=1000&after=' + after);
+    if (!Array.isArray(members) || !members.length) break;
+    members.forEach((member) => {
+      const tornId = tornIdFromDiscordMember(member);
+      if (tornId && member.user && member.user.id) byTornId.set(tornId, String(member.user.id));
+    });
+    const last = members[members.length - 1];
+    if (members.length < 1000 || !last.user || !last.user.id) break;
+    after = String(last.user.id);
+  }
+  guildMemberCache.set(guildId, { at: Date.now(), map: byTornId });
+  return byTornId;
+}
+
+function formatTctClock(sec) {
+  const d = new Date(sec * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes());
+}
+
+function formatTctRange(startSec, endSec) {
+  return formatTctClock(startSec) + ' – ' + formatTctClock(endSec) + ' TCT';
+}
+
+function signedUpSlots(settings, slots, nowSec) {
+  const start = Number(settings && settings.chainStartUnix);
+  if (!Number.isFinite(start) || start < 1e9) return [];
+  return Object.keys(slots || {})
+    .map((key) => Number(key))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < MAX_HOUR_SLOTS)
+    .map((index) => {
+      const list = Array.isArray(slots[String(index)]) ? slots[String(index)] : [];
+      return {
+        index,
+        start: start + index * 3600,
+        end: start + (index + 1) * 3600,
+        watchers: list.filter((w) => w && w.playerId != null),
+      };
+    })
+    .filter((slot) => slot.watchers.length && slot.end > nowSec)
+    .sort((a, b) => a.start - b.start);
+}
+
+function mentionLine(watchers, byTornId) {
+  return watchers
+    .map((w) => {
+      const discordId = byTornId.get(String(w.playerId));
+      if (discordId) return '<@' + discordId + '>';
+      return w.name ? String(w.name) : String(w.playerId);
+    })
+    .join(', ');
+}
+
+function pruneDiscordNudged(nudged, nowSec) {
+  const out = {};
+  Object.keys(nudged || {}).forEach((key) => {
+    const parts = String(key).split(':');
+    const start = Number(parts[0]);
+    const index = Number(parts[1]);
+    if (!Number.isFinite(start) || !Number.isFinite(index)) return;
+    const slotEnd = start + (index + 1) * 3600;
+    if (slotEnd > nowSec - 2 * 24 * 3600) out[key] = true;
+  });
+  return out;
+}
+
+/** Owner or organiser chooses this faction's Discord channel. One server can host many factions. */
+exports.chainWatchSaveDiscord = onCall(callableOpts({ maxInstances: 10 }), async (request) => {
+  const { apiKey, factionId, channelId } = request.data || {};
+  const fid = String(factionId || '').trim();
+  if (!fid) throw new HttpsError('invalid-argument', 'factionId required');
+  const user = await fetchUserFromApiKey(apiKey);
+  assertSameFaction(user.factionId, fid);
+
+  const ref = getDb().collection(COLLECTION).doc(fid);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError('failed-precondition', 'Save a chain watch schedule before connecting Discord');
+  }
+  assertCanEditSchedule(snap.data(), user);
+
+  const rawChannel = channelId != null ? String(channelId).trim() : '';
+  if (!rawChannel) {
+    await ref.set(
+      {
+        discord: { channelId: '', channelName: '', guildId: '', updatedAt: Date.now() },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    return { success: true, discord: discordClientView(null) };
+  }
+  if (!/^\d{17,20}$/.test(rawChannel)) {
+    throw new HttpsError('invalid-argument', 'Paste a Discord channel ID (turn on Developer Mode, then right-click the channel)');
+  }
+  if (!discordBotToken()) {
+    throw new HttpsError('failed-precondition', 'The Discord bot token is not configured yet');
+  }
+
+  let channel;
+  try {
+    channel = await discordApi('/channels/' + rawChannel);
+  } catch (e) {
+    const missing = e.status === 403 || e.status === 404;
+    throw new HttpsError(
+      'failed-precondition',
+      missing
+        ? 'The bot cannot see that channel. Add it to the server, then allow it in the channel.'
+        : e.message || 'Could not read that Discord channel'
+    );
+  }
+  const guildId = channel && channel.guild_id ? String(channel.guild_id) : '';
+  const name = channel && channel.name ? String(channel.name).slice(0, 100) : '';
+  if (!guildId) throw new HttpsError('invalid-argument', 'Choose a channel inside a server');
+
+  const discord = {
+    channelId: rawChannel,
+    channelName: name,
+    guildId,
+    updatedAt: Date.now(),
+  };
+  await ref.set(
+    {
+      discord,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  return { success: true, discord: discordClientView({ discord }) };
+});
+
+/** Ping watchers about five minutes before their hour, and list the next three shifts. */
+exports.chainWatchDiscordNudge = onSchedule(
+  { schedule: 'every 1 minutes', timeZone: 'UTC', timeoutSeconds: 120, memory: '256MiB' },
+  async () => {
+    if (!discordBotToken()) return;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const snap = await getDb().collection(COLLECTION).get();
+    for (const doc of snap.docs) {
+      const raw = doc.data() || {};
+      const discord = raw.discord || {};
+      if (!/^\d{17,20}$/.test(String(discord.channelId || '')) || !discord.guildId) continue;
+      const norm = normalizeDoc(raw);
+      const upcoming = signedUpSlots(norm.settings, norm.slots, nowSec);
+      const due = upcoming.filter((slot) => {
+        const until = slot.start - nowSec;
+        return until > 0 && until <= DISCORD_NUDGE_WINDOW_SEC;
+      });
+      if (!due.length) continue;
+      const chainStart = Number(norm.settings.chainStartUnix);
+      let nudged = pruneDiscordNudged(raw.discordNudged, nowSec);
+      const fresh = due.filter((slot) => !nudged[chainStart + ':' + slot.index]);
+      if (!fresh.length) continue;
+      let byTornId = new Map();
+      try {
+        byTornId = await discordMembersByTornId(String(discord.guildId));
+      } catch (e) {
+        console.warn('chainWatchDiscord members', doc.id, e.message);
+      }
+      for (const slot of fresh) {
+        const later = upcoming.filter((row) => row.start > slot.start).slice(0, 3);
+        const mentionIds = [];
+        slot.watchers.forEach((w) => {
+          const id = byTornId.get(String(w.playerId));
+          if (id) mentionIds.push(id);
+        });
+        const nextValue = later.length
+          ? later
+              .map((row) => formatTctRange(row.start, row.end) + ' — ' + mentionLine(row.watchers, byTornId))
+              .join('\n')
+              .slice(0, 1000)
+          : 'No one is signed up after this hour yet.';
+        const page =
+          'https://jimidy1982.github.io/Jimidys-Faction-Tools/#war-dashboard/chain-watch/' +
+          encodeURIComponent(doc.id);
+        try {
+          await discordApi('/channels/' + discord.channelId + '/messages', {
+            method: 'POST',
+            body: {
+              content: mentionLine(slot.watchers, byTornId),
+              embeds: [
+                {
+                  title: 'Chain watch in 5 minutes',
+                  description: formatTctRange(slot.start, slot.end) + '\n[Open the schedule](' + page + ')',
+                  color: 0xffd700,
+                  fields: [{ name: 'Next watchers', value: nextValue }],
+                },
+              ],
+              allowed_mentions: { parse: [], users: mentionIds.slice(0, 100) },
+            },
+          });
+          nudged[chainStart + ':' + slot.index] = true;
+        } catch (e) {
+          console.warn('chainWatchDiscord nudge', doc.id, slot.index, e.message);
+        }
+      }
+      await doc.ref.set(
+        { discordNudged: nudged, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+    }
+  }
+);
