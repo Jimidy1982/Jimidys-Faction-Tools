@@ -1434,6 +1434,93 @@ exports.chainWatchSaveDiscord = onCall(callableOpts({ maxInstances: 10 }), async
   return { success: true, discord: discordClientView({ discord }) };
 });
 
+function discordPreviewLine(watchers, byTornId) {
+  return watchers
+    .map((w) => {
+      const name = w.name ? String(w.name) : String(w.playerId);
+      return byTornId.get(String(w.playerId)) ? name + ' (ping ready)' : name + ' (no Discord match)';
+    })
+    .join(', ')
+    .slice(0, 1000);
+}
+
+/** Posts a sample in the saved channel. Does not ping the signed-up watchers or mark an hour as sent. */
+exports.chainWatchDiscordTest = onCall(callableOpts({ maxInstances: 5 }), async (request) => {
+  const { apiKey, factionId } = request.data || {};
+  const fid = String(factionId || '').trim();
+  if (!fid) throw new HttpsError('invalid-argument', 'factionId required');
+  const user = await fetchUserFromApiKey(apiKey);
+  assertSameFaction(user.factionId, fid);
+  const ref = getDb().collection(COLLECTION).doc(fid);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('failed-precondition', 'Save a chain watch schedule first');
+  assertCanEditSchedule(snap.data(), user);
+  const discord = (snap.data() && snap.data().discord) || {};
+  if (!/^\d{17,20}$/.test(String(discord.channelId || '')) || !discord.guildId) {
+    throw new HttpsError('failed-precondition', 'Save a Discord channel first');
+  }
+  if (!discordBotToken()) throw new HttpsError('failed-precondition', 'The Discord bot token is not configured yet');
+
+  let byTornId = new Map();
+  try {
+    byTornId = await discordMembersByTornId(String(discord.guildId));
+  } catch (e) {
+    throw new HttpsError(
+      'failed-precondition',
+      'The bot could not read server members. Turn on Server Members Intent for the bot, then try again.'
+    );
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const norm = normalizeDoc(snap.data());
+  const upcoming = signedUpSlots(norm.settings, norm.slots, nowSec);
+  const next = upcoming[0] || null;
+  const later = upcoming.slice(1, 4);
+  const testerDiscord = byTornId.get(String(user.playerId)) || '';
+  const fields = [];
+  if (next) {
+    fields.push({
+      name: 'Next hour',
+      value: formatTctRange(next.start, next.end) + ' — ' + discordPreviewLine(next.watchers, byTornId),
+    });
+  } else {
+    fields.push({ name: 'Next hour', value: 'Nobody is signed up for a future hour yet.' });
+  }
+  fields.push({
+    name: 'Following shifts',
+    value: later.length
+      ? later
+          .map((row) => formatTctRange(row.start, row.end) + ' — ' + discordPreviewLine(row.watchers, byTornId))
+          .join('\n')
+          .slice(0, 1000)
+      : 'No further shifts with signups.',
+  });
+
+  try {
+    await discordApi('/channels/' + discord.channelId + '/messages', {
+      method: 'POST',
+      body: {
+        content: testerDiscord
+          ? 'Chain Watch test <@' + testerDiscord + '>'
+          : 'Chain Watch test. Nobody was pinged.',
+        embeds: [
+          {
+            title: 'Chain Watch test',
+            description:
+              'The bot can post in this channel. Signed-up watchers are not pinged by a test. A real nudge still goes out about five minutes before an hour.',
+            color: 0xffd700,
+            fields,
+          },
+        ],
+        allowed_mentions: { parse: [], users: testerDiscord ? [testerDiscord] : [] },
+      },
+    });
+  } catch (e) {
+    throw new HttpsError('failed-precondition', e.message || 'Could not post the test message');
+  }
+  return { success: true, mentionedYou: !!testerDiscord };
+});
+
 /** Ping watchers about five minutes before their hour, and list the next three shifts. */
 exports.chainWatchDiscordNudge = onSchedule(
   { schedule: 'every 1 minutes', timeZone: 'UTC', timeoutSeconds: 120, memory: '256MiB' },

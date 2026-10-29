@@ -843,6 +843,7 @@
         html += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">';
         html += '<button type="button" class="btn" id="war-dashboard-cw-discord-save">Save Discord channel</button>';
         if (discordChannel) {
+            html += '<button type="button" class="btn" id="war-dashboard-cw-discord-test">Send test message</button>';
             html += '<button type="button" class="btn" id="war-dashboard-cw-discord-clear">Turn off</button>';
         }
         html += '</div>';
@@ -909,6 +910,7 @@
     function wireChainWatchDiscordForm() {
         const saveBtn = document.getElementById('war-dashboard-cw-discord-save');
         const clearBtn = document.getElementById('war-dashboard-cw-discord-clear');
+        const testBtn = document.getElementById('war-dashboard-cw-discord-test');
         async function saveDiscordChannel(channelId) {
             const msg = document.getElementById('war-dashboard-cw-discord-msg');
             const apiKey = getApiKey();
@@ -961,6 +963,33 @@
             clearBtn.dataset.cwWired = '1';
             clearBtn.addEventListener('click', function () {
                 void saveDiscordChannel('');
+            });
+        }
+        if (testBtn && !testBtn.dataset.cwWired) {
+            testBtn.dataset.cwWired = '1';
+            testBtn.addEventListener('click', async function () {
+                const msg = document.getElementById('war-dashboard-cw-discord-msg');
+                const apiKey = getApiKey();
+                const fn = getChainWatchFunctions();
+                if (!apiKey || !fn || !factionId) return;
+                testBtn.disabled = true;
+                if (msg) msg.textContent = 'Sending test…';
+                try {
+                    const res = await fn.httpsCallable('chainWatchDiscordTest')({
+                        apiKey: apiKey,
+                        factionId: String(factionId),
+                    });
+                    const mentioned = res && res.data && res.data.mentionedYou;
+                    if (msg) {
+                        msg.textContent = mentioned
+                            ? 'Test posted. You were pinged so you can see it. The watchers were not.'
+                            : 'Test posted. Nobody was pinged. Check the channel for who matched a Discord name.';
+                    }
+                } catch (e) {
+                    if (msg) msg.textContent = (e && e.message) ? String(e.message) : 'Test failed';
+                } finally {
+                    testBtn.disabled = false;
+                }
             });
         }
     }

@@ -2216,6 +2216,7 @@ exports.chainWatchAdminRecoveryReport = chainWatch.chainWatchAdminRecoveryReport
 exports.chainWatchAdminRestoreActive = chainWatch.chainWatchAdminRestoreActive;
 exports.chainWatchSignup = chainWatch.chainWatchSignup;
 exports.chainWatchSaveDiscord = chainWatch.chainWatchSaveDiscord;
+exports.chainWatchDiscordTest = chainWatch.chainWatchDiscordTest;
 exports.chainWatchDiscordNudge = chainWatch.chainWatchDiscordNudge;
 exports.chainWatchRemoveSelf = chainWatch.chainWatchRemoveSelf;
 exports.chainWatchSyncChain = chainWatch.chainWatchSyncChain;
