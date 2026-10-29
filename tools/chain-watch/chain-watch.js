@@ -788,7 +788,7 @@
                 organizerIds.forEach(function (oid) {
                     html +=
                         '<li style="display:flex;align-items:center;gap:8px;margin:4px 0;"><span>' +
-                        escapeHtml(oid) +
+                        escapeHtml(organizerDisplayLabel(oid)) +
                         '</span><button type="button" class="btn war-dashboard-cw-organizer-remove" data-id="' +
                         escapeHtml(oid) +
                         '" style="padding:2px 8px;font-size:11px;">Remove</button></li>';
@@ -799,8 +799,9 @@
             html += '</ul>';
             html += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">';
             html +=
-                '<label for="war-dashboard-cw-organizer-input" style="font-size:12px;color:#b0b0b0;">Torn player ID</label>';
-            html += '<input type="text" id="war-dashboard-cw-organizer-input" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 123456" style="width:120px;">';
+                '<label for="war-dashboard-cw-organizer-input" style="font-size:12px;color:#b0b0b0;">Torn player</label>';
+            html +=
+                '<input type="text" id="war-dashboard-cw-organizer-input" placeholder="Player ID or profile link" style="width:100%;max-width:420px;">';
             html += '<button type="button" class="btn" id="war-dashboard-cw-organizer-add-btn">Add</button>';
             html += '<button type="button" class="btn" id="war-dashboard-cw-organizer-save">Save organisers</button>';
             html += '</div>';
@@ -1026,6 +1027,42 @@
         return '';
     }
 
+    const organizerNameCache = Object.create(null);
+
+    function parseOrganizerPlayerId(raw) {
+        const text = String(raw || '').trim();
+        const fromProfile = text.match(/[?&]XID=(\d+)/i);
+        if (fromProfile) return fromProfile[1];
+        if (/^\d+$/.test(text)) return text;
+        return '';
+    }
+
+    function organizerNameFromPayload(data) {
+        if (!data || typeof data !== 'object') return '';
+        const profile = data.profile && typeof data.profile === 'object' ? data.profile : null;
+        const basic = data.basic && typeof data.basic === 'object' ? data.basic : null;
+        const name = data.name || (profile && profile.name) || (basic && basic.name) || '';
+        return String(name || '').trim();
+    }
+
+    function organizerDisplayLabel(id) {
+        const name = organizerNameCache[String(id)];
+        return name ? name + ' [' + id + ']' : String(id);
+    }
+
+    async function lookupOrganizerName(id) {
+        const key = String(id);
+        if (organizerNameCache[key]) return organizerNameCache[key];
+        const apiKey = getApiKey();
+        if (!apiKey) return '';
+        const data = await fetchJson(
+            'https://api.torn.com/user/' + encodeURIComponent(key) + '?selections=profile&key=' + encodeURIComponent(apiKey)
+        );
+        const name = organizerNameFromPayload(data);
+        if (name) organizerNameCache[key] = name;
+        return name;
+    }
+
     function chainWatchRenderOrganizerUl(ids) {
         const ul = document.getElementById('war-dashboard-cw-organizer-ul');
         const listEl = document.getElementById('war-dashboard-cw-organizer-ids');
@@ -1043,7 +1080,7 @@
                   .map(function (id) {
                       return (
                           '<li style="display:flex;align-items:center;gap:8px;margin:4px 0;"><span>' +
-                          escapeHtml(id) +
+                          escapeHtml(organizerDisplayLabel(id)) +
                           '</span><button type="button" class="btn war-dashboard-cw-organizer-remove" data-id="' +
                           escapeHtml(id) +
                           '" style="padding:2px 8px;font-size:11px;">Remove</button></li>'
@@ -1328,12 +1365,24 @@
         }
 
         writeIdsToHidden(readIdsFromHidden());
+        const listed = readIdsFromHidden();
+        if (listed.length) {
+            void Promise.all(
+                listed.map(function (id) {
+                    return lookupOrganizerName(id).catch(function () {
+                        return '';
+                    });
+                })
+            ).then(function () {
+                if (document.getElementById('war-dashboard-cw-organizer-ul')) chainWatchRenderOrganizerUl(listed);
+            });
+        }
 
         if (addBtn && input) {
-            addBtn.addEventListener('click', function () {
-                const id = String(input.value || '').trim();
-                if (!/^\d+$/.test(id)) {
-                    if (msg) msg.textContent = 'Enter a numeric Torn player ID.';
+            addBtn.addEventListener('click', async function () {
+                const id = parseOrganizerPlayerId(input.value);
+                if (!id) {
+                    if (msg) msg.textContent = 'Paste a Torn player ID or a profile link.';
                     return;
                 }
                 const ids = readIdsFromHidden();
@@ -1341,10 +1390,23 @@
                     if (msg) msg.textContent = 'Already listed.';
                     return;
                 }
-                ids.push(id);
-                writeIdsToHidden(ids);
-                input.value = '';
-                if (msg) msg.textContent = '';
+                addBtn.disabled = true;
+                if (msg) msg.textContent = 'Looking up player…';
+                try {
+                    const name = await lookupOrganizerName(id);
+                    if (!name) {
+                        if (msg) msg.textContent = 'Could not find that player.';
+                        return;
+                    }
+                    ids.push(id);
+                    writeIdsToHidden(ids);
+                    input.value = '';
+                    if (msg) msg.textContent = '';
+                } catch (e) {
+                    if (msg) msg.textContent = 'Could not find that player.';
+                } finally {
+                    addBtn.disabled = false;
+                }
             });
         }
 
