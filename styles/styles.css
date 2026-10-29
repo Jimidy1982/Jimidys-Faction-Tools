@@ -1257,6 +1257,24 @@ tr.war-dashboard-retal-row {
     padding: 7px 12px;
     white-space: nowrap;
 }
+a.btn {
+    display: inline-block;
+    background-color: var(--accent-color);
+    color: var(--primary-color);
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    text-decoration: none;
+    line-height: normal;
+}
+a.btn:hover,
+a.btn:focus {
+    opacity: 0.9;
+    color: var(--primary-color);
+    text-decoration: none;
+}
 .chain-watch-settings-open-btn {
     font-weight: 600;
 }
