@@ -178,7 +178,7 @@
                                     <label style="display: flex; align-items: center;" title="Pay for assist attacks"><input type="checkbox" id="payAssists" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Assists</label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="assistMultiplier" value="0.25" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="display: flex; align-items: center;" title="Pay for retaliation attacks"><input type="checkbox" id="payRetals" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Retals</label>
+                                    <label style="display: flex; align-items: center;" title="Pay for retaliation attacks that are not already counted as war hits"><input type="checkbox" id="payRetals" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Retals</label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="retalMultiplier" value="0.5" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
                                     <label style="display: flex; align-items: center;" title="Pay for overseas attacks"><input type="checkbox" id="payOverseas" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Overseas</label>
@@ -323,7 +323,7 @@
                                     <label style="display: flex; align-items: center;" title="Pay for assist attacks"><input type="checkbox" id="respectPayAssists" checked style="accent-color: #ffd700; margin-right: 8px;"> Pay Assists</label>
                                     <span style="justify-self: end; text-align: right;">Multiplier: <input type="number" id="respectAssistMultiplier" value="0.25" min="0" step="0.01" style="width: 60px; text-align: right; -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield;"> </span>
 
-                                    <label style="display: flex; align-items: center;" title="Pay for retaliation attacks">
+                                    <label style="display: flex; align-items: center;" title="Pay for retaliation attacks that are not already counted as war hits">
                                         <input type="checkbox" id="respectPayRetals" style="accent-color: #ffd700; margin-right: 8px;"> 
                                         Pay Retals
                                         <button type="button" class="chain-link-btn" data-option="respectPayRetals" style="background: none; border: none; color: #ffd700; cursor: pointer; margin-left: 8px; font-size: 14px; padding: 2px;" title="Click to unlink this option">🔗</button>
@@ -436,6 +436,6 @@
         </div>
     </div>
     
-    <script src="../tools/war-report-2.0/war-report.js?v=fix-error-scope"></script>
+    <script src="../tools/war-report-2.0/war-report.js?v=retal-not-on-war-hit"></script>
 </body>
 </html> 

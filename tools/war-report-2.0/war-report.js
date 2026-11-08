@@ -71,6 +71,15 @@ function warReportIsInsideWarAttack(attack, enemyFactionId) {
 }
 
 /**
+ * Retaliation pay/count is for attacks that are not already war hits.
+ * A war-hit retaliation is that same war hit (Torn stacks the 1.5 modifier on it), not a second attack.
+ */
+function warReportShouldCountRetaliation(attack, isWarHit) {
+    if (isWarHit) return false;
+    return !!(attack && attack.modifiers && attack.modifiers.retaliation === 1.5);
+}
+
+/**
  * Outside-style hit for respect/payout: war modifier 1 with respect, or war=2 vs a non-enemy when we know the enemy.
  * @param {number} [respectAmount] - when set (e.g. base respect), used instead of respect_gain for the >0 gate
  */
@@ -230,7 +239,7 @@ var WAR_REPORT_CUSTOM_END_VIP_REQUIRED = 1;
 /** 24h local cache for Torn API pulls used by War Payout Calculator. */
 const WAR_REPORT_API_CACHE_PREFIX = 'war_report_api_cache_v1:';
 const WAR_REPORT_API_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const WAR_REPORT_RESULT_CACHE_PREFIX = 'war_report_result_cache_v1:';
+const WAR_REPORT_RESULT_CACHE_PREFIX = 'war_report_result_cache_v2:';
 const WAR_REPORT_CACHE_DB_NAME = 'warReportApiCacheDb';
 const WAR_REPORT_CACHE_DB_VERSION = 1;
 const WAR_REPORT_CACHE_STORE = 'entries';
@@ -709,16 +718,10 @@ function warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStr, enemyF
                 if (attack.modifiers?.overseas && attack.modifiers.overseas > 1) {
                     p.overseasHits++;
                 }
-                if (attack.modifiers?.retaliation === 1.5) {
-                    p.warRetals++;
-                }
             }
         } else if (isAssist) {
             if (!warZero) {
                 p.warAssists++;
-                if (attack.modifiers?.retaliation === 1.5) {
-                    p.warRetals++;
-                }
             }
         } else {
             if (attack.is_interrupted) {
@@ -737,7 +740,7 @@ function warReportRecountPlayerBucketsForWarCap(allAttacks, factionIdStr, enemyF
             }
         }
 
-        if (attack.modifiers?.retaliation === 1.5 && !isWarHit && !isAssist && !warZero) {
+        if (!warZero && warReportShouldCountRetaliation(attack, isWarHit)) {
             p.warRetals++;
         }
     });
@@ -2524,8 +2527,8 @@ async function handleWarReportFetch(warId = null, includeChain = false, fetchOpt
                 playerStats[attackerId].overseasHits++;
             }
             
-            // Retaliations
-            if (attack.modifiers.retaliation && attack.modifiers.retaliation === 1.5) {
+            // Retaliations that are already war hits stay in War Hits only.
+            if (warReportShouldCountRetaliation(attack, isWarHit)) {
                 playerStats[attackerId].warRetals++;
             }
             
@@ -2778,7 +2781,7 @@ function renderWarReportTable() {
                 </tr>
                 <tr>
                     <th class="war-report-col-group-lead" data-column="warAssists" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Assists <span class="sort-indicator">${sortState.column === 'warAssists' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="warRetals" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Retaliations <span class="sort-indicator">${sortState.column === 'warRetals' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="warRetals" title="Retaliations that are not already counted as war hits" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Retaliations <span class="sort-indicator">${sortState.column === 'warRetals' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="overseasHits" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Overseas <span class="sort-indicator">${sortState.column === 'overseasHits' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                 </tr>
             </thead>
@@ -4193,7 +4196,7 @@ function renderPayoutTable() {
         ? `<th colspan="3" class="war-report-col-group-lead" title="Retaliations, assists, and overseas hits">Support ${supportBreakdownLabelHit}</th>`
         : `<th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" data-column="supportHitsTotal" style="cursor: pointer;">Support <span class="sort-indicator">${supSortIndHit}</span> ${supportBreakdownLabelHit}</th>`;
     const supportHeadRow2Hit = showSupportColBreakdownHit
-        ? `<th class="war-report-col-group-lead" data-column="warRetals" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Retaliations <span class="sort-indicator">${warData.payoutSortState.column === 'warRetals' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+        ? `<th class="war-report-col-group-lead" data-column="warRetals" title="Retaliations that are not already counted as war hits" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Retaliations <span class="sort-indicator">${warData.payoutSortState.column === 'warRetals' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warAssists" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Assists <span class="sort-indicator">${warData.payoutSortState.column === 'warAssists' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="overseasHits" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Overseas <span class="sort-indicator">${warData.payoutSortState.column === 'overseasHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>`
         : '';
@@ -5496,7 +5499,7 @@ function renderRespectPayoutTable() {
         : `<th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" data-column="supportHitsTotal" title="Retals + assists + abroad (hit counts)" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Support <span class="sort-indicator">${supSortIndR}</span>${supportBreakdownLabelR}</th>`;
 
     const supportHeadRow2R = showSupportColBreakdownR
-        ? `<th class="war-report-col-group-lead" data-column="warRetals" title="War retaliations" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Retals <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warRetals' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+        ? `<th class="war-report-col-group-lead" data-column="warRetals" title="Retaliations that are not already counted as war hits" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Retals <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warRetals' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warAssists" title="War assists" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Assists <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warAssists' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="overseasHits" title="Hits abroad / overseas" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Abroad <span class="sort-indicator">${warData.respectPayoutSortState.column === 'overseasHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>`
         : '';
