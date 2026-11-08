@@ -513,7 +513,7 @@ function warReportPlayerRespectPointsForPayout(player, includeOutsideRespect) {
 }
 
 function warReportPlayerSupportHitsTotal(player) {
-    return (player.warRetals || 0) + (player.warAssists || 0) + (player.overseasHits || 0);
+    return (player.warRetals || 0) + (player.warAssists || 0) + (player.overseasHits || 0) + (player.otherAttacksOutside || 0);
 }
 
 /** Lost, escaped, ran away, or stalemate (Torn `result` string). Also used with respect ≤0 for bucket routing. */
@@ -527,17 +527,18 @@ function warReportResultIsLostOrEscape(attack) {
     );
 }
 
-/** Total "other" attacks; uses bucket sum when present else legacy formula. */
+/** Other attacks shown beside Support. Outside hits are in Support, so they are not included here. */
 function warReportPlayerOtherAttacksTotal(player) {
-    const sum =
-        (player.otherAttacksInterrupted || 0) +
-        (player.otherAttacksOutside || 0) +
-        (player.otherAttacksLostEscape || 0) +
-        (player.otherAttacksNonWar || 0) +
-        (player.otherAttacksWarContext || 0) +
-        (player.otherAttacksWarOther || 0);
+    const interrupted = player.otherAttacksInterrupted || 0;
+    const outside = player.otherAttacksOutside || 0;
+    const lost = player.otherAttacksLostEscape || 0;
+    const nonWar = player.otherAttacksNonWar || 0;
+    const warCtx = player.otherAttacksWarContext || 0;
+    const warOth = player.otherAttacksWarOther || 0;
+    const bucketFull = interrupted + outside + lost + nonWar + warCtx + warOth;
+    if (bucketFull > 0) return interrupted + lost + nonWar + warCtx + warOth;
     const legacy = (player.totalAttacks || 0) - (player.warHits || 0) - (player.warAssists || 0);
-    return sum > 0 ? sum : legacy;
+    return Math.max(0, legacy - outside);
 }
 
 function warReportPlayerOutsideHitsCount(player) {
@@ -2766,7 +2767,7 @@ function renderWarReportTable() {
                 <div class="war-report-hscroll-gutter" style="height:1px;font-size:0;line-height:0;overflow:hidden;" aria-hidden="true"></div>
             </div>
             <div class="war-report-hscroll-main" style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
-            <table id="membersTable" style="min-width:900px;border-collapse:collapse;margin-top:20px;">
+            <table id="membersTable" style="min-width:980px;border-collapse:collapse;margin-top:20px;">
             <thead>
                 <tr>
                     <th rowspan="2" data-column="name" style="cursor: pointer;">${window.toolsMemberColumnHeaderWrap('<span>Member <span class="sort-indicator">' + (sortState.column === 'name' ? (sortState.direction === 'asc' ? '↑' : '↓') : '') + '</span></span>')}</th>
@@ -2774,7 +2775,7 @@ function renderWarReportTable() {
                     <th rowspan="2" data-column="warScore" style="cursor: pointer;">Score <span class="sort-indicator">${sortState.column === 'warScore' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="2" data-column="respectBleed" style="cursor: pointer;">Respect Bleed <span class="sort-indicator">${sortState.column === 'respectBleed' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="2" data-column="warHits" style="cursor: pointer;">War Hits <span class="sort-indicator">${sortState.column === 'warHits' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th colspan="3" class="war-report-col-group-lead" title="Assists, retaliations, and overseas hits">Support</th>
+                    <th colspan="4" class="war-report-col-group-lead" title="Assists, retaliations, overseas hits, and outside hits">Support</th>
                     <th rowspan="2" class="war-report-col-group-lead" data-column="totalAttacks" style="cursor: pointer;">Total Attacks <span class="sort-indicator">${sortState.column === 'totalAttacks' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="2" data-column="avgFairFight" style="cursor: pointer;">Avg FF <span class="sort-indicator">${sortState.column === 'avgFairFight' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th rowspan="2" data-column="avgDefLevel" style="cursor: pointer;">Avg Def Level <span class="sort-indicator">${sortState.column === 'avgDefLevel' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
@@ -2783,6 +2784,7 @@ function renderWarReportTable() {
                     <th class="war-report-col-group-lead" data-column="warAssists" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Assists <span class="sort-indicator">${sortState.column === 'warAssists' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warRetals" title="Retaliations that are not already counted as war hits" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Retaliations <span class="sort-indicator">${sortState.column === 'warRetals' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="overseasHits" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Overseas <span class="sort-indicator">${sortState.column === 'overseasHits' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="otherAttacksOutside" title="Successful attacks that gained respect and were not war hits" style="cursor: pointer; font-size: 11px; color: #888; font-weight: normal;">Outside <span class="sort-indicator">${sortState.column === 'otherAttacksOutside' ? (sortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -2799,6 +2801,7 @@ function renderWarReportTable() {
                             <td class="war-report-col-group-lead">${player.warAssists || 0}</td>
                             <td>${player.warRetals || 0}</td>
                             <td>${player.overseasHits || 0}</td>
+                            <td>${player.otherAttacksOutside || 0}</td>
                             <td class="war-report-col-group-lead">${player.totalAttacks}</td>
                             <td>${avgFairFight}</td>
                             <td>${avgDefLevel}</td>
@@ -2816,6 +2819,7 @@ function renderWarReportTable() {
                     <td class="war-report-col-group-lead"><strong>${sorted.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td>
+                    <td><strong>${sorted.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td>
                     <td class="war-report-col-group-lead"><strong>${allAttacks.length}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.avgFairFight || 0), 0) / sorted.length > 0 ? (sorted.reduce((sum, p) => sum + (p.avgFairFight || 0), 0) / sorted.length).toFixed(2) : '0.00'}</strong></td>
                     <td><strong>${sorted.reduce((sum, p) => sum + (p.avgDefLevel || 0), 0) / sorted.length > 0 ? (sorted.reduce((sum, p) => sum + (p.avgDefLevel || 0), 0) / sorted.length).toFixed(1) : '0.0'}</strong></td>
@@ -2906,7 +2910,8 @@ function exportWarReportToCSV() {
         'Avg Level Defeated',
         'War Assists',
         'War Retals',
-        'Overseas'
+        'Overseas',
+        'Outside Hits'
     ];
 
     let csvContent = headers.join(',') + '\r\n';
@@ -2922,7 +2927,8 @@ function exportWarReportToCSV() {
             (player.avgDefLevel || 0).toFixed(1),
             player.warAssists || 0,
             player.warRetals || 0,
-            player.overseasHits || 0
+            player.overseasHits || 0,
+            player.otherAttacksOutside || 0
         ];
         csvContent += row.join(',') + '\r\n';
     });
@@ -4180,8 +4186,9 @@ function renderPayoutTable() {
     const showSupportColBreakdownHit = warReportGetSupportColumnBreakdown();
     const hitHdrSubRow = showSupportColBreakdownHit || showOtherBreakdown;
     const hitHdrRowspan = hitHdrSubRow ? 2 : 1;
-    let hitTableMinW = showOtherBreakdown ? 1520 : 1280;
-    if (!showSupportColBreakdownHit) hitTableMinW -= 120;
+    let hitTableMinW = showOtherBreakdown ? 1450 : 1280;
+    if (showSupportColBreakdownHit) hitTableMinW += 70;
+    else hitTableMinW -= 120;
     const showHitManualBonusCol = warData.hitPayoutShowManualBonusColumn === true;
     if (!showHitManualBonusCol) hitTableMinW -= 200;
     const showMemberIdBrackets = window.toolsGetShowMemberIdInBrackets();
@@ -4193,15 +4200,16 @@ function renderPayoutTable() {
         (showSupportColBreakdownHit ? 'checked ' : '') +
         '/> Breakdown</label>';
     const supportHeadRow1Hit = showSupportColBreakdownHit
-        ? `<th colspan="3" class="war-report-col-group-lead" title="Retaliations, assists, and overseas hits">Support ${supportBreakdownLabelHit}</th>`
+        ? `<th colspan="4" class="war-report-col-group-lead" title="Retaliations, assists, overseas hits, and outside hits">Support ${supportBreakdownLabelHit}</th>`
         : `<th rowspan="${hitHdrRowspan}" class="war-report-col-group-lead" data-column="supportHitsTotal" style="cursor: pointer;">Support <span class="sort-indicator">${supSortIndHit}</span> ${supportBreakdownLabelHit}</th>`;
     const supportHeadRow2Hit = showSupportColBreakdownHit
         ? `<th class="war-report-col-group-lead" data-column="warRetals" title="Retaliations that are not already counted as war hits" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Retaliations <span class="sort-indicator">${warData.payoutSortState.column === 'warRetals' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warAssists" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Assists <span class="sort-indicator">${warData.payoutSortState.column === 'warAssists' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="overseasHits" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Overseas <span class="sort-indicator">${warData.payoutSortState.column === 'overseasHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>`
+                    <th data-column="overseasHits" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Overseas <span class="sort-indicator">${warData.payoutSortState.column === 'overseasHits' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="otherAttacksOutside" title="Successful attacks that gained respect and were not war hits" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;">Outside <span class="sort-indicator">${warData.payoutSortState.column === 'otherAttacksOutside' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>`
         : '';
     const otherHeadRow1Hit = showOtherBreakdown
-        ? `<th colspan="4" class="war-report-col-group-lead" data-column="otherAttacks" style="cursor: pointer; text-align: center; vertical-align: top;">Other attacks <span class="sort-indicator">${othSortInd}</span>
+        ? `<th colspan="3" class="war-report-col-group-lead" data-column="otherAttacks" style="cursor: pointer; text-align: center; vertical-align: top;">Other attacks <span class="sort-indicator">${othSortInd}</span>
                         <label class="war-report-other-detail-label" style="display:block;margin-top:4px;font-weight:normal;font-size:11px;color:#999;cursor:pointer;">
                             <input type="checkbox" class="war-report-other-attacks-breakdown war-report-breakdown-cb" ${showOtherBreakdown ? 'checked' : ''} /> Breakdown
                         </label>
@@ -4212,9 +4220,8 @@ function renderPayoutTable() {
                         </label>
                     </th>`;
     const otherHeadRow2Hit = showOtherBreakdown
-        ? `<th class="war-report-col-group-lead" title="All categorized other-attack hits (Int. + Outside + Lost/ran + any extra buckets). Pay Other Attacks still excludes outside hits when Pay Outside Hits is on." style="text-align:center;font-size:11px;color:#888;font-weight:normal;">Total</th>
+        ? `<th class="war-report-col-group-lead" title="Interrupts, losses, and other attacks that are not outside hits. Outside hits are listed under Support." style="text-align:center;font-size:11px;color:#888;font-weight:normal;">Total</th>
                     <th title="Interrupted before completion" style="text-align:center;font-size:11px;color:#888;font-weight:normal;">Int.</th>
-                    <th data-column="otherAttacksOutside" style="cursor: pointer; text-align:center;font-size:11px;color:#888;font-weight:normal;" title="War modifier 1 with respect (outside-style); optional separate payout vs Other attacks">Outside <span class="sort-indicator">${warData.payoutSortState.column === 'otherAttacksOutside' ? (warData.payoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th title="Lost/escaped/ran/stalemate, war-context with no respect gain (≤0), or rare war≠1 with respect" style="text-align:center;font-size:11px;color:#888;font-weight:normal;">Lost/ran</th>`
         : '';
     const hitTheadSecondRow = hitHdrSubRow ? `<tr>${supportHeadRow2Hit}${otherHeadRow2Hit}</tr>` : '';
@@ -4280,13 +4287,12 @@ function renderPayoutTable() {
             <tbody>
                 ${playersWithPayouts.map(player => {
                     const oInt = player.otherAttacksInterrupted || 0;
-                    const oOut = player.otherAttacksOutside || 0;
                     const oLost = player.otherAttacksLostEscape || 0;
                     const otherCells = showOtherBreakdown
-                        ? `<td class="war-report-col-group-lead">${warReportPlayerOtherAttacksTotal(player)}</td><td>${oInt}</td><td>${oOut}</td><td>${oLost}</td>`
+                        ? `<td class="war-report-col-group-lead">${warReportPlayerOtherAttacksTotal(player)}</td><td>${oInt}</td><td>${oLost}</td>`
                         : `<td class="war-report-col-group-lead">${warReportPlayerOtherAttacksTotal(player)}</td>`;
                     const supportCellsHit = showSupportColBreakdownHit
-                        ? `<td class="war-report-col-group-lead">${player.warRetals || 0}</td><td>${player.warAssists || 0}</td><td>${player.overseasHits || 0}</td>`
+                        ? `<td class="war-report-col-group-lead">${player.warRetals || 0}</td><td>${player.warAssists || 0}</td><td>${player.overseasHits || 0}</td><td>${player.otherAttacksOutside || 0}</td>`
                         : `<td class="war-report-col-group-lead">${warReportPlayerSupportHitsTotal(player)}</td>`;
                     const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
                     return `
@@ -4318,10 +4324,10 @@ function renderPayoutTable() {
                     <td><strong>${totalTermedWarHits}</strong></td>
                     <td><strong style="color: #ff6b6b;">${playersWithPayouts.reduce((sum, p) => sum + (p.lowFFHits || 0), 0)}</strong></td>
                     ${showSupportColBreakdownHit
-        ? `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td>`
+        ? `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerSupportHitsTotal(p), 0)}</strong></td>`}
                     ${showOtherBreakdown
-        ? `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
+        ? `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td><strong>${playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead"><strong>${playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td>`}
                     ${showHitManualBonusCol ? `<td class="war-report-col-group-lead"><strong>$${playersWithPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>` : ''}
                     <td><strong>$${totalPayout.toLocaleString()}</strong></td>
@@ -4336,12 +4342,12 @@ function renderPayoutTable() {
     const hitCopyMoney = (n) => '$' + Math.round(Number(n) || 0).toLocaleString();
     const hitCopyCols = ['Member', 'Level', 'War Hits', 'Termed War Hits', 'Low FF Hits'];
     if (showSupportColBreakdownHit) {
-        hitCopyCols.push('Retaliations', 'Assists', 'Overseas');
+        hitCopyCols.push('Retaliations', 'Assists', 'Overseas', 'Outside');
     } else {
         hitCopyCols.push('Support');
     }
     if (showOtherBreakdown) {
-        hitCopyCols.push('Other (total)', 'Int.', 'Outside', 'Lost/ran');
+        hitCopyCols.push('Other (total)', 'Int.', 'Lost/ran');
     } else {
         hitCopyCols.push('Other attacks');
     }
@@ -4356,7 +4362,7 @@ function renderPayoutTable() {
             String(player.lowFFHits || 0)
         ];
         if (showSupportColBreakdownHit) {
-            row.push(String(player.warRetals || 0), String(player.warAssists || 0), String(player.overseasHits || 0));
+            row.push(String(player.warRetals || 0), String(player.warAssists || 0), String(player.overseasHits || 0), String(player.otherAttacksOutside || 0));
         } else {
             row.push(String(warReportPlayerSupportHitsTotal(player)));
         }
@@ -4364,7 +4370,6 @@ function renderPayoutTable() {
             row.push(
                 String(warReportPlayerOtherAttacksTotal(player)),
                 String(player.otherAttacksInterrupted || 0),
-                String(player.otherAttacksOutside || 0),
                 String(player.otherAttacksLostEscape || 0)
             );
         } else {
@@ -4380,7 +4385,8 @@ function renderPayoutTable() {
         hitCopyFooter.push(
             String(playersWithPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)),
             String(playersWithPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)),
-            String(playersWithPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0))
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)),
+            String(playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0))
         );
     } else {
         hitCopyFooter.push(String(playersWithPayouts.reduce((sum, p) => sum + warReportPlayerSupportHitsTotal(p), 0)));
@@ -4389,7 +4395,6 @@ function renderPayoutTable() {
         hitCopyFooter.push(
             String(playersWithPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)),
             String(playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)),
-            String(playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)),
             String(playersWithPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0))
         );
     } else {
@@ -4621,13 +4626,13 @@ function exportPayoutToCSV() {
 
     const headers = ['Member', 'Level', 'War Hits', 'Termed War Hits', 'Low FF Hits'];
     if (showSupportBreakdownCsv) {
-        headers.push('Retaliations', 'Assists', 'Overseas');
+        headers.push('Retaliations', 'Assists', 'Overseas', 'Outside Hits');
     } else {
         headers.push('Support hits (total)');
     }
     headers.push('Other Attacks');
     if (showOtherBreakdownCsv) {
-        headers.push('Other (interrupted)', 'Other (outside)', 'Other (lost/ran)');
+        headers.push('Other (interrupted)', 'Other (lost/ran)');
     }
     if (showHitManualBonusCsv) headers.push('Manual Bonus');
     headers.push('Total Payout', 'Pay link');
@@ -4786,7 +4791,7 @@ function exportPayoutToCSV() {
             player.lowFFHits || 0
         ];
         if (showSupportBreakdownCsv) {
-            row.push(player.warRetals || 0, player.warAssists || 0, player.overseasHits || 0);
+            row.push(player.warRetals || 0, player.warAssists || 0, player.overseasHits || 0, player.otherAttacksOutside || 0);
         } else {
             row.push(warReportPlayerSupportHitsTotal(player));
         }
@@ -4794,7 +4799,6 @@ function exportPayoutToCSV() {
         if (showOtherBreakdownCsv) {
             row.push(
                 player.otherAttacksInterrupted || 0,
-                player.otherAttacksOutside || 0,
                 player.otherAttacksLostEscape || 0
             );
         }
@@ -5462,7 +5466,8 @@ function renderRespectPayoutTable() {
     const respectHdrSubRow = showRespectColBreakdownR || showSupportColBreakdownR || showOtherBreakdownR;
     const respectHdrRowspan = respectHdrSubRow ? 2 : 1;
     const showMemberIdBracketsR = window.toolsGetShowMemberIdInBrackets();
-    let respectTableMinW = showOtherBreakdownR ? 1460 : 1300;
+    let respectTableMinW = showOtherBreakdownR ? 1390 : 1300;
+    if (showSupportColBreakdownR) respectTableMinW += 70;
     if (!showRespectColBreakdownR) respectTableMinW -= 150;
     if (!showSupportColBreakdownR) respectTableMinW -= 110;
     const showRespectManualBonusCol = warData.respectPayoutShowManualBonusColumn === true;
@@ -5495,17 +5500,18 @@ function renderRespectPayoutTable() {
         : '';
 
     const supportHeadRow1R = showSupportColBreakdownR
-        ? `<th colspan="3" class="war-report-col-group-lead" title="Retaliations, assists, and overseas (abroad) hits" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Support ${supportBreakdownLabelR}</th>`
-        : `<th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" data-column="supportHitsTotal" title="Retals + assists + abroad (hit counts)" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Support <span class="sort-indicator">${supSortIndR}</span>${supportBreakdownLabelR}</th>`;
+        ? `<th colspan="4" class="war-report-col-group-lead" title="Retaliations, assists, overseas (abroad) hits, and outside hits" style="background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Support ${supportBreakdownLabelR}</th>`
+        : `<th rowspan="${respectHdrRowspan}" class="war-report-col-group-lead" data-column="supportHitsTotal" title="Retals + assists + abroad + outside hits" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: middle;">Support <span class="sort-indicator">${supSortIndR}</span>${supportBreakdownLabelR}</th>`;
 
     const supportHeadRow2R = showSupportColBreakdownR
         ? `<th class="war-report-col-group-lead" data-column="warRetals" title="Retaliations that are not already counted as war hits" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Retals <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warRetals' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
                     <th data-column="warAssists" title="War assists" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Assists <span class="sort-indicator">${warData.respectPayoutSortState.column === 'warAssists' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
-                    <th data-column="overseasHits" title="Hits abroad / overseas" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Abroad <span class="sort-indicator">${warData.respectPayoutSortState.column === 'overseasHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>`
+                    <th data-column="overseasHits" title="Hits abroad / overseas" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Abroad <span class="sort-indicator">${warData.respectPayoutSortState.column === 'overseasHits' ? (warData.respectPayoutSortState.direction === 'asc' ? '↑' : '↓') : ''}</span></th>
+                    <th data-column="otherAttacksOutside" title="Successful attacks that gained respect and were not war hits" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Outside hits <span class="sort-indicator">${outsSortIndR}</span></th>`
         : '';
 
     const otherHeadRow1R = showOtherBreakdownR
-        ? `<th colspan="4" class="war-report-col-group-lead" data-column="otherAttacks" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: top;">Other attacks <span class="sort-indicator">${othSortIndR}</span>
+        ? `<th colspan="3" class="war-report-col-group-lead" data-column="otherAttacks" style="cursor: pointer; background-color: #2d2d2d; color: #ffd700; padding: 10px; text-align: center; border-bottom: 1px solid #404040; vertical-align: top;">Other attacks <span class="sort-indicator">${othSortIndR}</span>
                         <label class="war-report-other-detail-label" style="display:block;margin-top:4px;font-weight:normal;font-size:11px;color:#bbb;cursor:pointer;">
                             <input type="checkbox" class="war-report-other-attacks-breakdown war-report-breakdown-cb" ${showOtherBreakdownR ? 'checked' : ''} /> Breakdown
                         </label>
@@ -5517,9 +5523,8 @@ function renderRespectPayoutTable() {
                     </th>`;
 
     const otherHeadRow2R = showOtherBreakdownR
-        ? `<th class="war-report-col-group-lead" title="All categorized other-attack hits (Int. + Outside + Lost/ran + any extra buckets). Pay Other Attacks still excludes outside hits when Pay Outside Hits is on." style="background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Total</th>
+        ? `<th class="war-report-col-group-lead" title="Interrupts, losses, and other attacks that are not outside hits. Outside hits are listed under Support." style="background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Total</th>
                     <th title="Interrupted before completion" style="background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Int.</th>
-                    <th data-column="otherAttacksOutside" style="cursor: pointer; background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;" title="War modifier 1 with respect (outside-style); optional separate payout vs Other attacks">Outside <span class="sort-indicator">${outsSortIndR}</span></th>
                     <th title="Lost/escaped/ran/stalemate, war-context with no respect gain (≤0), or rare war≠1 with respect" style="background-color: #2d2d2d; color: #aaa; font-size: 11px; font-weight: normal; padding: 6px; text-align: center; border-bottom: 1px solid #404040;">Lost/ran</th>`
         : '';
 
@@ -5633,7 +5638,6 @@ function renderRespectPayoutTable() {
             <tbody>
                 ${playersWithRespectPayouts.map(player => {
                     const oInt = player.otherAttacksInterrupted || 0;
-                    const oOut = player.otherAttacksOutside || 0;
                     const oLost = player.otherAttacksLostEscape || 0;
                     const warRespectTooltip = warReportFormatWarRespectPayoutTooltip(
                         player.playerRealWarRespect,
@@ -5641,13 +5645,13 @@ function renderRespectPayoutTable() {
                         respectRealWarFactor
                     );
                     const otherCells = showOtherBreakdownR
-                        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerOtherAttacksTotal(player)}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oInt}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oOut}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oLost}</td>`
+                        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerOtherAttacksTotal(player)}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oInt}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${oLost}</td>`
                         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerOtherAttacksTotal(player)}</td>`;
                     const respectCellsR = showRespectColBreakdownR
                         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportRespectCellHtml(player.playerWarRespect || 0, warRespectTooltip)}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.playerOutsideRespect || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${(parseFloat(player.respectRatio) * 100).toFixed(2)}%</td>`
                         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportRespectCellHtml(warReportPlayerRespectPointsForPayout(player, includeOutsideRespect), warRespectTooltip || '')}</td>`;
                     const supportCellsR = showSupportColBreakdownR
-                        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warRetals || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warAssists || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.overseasHits || 0}</td>`
+                        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warRetals || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.warAssists || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.overseasHits || 0}</td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${player.otherAttacksOutside || 0}</td>`
                         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;">${warReportPlayerSupportHitsTotal(player)}</td>`;
                     const payLink = `https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo=${player.id}&money=${player.totalPayout}`;
                     return `
@@ -5681,10 +5685,10 @@ function renderRespectPayoutTable() {
         ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalBaseRespect)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(totalOutsideRespect)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>100.00%</strong></td>`
         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${Math.round(includeOutsideRespect ? totalBaseRespect + totalOutsideRespect : totalBaseRespect)}</strong></td>`}
                     ${showSupportColBreakdownR
-        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td>`
+        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerSupportHitsTotal(p), 0)}</strong></td>`}
                     ${showOtherBreakdownR
-        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
+        ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)}</strong></td><td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0)}</strong></td>`
         : `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>${playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)}</strong></td>`}
                     ${showRespectManualBonusCol ? `<td class="war-report-col-group-lead" style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${playersWithRespectPayouts.reduce((sum, p) => sum + (p.manualBonus || 0), 0).toLocaleString()}</strong></td>` : ''}
                     <td style="padding: 10px; text-align: center; border-bottom: 1px solid #404040;"><strong>$${totalPayout.toLocaleString()}</strong></td>
@@ -5765,12 +5769,12 @@ function renderRespectPayoutTable() {
         respectCopyCols.push(includeOutsideRespect ? 'Respect (total)' : 'Respect (war)');
     }
     if (showSupportColBreakdownR) {
-        respectCopyCols.push('Retals', 'Assists', 'Abroad');
+        respectCopyCols.push('Retals', 'Assists', 'Abroad', 'Outside');
     } else {
         respectCopyCols.push('Support');
     }
     if (showOtherBreakdownR) {
-        respectCopyCols.push('Other (total)', 'Int.', 'Outside', 'Lost/ran');
+        respectCopyCols.push('Other (total)', 'Int.', 'Lost/ran');
     } else {
         respectCopyCols.push('Other attacks');
     }
@@ -5793,7 +5797,7 @@ function renderRespectPayoutTable() {
             row.push(String(warReportPlayerRespectPointsForPayout(player, includeOutsideRespect)));
         }
         if (showSupportColBreakdownR) {
-            row.push(String(player.warRetals || 0), String(player.warAssists || 0), String(player.overseasHits || 0));
+            row.push(String(player.warRetals || 0), String(player.warAssists || 0), String(player.overseasHits || 0), String(player.otherAttacksOutside || 0));
         } else {
             row.push(String(warReportPlayerSupportHitsTotal(player)));
         }
@@ -5801,7 +5805,6 @@ function renderRespectPayoutTable() {
             row.push(
                 String(warReportPlayerOtherAttacksTotal(player)),
                 String(player.otherAttacksInterrupted || 0),
-                String(player.otherAttacksOutside || 0),
                 String(player.otherAttacksLostEscape || 0)
             );
         } else {
@@ -5826,7 +5829,8 @@ function renderRespectPayoutTable() {
         respectCopyFooter.push(
             String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.warRetals || 0), 0)),
             String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.warAssists || 0), 0)),
-            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0))
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.overseasHits || 0), 0)),
+            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0))
         );
     } else {
         respectCopyFooter.push(String(playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerSupportHitsTotal(p), 0)));
@@ -5835,7 +5839,6 @@ function renderRespectPayoutTable() {
         respectCopyFooter.push(
             String(playersWithRespectPayouts.reduce((sum, p) => sum + warReportPlayerOtherAttacksTotal(p), 0)),
             String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksInterrupted || 0), 0)),
-            String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksOutside || 0), 0)),
             String(playersWithRespectPayouts.reduce((sum, p) => sum + (p.otherAttacksLostEscape || 0), 0))
         );
     } else {
@@ -6048,13 +6051,13 @@ function exportRespectPayoutToCSV() {
         headers.push(includeOutsideRespect ? 'Total respect (war + outside)' : 'Respect (war, for payout)');
     }
     if (showSupportCsv) {
-        headers.push('Retals', 'Assists', 'Abroad');
+        headers.push('Retals', 'Assists', 'Abroad', 'Outside Hits');
     } else {
         headers.push('Support hits (total)');
     }
     headers.push('Other Attacks');
     if (showOtherCsv) {
-        headers.push('Other (interrupted)', 'Other (outside)', 'Other (lost/ran)');
+        headers.push('Other (interrupted)', 'Other (lost/ran)');
     }
     if (showRespectManualBonusCsv) headers.push('Manual Bonus');
     headers.push('Total Payout', 'Pay link');
@@ -6079,7 +6082,7 @@ function exportRespectPayoutToCSV() {
             row.push(warReportPlayerRespectPointsForPayout(player, includeOutsideRespect));
         }
         if (showSupportCsv) {
-            row.push(player.warRetals || 0, player.warAssists || 0, player.overseasHits || 0);
+            row.push(player.warRetals || 0, player.warAssists || 0, player.overseasHits || 0, player.otherAttacksOutside || 0);
         } else {
             row.push(warReportPlayerSupportHitsTotal(player));
         }
@@ -6087,7 +6090,6 @@ function exportRespectPayoutToCSV() {
         if (showOtherCsv) {
             row.push(
                 player.otherAttacksInterrupted || 0,
-                player.otherAttacksOutside || 0,
                 player.otherAttacksLostEscape || 0
             );
         }
