@@ -1155,8 +1155,8 @@ function warReportHorizontalWheel(e) {
 }
 
 /**
- * Gold scrollbar fixed to the bottom of the screen while a wide table is on screen
- * and its own top and bottom bars have scrolled out of view.
+ * Gold scrollbar fixed to the bottom of the window whenever a wide war-report table
+ * is on screen. Styles are inline so a cached stylesheet cannot hide it.
  */
 function warReportEnsureFloatingHScroll() {
     if (warReportEnsureFloatingHScroll.ready) return;
@@ -1165,9 +1165,11 @@ function warReportEnsureFloatingHScroll() {
     const dock = document.createElement('div');
     dock.className = 'war-report-hscroll-dock';
     dock.title = 'Drag to move the table sideways. Shift + scroll wheel does the same.';
-    dock.setAttribute('aria-hidden', 'true');
+    dock.setAttribute('aria-label', 'Scroll the table sideways');
+    dock.style.cssText = 'display:none;position:fixed;z-index:10000;bottom:0;left:0;height:22px;box-sizing:border-box;background:#1a1a1a;border-top:2px solid #ffd700;box-shadow:0 -8px 18px rgba(0,0,0,0.55);cursor:pointer;';
     const thumb = document.createElement('div');
     thumb.className = 'war-report-hscroll-dock-thumb';
+    thumb.style.cssText = 'position:absolute;top:4px;left:0;height:14px;border-radius:7px;background:#ffd700;cursor:grab;touch-action:none;';
     dock.appendChild(thumb);
     document.body.appendChild(dock);
 
@@ -1224,6 +1226,8 @@ function warReportEnsureFloatingHScroll() {
     window.addEventListener('scroll', place, true);
     document.addEventListener('scroll', place, true);
     window.addEventListener('resize', place);
+    const appContent = document.getElementById('app-content');
+    if (appContent) appContent.addEventListener('scroll', place, { passive: true });
     document.addEventListener('click', function (e) {
         if (e.target && e.target.closest && e.target.closest('.tab-button')) {
             requestAnimationFrame(place);
@@ -1254,28 +1258,21 @@ function warReportPlaceFloatingHScroll() {
         }
     });
 
-    if (!best) {
+    if (!best || bestArea < 80) {
         state.main = null;
-        dock.classList.remove('is-on');
-        return;
-    }
-
-    const topBar = best.wrap.querySelector('.war-report-hscroll-top');
-    const topRect = topBar ? topBar.getBoundingClientRect() : null;
-    const topOnScreen = !!(topRect && topRect.bottom > 8 && topRect.top < window.innerHeight - 8);
-    const bottomOnScreen = best.rect.bottom <= window.innerHeight - 4 && best.rect.bottom > 48;
-    if (topOnScreen || bottomOnScreen) {
-        state.main = best.main;
-        dock.classList.remove('is-on');
+        dock.style.display = 'none';
         return;
     }
 
     state.main = best.main;
-    const left = Math.max(8, best.rect.left);
-    const right = Math.min(window.innerWidth - 8, best.rect.right);
+    const left = Math.max(0, best.rect.left);
+    const right = Math.min(window.innerWidth, best.rect.right);
+    dock.style.display = 'block';
+    dock.style.position = 'fixed';
+    dock.style.bottom = '0';
+    dock.style.zIndex = '10000';
     dock.style.left = left + 'px';
     dock.style.width = Math.max(48, right - left) + 'px';
-    dock.classList.add('is-on');
 
     const maxScroll = best.main.scrollWidth - best.main.clientWidth;
     const track = dock.clientWidth || (right - left);
