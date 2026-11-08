@@ -2586,6 +2586,10 @@ a.btn:focus {
     padding: 20px;
 }
 
+.container.war-report-page {
+    max-width: min(1800px, calc(100vw - 16px));
+}
+
 h1 {
     text-align: center;
     margin-bottom: 30px;
