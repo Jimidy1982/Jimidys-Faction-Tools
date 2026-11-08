@@ -2590,6 +2590,48 @@ a.btn:focus {
     max-width: min(1800px, calc(100vw - 16px));
 }
 
+.war-report-page .war-report-hscroll-top {
+    min-height: 16px;
+    margin-bottom: 6px;
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 8px;
+}
+
+/* Always-visible sideways bar while a tall war-report table is on screen. */
+.war-report-hscroll-dock {
+    display: none;
+    position: fixed;
+    z-index: 80;
+    bottom: 0;
+    height: 18px;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.72);
+    border: 1px solid #404040;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.45);
+    cursor: pointer;
+}
+
+.war-report-hscroll-dock.is-on {
+    display: block;
+}
+
+.war-report-hscroll-dock-thumb {
+    position: absolute;
+    top: 3px;
+    left: 0;
+    height: 12px;
+    border-radius: 6px;
+    background: #ffd700;
+    cursor: grab;
+    touch-action: none;
+}
+
+.war-report-hscroll-dock-thumb:active {
+    cursor: grabbing;
+}
+
 h1 {
     text-align: center;
     margin-bottom: 30px;

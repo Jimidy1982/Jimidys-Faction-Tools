@@ -1136,6 +1136,154 @@ function warReportBindTopHorizontalScroll(containerEl) {
     requestAnimationFrame(function () {
         requestAnimationFrame(updateGutterWidth);
     });
+
+    wrap.addEventListener('wheel', warReportHorizontalWheel, { passive: false });
+    warReportEnsureFloatingHScroll();
+    warReportPlaceFloatingHScroll();
+}
+
+/** Shift + wheel moves a wide war-report table sideways without hunting for the bottom bar. */
+function warReportHorizontalWheel(e) {
+    if (!e.shiftKey) return;
+    const wrap = e.currentTarget;
+    const main = wrap && wrap.querySelector ? wrap.querySelector('.war-report-hscroll-main') : null;
+    if (!main || main.scrollWidth <= main.clientWidth + 2) return;
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!delta) return;
+    e.preventDefault();
+    main.scrollLeft += delta;
+}
+
+/**
+ * Gold scrollbar fixed to the bottom of the screen while a wide table is on screen
+ * and its own top and bottom bars have scrolled out of view.
+ */
+function warReportEnsureFloatingHScroll() {
+    if (warReportEnsureFloatingHScroll.ready) return;
+    warReportEnsureFloatingHScroll.ready = true;
+
+    const dock = document.createElement('div');
+    dock.className = 'war-report-hscroll-dock';
+    dock.title = 'Drag to move the table sideways. Shift + scroll wheel does the same.';
+    dock.setAttribute('aria-hidden', 'true');
+    const thumb = document.createElement('div');
+    thumb.className = 'war-report-hscroll-dock-thumb';
+    dock.appendChild(thumb);
+    document.body.appendChild(dock);
+
+    const state = { main: null, dragging: false, startX: 0, startScroll: 0 };
+    warReportEnsureFloatingHScroll.state = state;
+    warReportEnsureFloatingHScroll.dock = dock;
+    warReportEnsureFloatingHScroll.thumb = thumb;
+
+    function thumbTravel() {
+        return Math.max(1, dock.clientWidth - thumb.offsetWidth);
+    }
+
+    thumb.addEventListener('pointerdown', function (e) {
+        if (!state.main) return;
+        e.preventDefault();
+        e.stopPropagation();
+        state.dragging = true;
+        state.startX = e.clientX;
+        state.startScroll = state.main.scrollLeft;
+        thumb.setPointerCapture(e.pointerId);
+    });
+    thumb.addEventListener('pointermove', function (e) {
+        if (!state.dragging || !state.main) return;
+        const maxScroll = state.main.scrollWidth - state.main.clientWidth;
+        const dx = e.clientX - state.startX;
+        state.main.scrollLeft = state.startScroll + (dx / thumbTravel()) * maxScroll;
+    });
+    function endDrag() {
+        state.dragging = false;
+    }
+    thumb.addEventListener('pointerup', endDrag);
+    thumb.addEventListener('pointercancel', endDrag);
+
+    dock.addEventListener('pointerdown', function (e) {
+        if (e.target === thumb || !state.main) return;
+        const rect = dock.getBoundingClientRect();
+        const maxScroll = state.main.scrollWidth - state.main.clientWidth;
+        const travel = Math.max(1, rect.width - thumb.offsetWidth);
+        const x = e.clientX - rect.left - thumb.offsetWidth / 2;
+        const ratio = Math.min(1, Math.max(0, x / travel));
+        state.main.scrollLeft = ratio * maxScroll;
+    });
+    dock.addEventListener('wheel', function (e) {
+        if (!state.main) return;
+        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        if (!delta) return;
+        e.preventDefault();
+        state.main.scrollLeft += delta;
+    }, { passive: false });
+
+    const place = function () {
+        warReportPlaceFloatingHScroll();
+    };
+    window.addEventListener('scroll', place, true);
+    document.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    document.addEventListener('click', function (e) {
+        if (e.target && e.target.closest && e.target.closest('.tab-button')) {
+            requestAnimationFrame(place);
+        }
+    });
+}
+
+function warReportPlaceFloatingHScroll() {
+    const dock = warReportEnsureFloatingHScroll.dock;
+    const thumb = warReportEnsureFloatingHScroll.thumb;
+    const state = warReportEnsureFloatingHScroll.state;
+    if (!dock || !thumb || !state) return;
+
+    const wraps = document.querySelectorAll('.war-report-hscroll');
+    let best = null;
+    let bestArea = 0;
+    wraps.forEach(function (wrap) {
+        const main = wrap.querySelector('.war-report-hscroll-main');
+        const table = main && main.querySelector('table');
+        if (!main || !table || table.scrollWidth <= main.clientWidth + 2) return;
+        const rect = main.getBoundingClientRect();
+        const visibleTop = Math.max(rect.top, 0);
+        const visibleBottom = Math.min(rect.bottom, window.innerHeight);
+        const area = (visibleBottom - visibleTop) * Math.max(0, rect.width);
+        if (area > bestArea) {
+            bestArea = area;
+            best = { wrap: wrap, main: main, rect: rect };
+        }
+    });
+
+    if (!best) {
+        state.main = null;
+        dock.classList.remove('is-on');
+        return;
+    }
+
+    const topBar = best.wrap.querySelector('.war-report-hscroll-top');
+    const topRect = topBar ? topBar.getBoundingClientRect() : null;
+    const topOnScreen = !!(topRect && topRect.bottom > 8 && topRect.top < window.innerHeight - 8);
+    const bottomOnScreen = best.rect.bottom <= window.innerHeight - 4 && best.rect.bottom > 48;
+    if (topOnScreen || bottomOnScreen) {
+        state.main = best.main;
+        dock.classList.remove('is-on');
+        return;
+    }
+
+    state.main = best.main;
+    const left = Math.max(8, best.rect.left);
+    const right = Math.min(window.innerWidth - 8, best.rect.right);
+    dock.style.left = left + 'px';
+    dock.style.width = Math.max(48, right - left) + 'px';
+    dock.classList.add('is-on');
+
+    const maxScroll = best.main.scrollWidth - best.main.clientWidth;
+    const track = dock.clientWidth || (right - left);
+    const thumbW = Math.max(36, Math.min(track - 8, track * (best.main.clientWidth / best.main.scrollWidth)));
+    const travel = Math.max(1, track - thumbW);
+    const x = maxScroll > 0 ? (best.main.scrollLeft / maxScroll) * travel : 0;
+    thumb.style.width = thumbW + 'px';
+    thumb.style.transform = 'translateX(' + x + 'px)';
 }
 
 function warReportAttachOtherAttacksBreakdownUI(containerEl) {
